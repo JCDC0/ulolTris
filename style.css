@@ -1,0 +1,70 @@
+body {
+    background-color: #0f0f13;
+    color: #fff;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    margin: 0;
+    overflow: hidden;
+}
+
+#game-container {
+    display: flex;
+    gap: 30px;
+    background: #181820;
+    padding: 30px;
+    border-radius: 12px;
+    box-shadow: 0 0 40px rgba(0, 0, 0, 0.9), 0 0 15px rgba(0, 255, 255, 0.1);
+}
+
+.sidebar {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 150px;
+}
+
+.canvas-wrapper {
+    background-color: #000;
+    border: 2px solid #2a2a35;
+    border-radius: 6px;
+    box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.8);
+    margin-bottom: 20px;
+}
+
+#board-canvas {
+    background-color: #050505;
+    background-size: 30px 30px;
+    background-image: 
+        linear-gradient(to right, rgba(255, 255, 255, 0.05) 1px, transparent 1px), 
+        linear-gradient(to bottom, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+    border: 2px solid #333;
+    border-radius: 6px;
+    box-shadow: 0 0 20px rgba(0, 255, 255, 0.05);
+}
+
+h3, p {
+    margin: 10px 0 5px 0;
+    font-size: 16px;
+    letter-spacing: 3px;
+    color: #888;
+    text-shadow: 0 0 5px rgba(255, 255, 255, 0.2);
+}
+
+span {
+    font-size: 28px;
+    font-weight: bold;
+    margin-bottom: 20px;
+    color: #fff;
+    text-shadow: 0 0 10px rgba(255, 255, 255, 0.5);
+}
+
+#stats {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 100%;
+    margin-top: auto;
+}

@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Modern Tetris Clone</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="game-container">
+        <div class="sidebar left-sidebar">
+            <h3>HOLD</h3>
+            <div class="canvas-wrapper">
+                <canvas id="hold-canvas" width="120" height="120"></canvas>
+            </div>
+            <div id="stats">
+                <p>SCORE</p>
+                <span id="score-display">0</span>
+                <p>LINES</p>
+                <span id="lines-display">0</span>
+                <p>LEVEL</p>
+                <span id="level-display">1</span>
+            </div>
+        </div>
+        
+        <div class="main-screen">
+            <canvas id="board-canvas" width="300" height="600"></canvas>
+        </div>
+        
+        <div class="sidebar right-sidebar">
+            <h3>NEXT</h3>
+            <div class="canvas-wrapper">
+                <canvas id="next-canvas" width="120" height="360"></canvas>
+            </div>
+        </div>
+    </div>
+    <script src="game.js"></script>
+</body>
+</html>
