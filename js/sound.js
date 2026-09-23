@@ -1,0 +1,491 @@
+/**
+ * Procedural Web Audio API sound engine for ulolTris.
+ * Synthesizes sound effects using oscillators, noise, and envelopes.
+ */
+
+/**
+ * Creates and initializes the sound engine.
+ * @param {Object} settingsRef - Reference object with {masterVolume, sfxVolume, sfxMuted} properties.
+ * @returns {Object} The sound engine instance.
+ */
+export function createSoundEngine(settingsRef) {
+    let ctx = null;
+    let masterGain = null;
+    let noiseBuffer = null;
+
+    /**
+     * Initializes the AudioContext on first play to handle autoplay policies.
+     */
+    function init() {
+        if (ctx) return;
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        ctx = new AudioContext();
+        masterGain = ctx.createGain();
+        masterGain.connect(ctx.destination);
+
+        // Create a 1-second shared white noise buffer
+        const bufferSize = ctx.sampleRate;
+        noiseBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+        const output = noiseBuffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) {
+            output[i] = Math.random() * 2 - 1;
+        }
+    }
+
+    /**
+     * Updates master volume based on settings reference.
+     * @returns {number} The calculated volume level.
+     */
+    function updateVolume() {
+        if (!ctx) return 0;
+        if (settingsRef.sfxMuted) {
+            masterGain.gain.value = 0;
+            return 0;
+        }
+        const master = (settingsRef.masterVolume !== undefined ? settingsRef.masterVolume : 100) / 100;
+        const sfx = (settingsRef.sfxVolume !== undefined ? settingsRef.sfxVolume : 100) / 100;
+        const volume = master * sfx;
+        masterGain.gain.value = volume;
+        return volume;
+    }
+
+    /**
+     * Helper to play a simple tone with an envelope.
+     */
+    function playTone(freq, type, startTime, duration, volEnvelope) {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = type;
+        
+        if (typeof freq === 'number') {
+            osc.frequency.setValueAtTime(freq, startTime);
+        } else if (typeof freq === 'function') {
+            freq(osc.frequency, startTime);
+        }
+
+        gain.gain.setValueAtTime(0, startTime);
+        if (volEnvelope) {
+            volEnvelope(gain.gain, startTime);
+        }
+
+        osc.connect(gain);
+        gain.connect(masterGain);
+        
+        osc.start(startTime);
+        osc.stop(startTime + duration);
+        
+        osc.onended = () => {
+            gain.disconnect();
+        };
+        
+        return { osc, gain };
+    }
+
+    /**
+     * Helper to play noise with an envelope and optional filter.
+     */
+    function playNoise(startTime, duration, volEnvelope, filterSetup) {
+        const source = ctx.createBufferSource();
+        source.buffer = noiseBuffer;
+        source.loop = true;
+        
+        const gain = ctx.createGain();
+        gain.gain.setValueAtTime(0, startTime);
+        if (volEnvelope) {
+            volEnvelope(gain.gain, startTime);
+        }
+
+        let lastNode = source;
+        if (filterSetup) {
+            const filter = ctx.createBiquadFilter();
+            filterSetup(filter, startTime);
+            lastNode.connect(filter);
+            lastNode = filter;
+        }
+
+        lastNode.connect(gain);
+        gain.connect(masterGain);
+
+        source.start(startTime);
+        source.stop(startTime + duration);
+        
+        source.onended = () => {
+            gain.disconnect();
+            if (lastNode !== source) lastNode.disconnect();
+        };
+    }
+
+    /**
+     * Plays a sound effect by event name.
+     * @param {string} eventName - The name of the sound event to play.
+     * @param {number} [comboCount] - Optional combo count (1-20) for the 'combo' event.
+     */
+    function play(eventName, comboCount) {
+        init();
+        if (ctx.state === 'suspended') {
+            ctx.resume();
+        }
+        
+        const vol = updateVolume();
+        if (vol === 0) return;
+
+        const t = ctx.currentTime;
+
+        switch (eventName) {
+            case 'move':
+                playTone(800, 'sine', t, 0.015, (g, time) => {
+                    g.setValueAtTime(0.4, time);
+                    g.exponentialRampToValueAtTime(0.01, time + 0.015);
+                });
+                break;
+                
+            case 'rotate':
+                playTone(1200, 'sine', t, 0.02, (g, time) => {
+                    g.setValueAtTime(0.4, time);
+                    g.exponentialRampToValueAtTime(0.01, time + 0.02);
+                });
+                break;
+                
+            case 'softdrop':
+                playTone((f, time) => {
+                    f.setValueAtTime(600, time);
+                    f.exponentialRampToValueAtTime(300, time + 0.03);
+                }, 'sine', t, 0.03, (g, time) => {
+                    g.setValueAtTime(0.3, time);
+                    g.exponentialRampToValueAtTime(0.01, time + 0.03);
+                });
+                break;
+                
+            case 'harddrop':
+                // Impact thud
+                playTone(80, 'sine', t, 0.08, (g, time) => {
+                    g.setValueAtTime(0.8, time);
+                    g.exponentialRampToValueAtTime(0.01, time + 0.08);
+                });
+                // Noise burst
+                playNoise(t, 0.08, (g, time) => {
+                    g.setValueAtTime(0.6, time);
+                    g.exponentialRampToValueAtTime(0.01, time + 0.08);
+                }, (f, time) => {
+                    f.type = 'lowpass';
+                    f.frequency.setValueAtTime(500, time);
+                });
+                break;
+                
+            case 'lock':
+                playTone(200, 'sine', t, 0.04, (g, time) => {
+                    g.setValueAtTime(0.6, time);
+                    g.exponentialRampToValueAtTime(0.01, time + 0.04);
+                });
+                break;
+                
+            case 'clear1':
+                playTone((f, time) => {
+                    f.setValueAtTime(523, time); // C5
+                    f.linearRampToValueAtTime(784, time + 0.15); // G5
+                }, 'sine', t, 0.15, (g, time) => {
+                    g.setValueAtTime(0.5, time);
+                    g.linearRampToValueAtTime(0, time + 0.15);
+                });
+                break;
+                
+            case 'clear2':
+                playTone(523, 'sine', t, 0.08, (g, time) => {
+                    g.setValueAtTime(0.5, time);
+                    g.linearRampToValueAtTime(0, time + 0.08);
+                });
+                playTone(659, 'sine', t + 0.08, 0.08, (g, time) => {
+                    g.setValueAtTime(0.5, time);
+                    g.linearRampToValueAtTime(0, time + 0.08);
+                });
+                break;
+                
+            case 'clear3':
+                [523, 659, 784].forEach((freq, i) => { // C5, E5, G5
+                    playTone(freq, 'sine', t + i * 0.06, 0.06, (g, time) => {
+                        g.setValueAtTime(0.5, time);
+                        g.linearRampToValueAtTime(0, time + 0.06);
+                    });
+                });
+                break;
+                
+            case 'clear4': {
+                // Tetris! C5-E5-G5-C6 with delay feedback for reverb tail
+                const delay = ctx.createDelay();
+                delay.delayTime.value = 0.1;
+                const feedback = ctx.createGain();
+                feedback.gain.value = 0.4;
+                
+                delay.connect(feedback);
+                feedback.connect(delay);
+                delay.connect(masterGain);
+                
+                [523, 659, 784, 1046].forEach((freq) => {
+                    const osc = ctx.createOscillator();
+                    const g = ctx.createGain();
+                    osc.type = 'square';
+                    osc.frequency.value = freq;
+                    
+                    g.gain.setValueAtTime(0, t);
+                    g.gain.linearRampToValueAtTime(0.15, t + 0.05);
+                    g.gain.exponentialRampToValueAtTime(0.01, t + 0.3);
+                    
+                    osc.connect(g);
+                    g.connect(masterGain);
+                    g.connect(delay); // Send to reverb
+                    
+                    osc.start(t);
+                    osc.stop(t + 0.3);
+                    osc.onended = () => {
+                        g.disconnect();
+                    };
+                });
+                
+                // Cleanup delay network
+                setTimeout(() => {
+                    delay.disconnect();
+                    feedback.disconnect();
+                }, 1500);
+                break;
+            }
+                
+            case 'tspin': {
+                // Filtered noise whoosh
+                playNoise(t, 0.2, (g, time) => {
+                    g.setValueAtTime(0.3, time);
+                    g.linearRampToValueAtTime(0, time + 0.2);
+                }, (f, time) => {
+                    f.type = 'bandpass';
+                    f.frequency.setValueAtTime(400, time);
+                    f.frequency.linearRampToValueAtTime(2000, time + 0.2);
+                });
+                
+                // Crystalline sine ring with vibrato
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                const lfo = ctx.createOscillator();
+                const lfoGain = ctx.createGain();
+                
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(1400, t);
+                
+                lfo.type = 'sine';
+                lfo.frequency.setValueAtTime(15, t); // 15Hz vibrato
+                lfoGain.gain.setValueAtTime(30, t);  // 30Hz depth
+                
+                lfo.connect(lfoGain);
+                lfoGain.connect(osc.frequency);
+                
+                gain.gain.setValueAtTime(0, t);
+                gain.gain.linearRampToValueAtTime(0.4, t + 0.05);
+                gain.gain.exponentialRampToValueAtTime(0.01, t + 0.2);
+                
+                osc.connect(gain);
+                gain.connect(masterGain);
+                
+                osc.start(t);
+                lfo.start(t);
+                osc.stop(t + 0.2);
+                lfo.stop(t + 0.2);
+                
+                osc.onended = () => {
+                    gain.disconnect();
+                    lfoGain.disconnect();
+                };
+                break;
+            }
+                
+            case 'tspinClear': {
+                // Longer, more dramatic filtered noise
+                playNoise(t, 0.35, (g, time) => {
+                    g.setValueAtTime(0.5, time);
+                    g.linearRampToValueAtTime(0, time + 0.35);
+                }, (f, time) => {
+                    f.type = 'bandpass';
+                    f.frequency.setValueAtTime(400, time);
+                    f.frequency.linearRampToValueAtTime(3000, time + 0.35);
+                });
+                
+                // Clear chime
+                playTone((f, time) => {
+                    f.setValueAtTime(1400, time);
+                    f.linearRampToValueAtTime(2000, time + 0.35);
+                }, 'sine', t, 0.35, (g, time) => {
+                    g.setValueAtTime(0.6, time);
+                    g.exponentialRampToValueAtTime(0.01, time + 0.35);
+                });
+                break;
+            }
+                
+            case 'combo': {
+                const count = Math.min(20, Math.max(1, comboCount || 1));
+                const comboFreq = Math.min(1200, 440 + (count * 40));
+                playTone(comboFreq, 'sine', t, 0.06, (g, time) => {
+                    g.setValueAtTime(0.4, time);
+                    g.linearRampToValueAtTime(0, time + 0.06);
+                });
+                break;
+            }
+                
+            case 'b2b':
+                // Shimmer/sparkle fairy dust
+                for (let i = 0; i < 10; i++) {
+                    const st = t + Math.random() * 0.15;
+                    const fr = 800 + Math.random() * 1200;
+                    playTone(fr, 'sine', st, 0.05, (g, time) => {
+                        g.setValueAtTime(0.2, time);
+                        g.linearRampToValueAtTime(0, time + 0.05);
+                    });
+                }
+                break;
+                
+            case 'perfectClear': {
+                // Triumphant fanfare C5-E5-G5-C6-E6
+                const delay = ctx.createDelay();
+                delay.delayTime.value = 0.15;
+                const feedback = ctx.createGain();
+                feedback.gain.value = 0.3;
+                
+                delay.connect(feedback);
+                feedback.connect(delay);
+                delay.connect(masterGain);
+
+                [523, 659, 784, 1046, 1318].forEach((freq, i) => {
+                    const st = t + i * 0.05;
+                    const duration = i === 4 ? 0.3 : 0.1;
+                    const osc = ctx.createOscillator();
+                    const g = ctx.createGain();
+                    
+                    osc.type = 'sine';
+                    osc.frequency.value = freq;
+                    
+                    g.gain.setValueAtTime(0.5, st);
+                    g.gain.linearRampToValueAtTime(0.01, st + duration);
+                    
+                    osc.connect(g);
+                    g.connect(masterGain);
+                    g.connect(delay); // Send to reverb
+                    
+                    osc.start(st);
+                    osc.stop(st + duration);
+                    osc.onended = () => g.disconnect();
+                });
+                
+                setTimeout(() => {
+                    delay.disconnect();
+                    feedback.disconnect();
+                }, 1500);
+                break;
+            }
+                
+            case 'hold':
+                playNoise(t, 0.05, (g, time) => {
+                    g.setValueAtTime(0.3, time);
+                    g.linearRampToValueAtTime(0, time + 0.05);
+                }, (f, time) => {
+                    f.type = 'bandpass';
+                    f.frequency.setValueAtTime(600, time);
+                    f.Q.value = 1;
+                });
+                break;
+                
+            case 'gameOver': {
+                // Descending C5 -> C3 with vibrato
+                const osc = ctx.createOscillator();
+                const g = ctx.createGain();
+                const lfo = ctx.createOscillator();
+                const lfoGain = ctx.createGain();
+                
+                osc.type = 'triangle';
+                osc.frequency.setValueAtTime(523.25, t); // C5
+                osc.frequency.exponentialRampToValueAtTime(130.81, t + 0.8); // C3
+                
+                lfo.type = 'sine';
+                lfo.frequency.value = 8;
+                lfoGain.gain.value = 10;
+                
+                lfo.connect(lfoGain);
+                lfoGain.connect(osc.frequency);
+                
+                g.gain.setValueAtTime(0.5, t);
+                g.gain.exponentialRampToValueAtTime(0.01, t + 0.8);
+                
+                osc.connect(g);
+                g.connect(masterGain);
+                
+                osc.start(t);
+                lfo.start(t);
+                osc.stop(t + 0.8);
+                lfo.stop(t + 0.8);
+                
+                osc.onended = () => {
+                    g.disconnect();
+                    lfoGain.disconnect();
+                };
+                break;
+            }
+                
+            case 'levelUp':
+                playTone(523, 'sine', t, 0.075, (g, time) => {
+                    g.setValueAtTime(0.4, time);
+                    g.linearRampToValueAtTime(0, time + 0.075);
+                });
+                playTone(1046, 'sine', t + 0.075, 0.075, (g, time) => {
+                    g.setValueAtTime(0.4, time);
+                    g.linearRampToValueAtTime(0, time + 0.075);
+                });
+                break;
+                
+            case 'menuMove':
+                playTone(600, 'sine', t, 0.008, (g, time) => {
+                    g.setValueAtTime(0.15, time);
+                    g.exponentialRampToValueAtTime(0.01, time + 0.008);
+                });
+                break;
+                
+            case 'menuSelect':
+                playTone(440, 'sine', t, 0.04, (g, time) => {
+                    g.setValueAtTime(0.4, time);
+                    g.linearRampToValueAtTime(0, time + 0.04);
+                });
+                playTone(880, 'sine', t + 0.03, 0.04, (g, time) => {
+                    g.setValueAtTime(0.4, time);
+                    g.linearRampToValueAtTime(0, time + 0.04);
+                });
+                break;
+                
+            case 'countdownTick':
+                playTone(1000, 'sine', t, 0.015, (g, time) => {
+                    g.setValueAtTime(0.3, time);
+                    g.exponentialRampToValueAtTime(0.01, time + 0.015);
+                });
+                break;
+                
+            case 'countdownGo':
+                [440, 880, 1760].forEach((freq, i) => {
+                    playTone(freq, 'sine', t + i * 0.06, 0.08, (g, time) => {
+                        g.setValueAtTime(0.4, time);
+                        g.linearRampToValueAtTime(0, time + 0.08);
+                    });
+                });
+                break;
+        }
+    }
+
+    /**
+     * Cleans up the sound engine, closing the AudioContext.
+     */
+    function dispose() {
+        if (ctx) {
+            ctx.close();
+            ctx = null;
+            masterGain = null;
+            noiseBuffer = null;
+        }
+    }
+
+    return {
+        play,
+        dispose
+    };
+}

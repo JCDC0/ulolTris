@@ -1,0 +1,229 @@
+/**
+ * settings.js - Expanded settings manager with handling, audio, visual, and gameplay tabs.
+ * Persists all settings to localStorage.
+ */
+
+const STORAGE_KEY = 'uloltris-settings';
+const FRAME_MS = 1000 / 60;
+
+/**
+ * Version 2 stores ARR, DAS and DCD in frames and SDF as a gravity multiplier, like TETR.IO.
+ * Version 1 (no version field) stored all four in milliseconds.
+ */
+const SETTINGS_VERSION = 2;
+
+/** SDF values at or above this are treated as infinite (instant soft drop). */
+export const SDF_INFINITE = 41;
+
+/** Default values for all setting categories */
+export const DEFAULT_SETTINGS = {
+    // Handling
+    arr: 2,                    // frames, 0 = instant
+    das: 10,                   // frames
+    dcd: 1,                    // frames, 0 = off
+    sdf: 6,                    // gravity multiplier, SDF_INFINITE = instant
+    cancelDasOnDirectionChange: false,
+    preferSoftDrop: false,
+
+    // Audio
+    masterVolume: 80,
+    sfxVolume: 80,
+    musicVolume: 50,
+    sfxMuted: false,
+    musicMuted: false,
+    crossfadeDuration: 2,
+
+    // Visual
+    screenShake: 'medium',     // 'off', 'low', 'medium', 'high'
+    particleDensity: 'medium', // 'off', 'low', 'medium', 'high'
+    ghostOpacity: 40,          // 0-100
+    showActionText: true,
+    boardOpacity: 100,         // 0-100
+
+    // Gameplay
+    nextPreviewCount: 5,       // 1-6
+    lockDelay: 500,            // ms
+};
+
+/** Constraints for numeric settings */
+const CONSTRAINTS = {
+    arr:              { min: 0, max: 5,  step: 0.1 },
+    das:              { min: 1, max: 20, step: 0.1 },
+    dcd:              { min: 0, max: 20, step: 0.1 },
+    sdf:              { min: 5, max: SDF_INFINITE, step: 1 },
+    masterVolume:     { min: 0, max: 100, step: 1 },
+    sfxVolume:        { min: 0, max: 100, step: 1 },
+    musicVolume:      { min: 0, max: 100, step: 1 },
+    crossfadeDuration:{ min: 0, max: 5,   step: 0.5 },
+    ghostOpacity:     { min: 0, max: 100, step: 5 },
+    boardOpacity:     { min: 0, max: 100, step: 5 },
+    nextPreviewCount: { min: 1, max: 6,   step: 1 },
+    lockDelay:        { min: 100, max: 2000, step: 50 },
+};
+
+/** Valid enum values */
+const ENUMS = {
+    screenShake: ['off', 'low', 'medium', 'high'],
+    particleDensity: ['off', 'low', 'medium', 'high'],
+};
+
+function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+}
+
+/**
+ * Normalize a raw settings object against defaults and constraints.
+ */
+export function normalizeSettings(raw) {
+    const source = migrateSettings(raw || {});
+    const result = { ...DEFAULT_SETTINGS };
+
+    // Numeric settings
+    for (const [key, constraint] of Object.entries(CONSTRAINTS)) {
+        const val = source[key];
+        if (Number.isFinite(val)) {
+            result[key] = clamp(val, constraint.min, constraint.max);
+        }
+    }
+
+    // Enum settings
+    for (const [key, validValues] of Object.entries(ENUMS)) {
+        if (validValues.includes(source[key])) {
+            result[key] = source[key];
+        }
+    }
+
+    // Boolean settings
+    if (typeof source.sfxMuted === 'boolean') result.sfxMuted = source.sfxMuted;
+    if (typeof source.musicMuted === 'boolean') result.musicMuted = source.musicMuted;
+    if (typeof source.showActionText === 'boolean') result.showActionText = source.showActionText;
+    if (typeof source.cancelDasOnDirectionChange === 'boolean') result.cancelDasOnDirectionChange = source.cancelDasOnDirectionChange;
+    if (typeof source.preferSoftDrop === 'boolean') result.preferSoftDrop = source.preferSoftDrop;
+
+    return result;
+}
+
+/**
+ * Convert version 1 handling values (milliseconds) to frames. The old SDF was a
+ * millisecond interval with no multiplier equivalent, so it resets to the default.
+ */
+function migrateSettings(source) {
+    if (source.version === SETTINGS_VERSION) return source;
+    const migrated = { ...source };
+    for (const key of ['arr', 'das', 'dcd']) {
+        if (Number.isFinite(source[key])) {
+            migrated[key] = Math.round((source[key] / FRAME_MS) * 10) / 10;
+        }
+    }
+    delete migrated.sdf;
+    return migrated;
+}
+
+/**
+ * Load settings from localStorage, falling back to defaults.
+ */
+export function loadSettings() {
+    try {
+        const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
+        return normalizeSettings(saved);
+    } catch {
+        return { ...DEFAULT_SETTINGS };
+    }
+}
+
+/**
+ * Save settings to localStorage.
+ */
+export function saveSettings(settings) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...settings, version: SETTINGS_VERSION }));
+}
+
+/**
+ * Get the constraint for a setting key.
+ */
+export function getConstraint(key) {
+    return CONSTRAINTS[key] || null;
+}
+
+/**
+ * Get valid enum values for a setting key.
+ */
+export function getEnumValues(key) {
+    return ENUMS[key] || null;
+}
+
+// Formatting helpers for the settings UI
+
+export function framesToMs(frames) {
+    return frames * FRAME_MS;
+}
+
+export function describeFrames(frames) {
+    return `${Number(frames).toFixed(1)}F / ${Math.round(framesToMs(frames))}ms`;
+}
+
+export function describeArr(frames) {
+    if (frames === 0) return '0F (instant)';
+    return describeFrames(frames);
+}
+
+export function describeDcd(frames) {
+    if (frames === 0) return '0F (off)';
+    return describeFrames(frames);
+}
+
+export function describeSoftDrop(factor) {
+    if (factor >= SDF_INFINITE) return '∞ (instant)';
+    return `${factor}X`;
+}
+
+export function describeVolume(val) {
+    return `${val}%`;
+}
+
+export function describeCrossfade(val) {
+    if (val === 0) return 'Off';
+    return `${val}s`;
+}
+
+export function describeEnum(val) {
+    return val.charAt(0).toUpperCase() + val.slice(1);
+}
+
+export function describeOpacity(val) {
+    return `${val}%`;
+}
+
+export function describePreviewCount(val) {
+    return `${val} piece${val !== 1 ? 's' : ''}`;
+}
+
+export function describeLockDelay(ms) {
+    return `${ms}ms`;
+}
+
+/**
+ * Get screen shake multiplier based on setting.
+ */
+export function screenShakeMultiplier(settings) {
+    switch (settings.screenShake) {
+        case 'off':    return 0;
+        case 'low':    return 0.4;
+        case 'medium': return 1.0;
+        case 'high':   return 1.8;
+        default:       return 1.0;
+    }
+}
+
+/**
+ * Get particle density multiplier based on setting.
+ */
+export function particleDensityMultiplier(settings) {
+    switch (settings.particleDensity) {
+        case 'off':    return 0;
+        case 'low':    return 0.4;
+        case 'medium': return 1.0;
+        case 'high':   return 2.0;
+        default:       return 1.0;
+    }
+}

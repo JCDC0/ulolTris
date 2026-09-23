@@ -3,37 +3,67 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Modern Tetris Clone</title>
+    <title>ulolTris</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <div id="game-container">
+    <!-- MENU OVERLAY CONTAINER -->
+    <div id="menu-container"></div>
+
+    <!-- GAME AREA (hidden until a mode is selected) -->
+    <div id="game-container" class="game-hidden">
         <div class="sidebar left-sidebar">
             <h3>HOLD</h3>
             <div class="canvas-wrapper">
                 <canvas id="hold-canvas" width="120" height="120"></canvas>
             </div>
             <div id="stats">
-                <p>SCORE</p>
-                <span id="score-display">0</span>
-                <p>LINES</p>
-                <span id="lines-display">0</span>
-                <p>LEVEL</p>
-                <span id="level-display">1</span>
+                <div class="stat-group">
+                    <p>SCORE</p>
+                    <span id="score-display">0</span>
+                </div>
+                <div class="stat-group">
+                    <p>LINES</p>
+                    <span id="lines-display">0</span>
+                </div>
+                <div class="stat-group">
+                    <p>LEVEL</p>
+                    <span id="level-display">1</span>
+                </div>
+                <div class="stat-group timer-group">
+                    <p>TIME</p>
+                    <span id="timer-display">00:00</span>
+                </div>
             </div>
         </div>
-        
+
         <div class="main-screen">
             <canvas id="board-canvas" width="300" height="600"></canvas>
         </div>
-        
+
         <div class="sidebar right-sidebar">
             <h3>NEXT</h3>
-            <div class="canvas-wrapper">
-                <canvas id="next-canvas" width="120" height="360"></canvas>
+            <div class="canvas-wrapper next-wrapper">
+                <canvas id="next-canvas" width="120" height="480"></canvas>
             </div>
         </div>
     </div>
+
+    <!-- SETTINGS PANEL -->
+    <button id="settings-toggle" class="settings-toggle" type="button" aria-label="Open settings">&#x2699;</button>
+    <div id="settings-panel" class="settings-panel" aria-hidden="true">
+        <div class="settings-panel-header">
+            <h3>SETTINGS</h3>
+            <button id="settings-close" type="button" class="settings-close" aria-label="Close settings">&#x00D7;</button>
+        </div>
+        <div class="settings-tabs"></div>
+        <div class="settings-tab-content"></div>
+    </div>
+
+    <!-- MUSIC PLAYER -->
+    <button id="music-toggle" class="music-toggle" type="button" aria-label="Toggle music player">&#x266B;</button>
+    <div id="music-player-container"></div>
+
     <script src="game.js"></script>
 </body>
 </html>
