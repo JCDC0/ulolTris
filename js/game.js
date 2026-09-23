@@ -3,7 +3,7 @@
  * Orchestrates the game loop, piece logic, scoring, effects, and mode state.
  */
 
-import { COLS, BUFFER_ROWS, VISIBLE_ROWS, SHAPES, getNextPiece, fillQueue, getSpawnPos, tryRotate } from './piece.js';
+import { COLS, BUFFER_ROWS, SHAPES, getNextPiece, fillQueue, getSpawnPos, tryRotate } from './piece.js';
 import { createMatrix, collide, merge, clearLines, isGrounded, getGhostY } from './board.js';
 import { createScoringState, detectTSpin, calculateScore, getSoundEvent } from './scoring.js';
 import { createParticleSystem } from './particles.js';
@@ -75,7 +75,6 @@ export function createGame(config) {
         onRotateCCW() { playerRotate(-1); },
         onHold()      { holdPiece(); },
         onPause()     { if (running && !modeState.isFinished()) pauseGame(); },
-        onRetry()     { /* handled by menu */ },
     });
 
     // --- Piece Spawning ---
@@ -235,8 +234,10 @@ export function createGame(config) {
 
         // Update mode stats
         if (linesCleared > 0) {
+            const levelBefore = modeState.stats.level;
             modeState.addLines(linesCleared);
             dropInterval = modeState.getDropInterval();
+            if (modeState.stats.level > levelBefore) playSound('levelUp');
         }
 
         if (scoreResult.action && scoreResult.action.startsWith('tspin')) {
@@ -377,16 +378,9 @@ export function createGame(config) {
         const timerEl = document.getElementById('timer-display');
 
         if (scoreEl) {
-            if (modeId === 'sprint') {
-                // Sprint: show lines remaining instead of score
-                scoreEl.textContent = Math.max(0, 40 - modeState.stats.linesCleared);
-                const label = scoreEl.previousElementSibling;
-                if (label) label.textContent = 'LINES LEFT';
-            } else {
-                scoreEl.textContent = modeState.stats.score.toLocaleString();
-                const label = scoreEl.previousElementSibling;
-                if (label) label.textContent = 'SCORE';
-            }
+            scoreEl.textContent = modeState.getPrimaryStatValue().toLocaleString();
+            const label = scoreEl.previousElementSibling;
+            if (label) label.textContent = modeState.getPrimaryStatLabel();
         }
         if (linesEl) linesEl.textContent = modeState.stats.linesCleared;
         if (levelEl) levelEl.textContent = modeState.stats.level;
@@ -492,9 +486,7 @@ export function createGame(config) {
         start: startGame,
         pause: pauseGame,
         resume: resumeGame,
-        restart: startGame,
         destroy,
         isRunning() { return running; },
-        isPaused() { return paused; },
     };
 }

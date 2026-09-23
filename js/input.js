@@ -21,7 +21,7 @@ const EPSILON = 1;
 const GAME_KEYS = new Set([
     'ArrowLeft', 'ArrowRight', 'ArrowDown', 'ArrowUp',
     'Space', 'KeyZ', 'KeyX', 'KeyC', 'ShiftLeft', 'ShiftRight',
-    'Escape', 'KeyR', 'F1',
+    'Escape',
 ]);
 
 /**
@@ -31,7 +31,7 @@ const GAME_KEYS = new Set([
  * @param {Object} callbacks - Action callbacks:
  *   { onMove(dir, cells) -> cellsMoved, onSoftDrop(cells) -> cellsDropped,
  *     getGravityInterval() -> ms per cell, onHardDrop, onRotateCW, onRotateCCW,
- *     onHold, onPause, onRetry }
+ *     onHold, onPause }
  *   `cells` may be Infinity, meaning "as far as possible".
  */
 export function createInputHandler(settings, callbacks) {
@@ -127,9 +127,6 @@ export function createInputHandler(settings, callbacks) {
                 break;
             case 'Escape':
                 callbacks.onPause?.();
-                break;
-            case 'KeyR':
-                callbacks.onRetry?.();
                 break;
         }
     }

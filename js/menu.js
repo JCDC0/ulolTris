@@ -232,14 +232,6 @@ export function createMenuSystem(container) {
         hideAll,
         showResults,
 
-        getCurrentScreen() {
-            return currentScreen;
-        },
-
-        isAnyScreenVisible() {
-            return currentScreen !== null;
-        },
-
         onModeSelect(callback) {
             onModeSelectCallback = callback;
         },

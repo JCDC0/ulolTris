@@ -60,7 +60,6 @@ export function createModeState(modeId) {
         tetrises: 0,
         maxCombo: 0,
         perfectClears: 0,
-        allClears: 0,
         startTime: 0,
     };
 
@@ -85,7 +84,6 @@ export function createModeState(modeId) {
     return {
         modeId,
         stats,
-        timer,
 
         /** Start the mode timer */
         start() {
@@ -113,7 +111,6 @@ export function createModeState(modeId) {
             stats.tetrises = 0;
             stats.maxCombo = 0;
             stats.perfectClears = 0;
-            stats.allClears = 0;
             stats.startTime = 0;
             completed = false;
             gameOver = false;
@@ -190,11 +187,6 @@ export function createModeState(modeId) {
             return completed;
         },
 
-        /** Check if the game ended by losing (top-out) */
-        isGameOver() {
-            return gameOver;
-        },
-
         /** Check if the game should end for any reason */
         isFinished() {
             return completed || gameOver;
@@ -215,19 +207,6 @@ export function createModeState(modeId) {
             return timer.format();
         },
 
-        /** Get precise timer display (with centiseconds) */
-        getTimerPrecise() {
-            if (!timer) return '';
-            if (timer.formatPrecise) return timer.formatPrecise();
-            return timer.format();
-        },
-
-        /** Get lines remaining (Sprint only) */
-        getLinesRemaining() {
-            if (modeId !== MODE_SPRINT) return null;
-            return Math.max(0, goalLines - stats.linesCleared);
-        },
-
         /** Get the primary display stat label for the HUD */
         getPrimaryStatLabel() {
             switch (modeId) {
@@ -246,11 +225,6 @@ export function createModeState(modeId) {
                 case MODE_CLASSIC: return stats.score;
                 default: return stats.score;
             }
-        },
-
-        /** Whether to show score in the HUD (Sprint hides it during play) */
-        showsScore() {
-            return modeId !== MODE_SPRINT;
         },
 
         /** Whether the timer counts down (affects display style) */

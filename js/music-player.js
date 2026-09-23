@@ -511,10 +511,6 @@ export function createMusicPlayer(containerEl, settingsRef) {
         }
     }
 
-    function isVisible() {
-        return !state.minimized;
-    }
-
     function dispose() {
         if (elements.wrapper && elements.wrapper.parentNode) {
             elements.wrapper.parentNode.removeChild(elements.wrapper);
@@ -530,7 +526,6 @@ export function createMusicPlayer(containerEl, settingsRef) {
 
     return {
         toggle,
-        isVisible,
         dispose
     };
 }

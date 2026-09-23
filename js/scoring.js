@@ -261,13 +261,6 @@ export function calculateScore(linesCleared, tSpinType, scoringState, level, are
 }
 
 /**
- * Get action name for display purposes.
- */
-export function getActionName(actionType) {
-    return ACTION_NAMES[actionType] || '';
-}
-
-/**
  * Get the color associated with an action for text display.
  */
 export function getActionColor(actionType) {

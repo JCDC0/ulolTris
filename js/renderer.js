@@ -132,10 +132,7 @@ export function createRenderer(canvases, settings) {
 
         // Draw ghost piece
         if (player && player.matrix) {
-            // Calculate ghost position
-            const ghost = { matrix: player.matrix, pos: { ...player.pos } };
-            // We need collide from board.js but to avoid circular deps,
-            // the caller passes the ghost Y pre-calculated
+            // The caller passes ghostY so the renderer does not depend on board.js.
             if (state.ghostY !== undefined) {
                 drawMatrix(
                     boardCtx, player.matrix,
@@ -185,6 +182,5 @@ export function createRenderer(canvases, settings) {
     return {
         draw,
         resizeNextCanvas,
-        boardCtx,
     };
 }

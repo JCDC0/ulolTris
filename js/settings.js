@@ -38,7 +38,6 @@ export const DEFAULT_SETTINGS = {
     particleDensity: 'medium', // 'off', 'low', 'medium', 'high'
     ghostOpacity: 40,          // 0-100
     showActionText: true,
-    boardOpacity: 100,         // 0-100
 
     // Gameplay
     nextPreviewCount: 5,       // 1-6
@@ -56,7 +55,6 @@ const CONSTRAINTS = {
     musicVolume:      { min: 0, max: 100, step: 1 },
     crossfadeDuration:{ min: 0, max: 5,   step: 0.5 },
     ghostOpacity:     { min: 0, max: 100, step: 5 },
-    boardOpacity:     { min: 0, max: 100, step: 5 },
     nextPreviewCount: { min: 1, max: 6,   step: 1 },
     lockDelay:        { min: 100, max: 2000, step: 50 },
 };
@@ -143,13 +141,6 @@ export function saveSettings(settings) {
  */
 export function getConstraint(key) {
     return CONSTRAINTS[key] || null;
-}
-
-/**
- * Get valid enum values for a setting key.
- */
-export function getEnumValues(key) {
-    return ENUMS[key] || null;
 }
 
 // Formatting helpers for the settings UI

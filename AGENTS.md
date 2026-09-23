@@ -77,6 +77,8 @@ Handling audit, done on 2026-09-23 (version 1.1.0):
 - Fixed: reset defaults replaced the shared settings object and bound the panel listeners a second time.
 - Fixed: hold and next previews pushed 3-wide pieces one column right and clipped them. Pieces spawned hidden above the visible board.
 
+Dead code sweep, done on 2026-09-23 (version 1.1.1): removed unused exports, factory methods, imports, the unread `boardOpacity` setting, the unused `allClears` stat, and the `R` and `F1` keys, which were captured but did nothing. The HUD now uses `getPrimaryStatLabel`/`getPrimaryStatValue` from `modes.js` instead of repeating the Sprint logic. The `levelUp` sound existed but was never played; it now plays on level up. A quick-retry key (TETR.IO uses `R`) would need wiring to the menu's restart.
+
 Next steps, in order:
 1. Confirm against the live TETR.IO client: the handling ranges and defaults above came from memory of the TETR.IO settings screen and from the TETR.IO FAQ, not from reading the client. Also confirm whether DCD applies after hold and after a hard drop, and whether the carried DAS charge also applies when releasing back to the older key.
 2. Consider TETR.IO's "prevent accidental hard drops" option and IRS/IHS (initial rotation and hold), which are not implemented.

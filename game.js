@@ -31,8 +31,6 @@
     ghostOpacity: 40,
     // 0-100
     showActionText: true,
-    boardOpacity: 100,
-    // 0-100
     // Gameplay
     nextPreviewCount: 5,
     // 1-6
@@ -49,7 +47,6 @@
     musicVolume: { min: 0, max: 100, step: 1 },
     crossfadeDuration: { min: 0, max: 5, step: 0.5 },
     ghostOpacity: { min: 0, max: 100, step: 5 },
-    boardOpacity: { min: 0, max: 100, step: 5 },
     nextPreviewCount: { min: 1, max: 6, step: 1 },
     lockDelay: { min: 100, max: 2e3, step: 50 }
   };
@@ -954,9 +951,6 @@
         elements.wrapper.classList.remove("mp-minimized");
       }
     }
-    function isVisible() {
-      return !state.minimized;
-    }
     function dispose() {
       if (elements.wrapper && elements.wrapper.parentNode) {
         elements.wrapper.parentNode.removeChild(elements.wrapper);
@@ -969,7 +963,6 @@
     buildUI();
     return {
       toggle,
-      isVisible,
       dispose
     };
   }
@@ -1092,10 +1085,6 @@
       },
       isRunning() {
         return running;
-      },
-      /** Get total duration for progress calculation */
-      getTotalDuration() {
-        return durationMs;
       }
     };
   }
@@ -1137,7 +1126,6 @@
       tetrises: 0,
       maxCombo: 0,
       perfectClears: 0,
-      allClears: 0,
       startTime: 0
     };
     let timer = null;
@@ -1159,7 +1147,6 @@
     return {
       modeId,
       stats,
-      timer,
       /** Start the mode timer */
       start() {
         stats.startTime = performance.now();
@@ -1183,7 +1170,6 @@
         stats.tetrises = 0;
         stats.maxCombo = 0;
         stats.perfectClears = 0;
-        stats.allClears = 0;
         stats.startTime = 0;
         completed = false;
         gameOver = false;
@@ -1243,10 +1229,6 @@
       isCompleted() {
         return completed;
       },
-      /** Check if the game ended by losing (top-out) */
-      isGameOver() {
-        return gameOver;
-      },
       /** Check if the game should end for any reason */
       isFinished() {
         return completed || gameOver;
@@ -1262,17 +1244,6 @@
       getTimerDisplay() {
         if (!timer) return "";
         return timer.format();
-      },
-      /** Get precise timer display (with centiseconds) */
-      getTimerPrecise() {
-        if (!timer) return "";
-        if (timer.formatPrecise) return timer.formatPrecise();
-        return timer.format();
-      },
-      /** Get lines remaining (Sprint only) */
-      getLinesRemaining() {
-        if (modeId !== MODE_SPRINT) return null;
-        return Math.max(0, goalLines - stats.linesCleared);
       },
       /** Get the primary display stat label for the HUD */
       getPrimaryStatLabel() {
@@ -1299,10 +1270,6 @@
           default:
             return stats.score;
         }
-      },
-      /** Whether to show score in the HUD (Sprint hides it during play) */
-      showsScore() {
-        return modeId !== MODE_SPRINT;
       },
       /** Whether the timer counts down (affects display style) */
       isCountdown() {
@@ -1511,12 +1478,6 @@
       showScreen,
       hideAll,
       showResults,
-      getCurrentScreen() {
-        return currentScreen;
-      },
-      isAnyScreenVisible() {
-        return currentScreen !== null;
-      },
       onModeSelect(callback) {
         onModeSelectCallback = callback;
       },
@@ -2188,9 +2149,7 @@
       spawnTSpin,
       spawnB2B,
       spawnPerfectClear,
-      addActionText,
       addActionsFromResult,
-      triggerShake,
       update,
       drawParticles,
       drawActionTexts,
@@ -2290,7 +2249,6 @@
       }
       drawMatrix(boardCtx, arena, { x: 0, y: 0 }, null, false, ghostOpacity, true);
       if (player && player.matrix) {
-        const ghost = { matrix: player.matrix, pos: { ...player.pos } };
         if (state.ghostY !== void 0) {
           drawMatrix(
             boardCtx,
@@ -2331,8 +2289,7 @@
     }
     return {
       draw,
-      resizeNextCanvas,
-      boardCtx
+      resizeNextCanvas
     };
   }
 
@@ -2349,9 +2306,7 @@
     "KeyC",
     "ShiftLeft",
     "ShiftRight",
-    "Escape",
-    "KeyR",
-    "F1"
+    "Escape"
   ]);
   function createInputHandler(settings2, callbacks) {
     const state = {
@@ -2442,9 +2397,6 @@
           break;
         case "Escape":
           callbacks.onPause?.();
-          break;
-        case "KeyR":
-          callbacks.onRetry?.();
           break;
       }
     }
@@ -2603,8 +2555,6 @@
       },
       onPause() {
         if (running && !modeState.isFinished()) pauseGame();
-      },
-      onRetry() {
       }
     });
     function spawnPiece() {
@@ -2738,8 +2688,10 @@
         modeState.addScore(scoreResult.points);
       }
       if (linesCleared > 0) {
+        const levelBefore = modeState.stats.level;
         modeState.addLines(linesCleared);
         dropInterval = modeState.getDropInterval();
+        if (modeState.stats.level > levelBefore) playSound("levelUp");
       }
       if (scoreResult.action && scoreResult.action.startsWith("tspin")) {
         modeState.addTSpin();
@@ -2843,15 +2795,9 @@
       const levelEl = document.getElementById("level-display");
       const timerEl = document.getElementById("timer-display");
       if (scoreEl) {
-        if (modeId === "sprint") {
-          scoreEl.textContent = Math.max(0, 40 - modeState.stats.linesCleared);
-          const label = scoreEl.previousElementSibling;
-          if (label) label.textContent = "LINES LEFT";
-        } else {
-          scoreEl.textContent = modeState.stats.score.toLocaleString();
-          const label = scoreEl.previousElementSibling;
-          if (label) label.textContent = "SCORE";
-        }
+        scoreEl.textContent = modeState.getPrimaryStatValue().toLocaleString();
+        const label = scoreEl.previousElementSibling;
+        if (label) label.textContent = modeState.getPrimaryStatLabel();
       }
       if (linesEl) linesEl.textContent = modeState.stats.linesCleared;
       if (levelEl) levelEl.textContent = modeState.stats.level;
@@ -2931,13 +2877,9 @@
       start: startGame,
       pause: pauseGame,
       resume: resumeGame,
-      restart: startGame,
       destroy,
       isRunning() {
         return running;
-      },
-      isPaused() {
-        return paused;
       }
     };
   }

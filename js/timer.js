@@ -156,10 +156,5 @@ export function createCountdown(durationMs) {
         isRunning() {
             return running;
         },
-
-        /** Get total duration for progress calculation */
-        getTotalDuration() {
-            return durationMs;
-        }
     };
 }
