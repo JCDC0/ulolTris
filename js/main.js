@@ -1,13 +1,15 @@
 /**
- * main.js - Entry point. Wires together menu, game, sound, music player, and settings.
+ * main.js - Entry point. Wires together menu, game, sound, soundtrack, music player, and settings.
  */
 
 import { loadSettings, saveSettings, DEFAULT_SETTINGS,
          describeArr, describeFrames, describeDcd, describeSoftDrop, describeVolume, describeCrossfade,
          describeEnum, describeOpacity, describePreviewCount, describeLockDelay,
+         describeGameStyle, describeSoundtrack,
          getConstraint } from './settings.js';
 import { createSoundEngine } from './sound.js';
 import { createMusicPlayer } from './music-player.js';
+import { createMusicEngine } from './music.js';
 import { createMenuSystem } from './menu.js';
 import { createGame } from './game.js';
 
@@ -44,6 +46,27 @@ if (musicPlayerContainer) {
     musicPlayer = createMusicPlayer(musicPlayerContainer, settings);
 }
 
+// --- Soundtrack ---
+const music = createMusicEngine(settings);
+if (musicPlayer) music.setSuppressor(() => musicPlayer.isPlaying());
+
+/** Menu music: calm unless the player picked a fixed soundtrack. */
+function menuTrack() {
+    const choice = settings.soundtrack || 'auto';
+    if (choice === 'off') return null;
+    return choice === 'auto' ? 'calm' : choice;
+}
+
+// Browsers only allow audio after a user gesture, so start on the first click or key.
+function unlockAudio() {
+    music.unlock();
+    document.removeEventListener('pointerdown', unlockAudio);
+    document.removeEventListener('keydown', unlockAudio);
+}
+document.addEventListener('pointerdown', unlockAudio);
+document.addEventListener('keydown', unlockAudio);
+music.setTrack(menuTrack());
+
 // --- Menu System ---
 const menu = createMenuSystem(menuContainer);
 
@@ -73,6 +96,8 @@ menu.onQuit(() => {
         currentGame = null;
     }
     gameContainer.classList.add('game-hidden');
+    music.setTempoScale(1);
+    music.setTrack(menuTrack());
 });
 
 // Show main menu on load
@@ -90,7 +115,10 @@ function startNewGame(modeId) {
         canvases,
         settings,
         soundEngine,
+        music,
         onGameOver(results) {
+            music.setTempoScale(1);
+            music.setTrack(menuTrack());
             menu.showResults(results);
         },
         onPause() {
@@ -124,6 +152,7 @@ function buildSettingsUI() {
             { key: 'musicVolume', label: 'MUSIC', type: 'range', describe: describeVolume },
             { key: 'sfxMuted', label: 'MUTE SFX', type: 'toggle' },
             { key: 'musicMuted', label: 'MUTE MUSIC', type: 'toggle' },
+            { key: 'soundtrack', label: 'SOUNDTRACK', type: 'enum', values: ['auto', 'calm', 'competitive', 'intense', 'off'], describe: describeSoundtrack },
             { key: 'crossfadeDuration', label: 'CROSSFADE', type: 'range', describe: describeCrossfade },
         ]},
         { id: 'visual', label: 'VISUAL', settings: [
@@ -133,6 +162,7 @@ function buildSettingsUI() {
             { key: 'showActionText', label: 'ACTION TEXT', type: 'toggle' },
         ]},
         { id: 'gameplay', label: 'GAME', settings: [
+            { key: 'gameStyle', label: 'GAME STYLE', type: 'enum', values: ['modern', 'battle'], describe: describeGameStyle },
             { key: 'nextPreviewCount', label: 'NEXT PIECES', type: 'range', describe: describePreviewCount },
             { key: 'lockDelay', label: 'LOCK DELAY', type: 'range', describe: describeLockDelay },
         ]},
@@ -259,6 +289,8 @@ function buildSettingsUI() {
             const key = select.dataset.enum;
             settings[key] = select.value;
             saveSettings(settings);
+            // In a game, the engine picks the track every frame; on the menu, switch here.
+            if (key === 'soundtrack' && !currentGame?.isRunning()) music.setTrack(menuTrack());
 
             const tab = tabs.find(t => t.settings.some(s => s.key === key));
             const settingDef = tab?.settings.find(s => s.key === key);

@@ -212,6 +212,8 @@ export function createMenuSystem(container) {
         if (results.perfectClears > 0) {
             stats.push({ label: 'PERFECT CLEARS', value: results.perfectClears });
         }
+        stats.push({ label: 'LINES SENT', value: results.linesSent });
+        stats.push({ label: 'APM', value: results.apm.toFixed(1) });
 
         if (results.modeId !== 'sprint') {
             stats.push({ label: 'TIME', value: results.finalTime });

@@ -166,6 +166,36 @@ export function createParticleSystem(settings) {
     }
 
     /**
+     * Send attack orbs from the cleared rows to the top-right corner, one per line
+     * sent (up to 10), plus a "+N" text. Orbs always show, even with particles off,
+     * because they report the attack.
+     */
+    function spawnAttack(clearedRows, lines) {
+        const midRow = clearedRows[Math.floor(clearedRows.length / 2)];
+        const startY = (midRow - BOARD_OFFSET_Y) * BLOCK_SIZE + BLOCK_SIZE / 2;
+        const color = lines >= 4 ? '#ff4d6d' : '#ffb347';
+        const count = Math.min(lines, 10);
+        for (let i = 0; i < count; i++) {
+            const lifetime = 450 + i * 45;
+            particles.push({
+                type: 'orb',
+                sx: (3 + Math.random() * 4) * BLOCK_SIZE,
+                sy: startY + (Math.random() - 0.5) * BLOCK_SIZE,
+                tx: 10 * BLOCK_SIZE - 8,
+                ty: 8,
+                x: 0,
+                y: 0,
+                life: lifetime,
+                maxLife: lifetime,
+                size: 8 + Math.min(lines, 6),
+                color,
+            });
+        }
+        addActionText(`+${lines} SENT`, midRow + 2, color);
+        triggerShake(lines >= 4 ? 8 : 4);
+    }
+
+    /**
      * Spawn B2B sparkle particles.
      */
     function spawnB2B(clearedRows) {
@@ -295,7 +325,13 @@ export function createParticleSystem(settings) {
             const p = particles[i];
             p.life -= deltaTime;
 
-            if (p.type !== 'flash') {
+            if (p.type === 'orb') {
+                // Ease out toward the target, arcing up
+                const k = 1 - Math.max(0, p.life) / p.maxLife;
+                const e = 1 - Math.pow(1 - k, 3);
+                p.x = p.sx + (p.tx - p.sx) * e;
+                p.y = p.sy + (p.ty - p.sy) * e - Math.sin(k * Math.PI) * 40;
+            } else if (p.type !== 'flash') {
                 p.vy += 0.0012 * deltaTime; // gravity
                 p.x += p.vx * deltaTime;
                 p.y += p.vy * deltaTime;
@@ -349,6 +385,20 @@ export function createParticleSystem(settings) {
                     p.size,
                     p.size
                 );
+            } else if (p.type === 'orb') {
+                const k = 1 - alpha;
+                ctx.globalAlpha = k < 0.85 ? 1 : (1 - k) / 0.15;
+                ctx.fillStyle = '#ffffff';
+                ctx.shadowColor = p.color;
+                ctx.shadowBlur = 16;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.size / 2, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.globalAlpha *= 0.6;
+                ctx.fillStyle = p.color;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+                ctx.fill();
             } else if (p.type === 'circle') {
                 ctx.globalAlpha = alpha;
                 ctx.fillStyle = p.color;
@@ -407,6 +457,7 @@ export function createParticleSystem(settings) {
     return {
         spawnPlacement,
         spawnLineClear,
+        spawnAttack,
         spawnTSpin,
         spawnB2B,
         spawnPerfectClear,

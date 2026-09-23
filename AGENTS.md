@@ -13,12 +13,17 @@ npm install        # esbuild is the only dependency
 npm run build      # bundle js/main.js -> game.js
 npm run watch      # rebuild on change
 npm run serve      # build in memory and serve at http://localhost:8123
-npm test           # handling timing tests (tests/handling.test.mjs)
+npm test           # every tests/*.test.mjs, bundled for Node (tests/run.mjs)
 ```
 
 You can also open `index.html` directly after `npm run build`, because the bundle is not a module script.
 
-`npm test` bundles the test with esbuild for Node and stubs `document`, `window`, and `performance`, so it needs no browser. It drives `js/input.js` frame by frame at 60 Hz and checks DAS, ARR, DCD, SDF, the two toggles, and settings migration. Add a check there when you change handling.
+`npm test` bundles each test with esbuild for Node and stubs `document`, `window`, and `performance` where needed, so it needs no browser:
+- `handling.test.mjs` drives `js/input.js` frame by frame at 60 Hz: DAS, ARR, DCD, SDF, the two toggles, settings migration.
+- `modes.test.mjs`: when each mode's music turns intense, lines sent and APM, game style delays.
+- `content.test.mjs`: the attack table, and song data (known voices, events inside their bars, note range, the Korobeiniki motif in every track, keys and tempos).
+
+Add a check to the matching file when you change that area. Audio output itself is not covered by `npm test`; to hear a track without playing the game, call `renderTrackOffline(name, seconds)` from `js/music.js` in a browser and save the buffer.
 
 ## Rules
 
@@ -30,7 +35,7 @@ You can also open `index.html` directly after `npm run build`, because the bundl
 
 ## Architecture
 
-`js/main.js` is the entry point and composition root. It loads settings, creates the sound engine, music player, and menu, builds the settings panel, and calls `createGame()` when a mode is picked. Restart and quit destroy the game instance and create a new one.
+`js/main.js` is the entry point and composition root. It loads settings, creates the sound engine, soundtrack, music player, and menu, builds the settings panel, and calls `createGame()` when a mode is picked. Restart and quit destroy the game instance and create a new one.
 
 Every module uses a factory (`createX(...)` returning an object of closures), not classes. Shared state is passed in by reference, not imported as globals.
 
@@ -38,12 +43,36 @@ Every module uses a factory (`createX(...)` returning an object of closures), no
 - **Pure logic** (no DOM): `piece.js` (shapes, SRS kicks, 7-bag, spawn position), `board.js` (collide, merge, line clear, ghost), `scoring.js` (T-spin detection, combo, back-to-back, perfect clear, sound and color mapping).
 - **Modes** (`modes.js`, `timer.js`): Sprint (40 lines), Blitz (2 minutes), Classic (marathon). To add a mode, add an ID, a `MODE_INFO` entry, and handling in `createModeState`. The menu reads `MODE_INFO`.
 - **Presentation**: `renderer.js` (board, hold, next canvases), `particles.js` (particles, screen shake, action text), `menu.js` (all menu screens in `#menu-container`).
-- **Audio**: `sound.js` synthesizes all effects with Web Audio (no files). `music-player.js` plays user-dropped files through two crossfading `Audio` elements.
+- **Audio**: `sound.js` synthesizes all effects with Web Audio (no files), including the `danger` alarm and the `attack` whoosh. `music.js` plays the procedural soundtrack from `tracks.js`. `music-player.js` plays user-dropped files through two crossfading `Audio` elements; while it plays, the soundtrack goes silent (`setSuppressor`).
 - The menu opens the settings panel by dispatching a `uloltris-open-settings` DOM event.
 
 ### Board geometry
 
 The arena is `COLS` (10) wide and `BUFFER_ROWS` (40) tall. Only the bottom `VISIBLE_ROWS` (20) are drawn; the rows above are a hidden buffer. Renderer and particle code offset by `BUFFER_ROWS - VISIBLE_ROWS`. Pieces spawn with their top filled row on the first visible row (`getSpawnPos`), so they are visible at once. Side previews (hold, next) center each piece by its filled cells, not its padded matrix.
+
+### Game styles, attack, danger
+
+`GAME_STYLES` in `modes.js` sets the wait between a lock and the next piece. Modern (TETR.IO, Jstris) has none. Battle (Tetris 99, Puyo Puyo Tetris) pauses 500 ms on a line clear, 1000 ms when the clear sends `BIG_HIT_LINES` (4) or more, and adds a 117 ms (7 F) entry delay to every piece. During the wait `active` is false in `game.js`: input is ignored (DAS still charges), gravity and lock stop, and the renderer draws the pre-clear board with the cleared rows flashing (`flash`). The style is read when a game starts.
+
+`calculateAttack()` in `scoring.js` uses the guideline versus table (the one Tetris 99 and Puyo Puyo Tetris use): single 0, double 1, triple 2, Tetris 4, T-spin single/double/triple 2/4/6, +1 back-to-back, a combo table, +10 for a perfect clear. There is no opponent yet, so attack is shown (orbs from `particles.spawnAttack`, "+N SENT", the SENT stat) and counted (lines sent, APM on the results screen) in both styles.
+
+Danger: when any block sits in the top `DANGER_ROWS` (4) visible rows after a lock, the board gets the `board-danger` class (red pulse in `style.css`) and the `danger` alarm plays once a second until the stack drops.
+
+### Soundtrack
+
+Three original arrangements of Korobeiniki (the public-domain folk song behind the classic Tetris theme) in `tracks.js`. No commercial soundtrack is copied.
+
+| Track | Key, tempo | Used for | Character |
+|---|---|---|---|
+| calm | C minor, 88 BPM, swung | Menu, Classic | Reharmonized with 7th and 9th chords (Am9, Fmaj7, E7sus4, Dm9, Cmaj7, Bm7b5); bell melody, FM electric piano, lo-fi drums. The second pass adds runs and climbs an octave; the last pass adds a harmony line. |
+| competitive | D minor, 150 BPM | Sprint, Blitz | Octave-pumping bass, 16th arpeggios, four-on-the-floor drums, square/saw lead; the second pass goes up an octave with a harmony. |
+| intense | E minor, 176 BPM | Classic level 10+, Blitz last 30 s, Sprint last 10 lines | Chugging 16th bass, stabs, syncopated kick; the bridge is in double time. |
+
+`game.js` picks the track every frame (`updateMusic`): the mode's `MODE_INFO.track`, or `intense` when `modeState.isHeated()`. Classic's calm track also speeds up 1.2 % per level. The `soundtrack` setting can force one track or turn it off. The menu plays calm. Pausing muffles and lowers the music.
+
+`music.js` schedules whole bars 0.2 s ahead on the AudioContext clock, so tempo holds when frames drop. Each track has its own gain, compressor and tempo-synced delay; switching tracks crossfades over 1.5 s. Browsers block audio until a user gesture, so `main.js` calls `music.unlock()` on the first click or key. Levels were checked by rendering stems offline: full mix peaks near -8 dBFS at full volume, and the melody sits level with the backing.
+
+To change a song, edit the bar builders in `tracks.js`. Events are `{ s, l, v, n, g }` on a 16-step bar; `npm test` checks their shape.
 
 ### Settings
 
@@ -79,9 +108,14 @@ Handling audit, done on 2026-09-23 (version 1.1.0):
 
 Dead code sweep, done on 2026-09-23 (version 1.1.1): removed unused exports, factory methods, imports, the unread `boardOpacity` setting, the unused `allClears` stat, and the `R` and `F1` keys, which were captured but did nothing. The HUD now uses `getPrimaryStatLabel`/`getPrimaryStatValue` from `modes.js` instead of repeating the Sprint logic. The `levelUp` sound existed but was never played; it now plays on level up. A quick-retry key (TETR.IO uses `R`) would need wiring to the menu's restart.
 
+Music, warning, and Battle style, done on 2026-09-23 (version 1.2.0): see "Game styles, attack, danger" and "Soundtrack" above. Checked in a browser by a script that plays real games from the canvas pixels: Modern spawns the next piece within one frame; Battle waits about 114 ms with no clear, 614 ms after a clear, and 1110 ms after a Tetris; attacks registered as expected (for example 4 lines sent 5 with a combo). The danger alarm repeated once a second, and the soundtrack played at the right tempo in each context.
+
 Next steps, in order:
-1. Confirm against the live TETR.IO client: the handling ranges and defaults above came from memory of the TETR.IO settings screen and from the TETR.IO FAQ, not from reading the client. Also confirm whether DCD applies after hold and after a hard drop, and whether the carried DAS charge also applies when releasing back to the older key.
-2. Consider TETR.IO's "prevent accidental hard drops" option and IRS/IHS (initial rotation and hold), which are not implemented.
-3. Keybinds are hard-coded in `input.js` (`GAME_KEYS` and the switch). A remapping UI would need a keybind setting and a lookup table.
-4. Gravity drops at most one cell per frame (`update()` in `game.js`), so gravity faster than 1 G is capped. Classic mode tops out at 50 ms per cell, so this does not show yet.
-5. The handling sliders step by 0.1 F. Check whether TETR.IO uses the same step.
+1. Listen and tune the soundtrack by ear: instrument balance, and whether each loop wears thin over a long session. It was balanced by measurement, not by listening.
+2. Incoming garbage: a training opponent or garbage timer that sends lines back, with a red incoming-garbage meter beside the board (Tetris 99 and Puyo Puyo Tetris both show one). Attack is already calculated.
+3. Offer TETR.IO's attack table as an option for the Modern style (it differs from the guideline table in combos and perfect clears).
+4. Confirm against the live TETR.IO client: the handling ranges and defaults above came from memory of the TETR.IO settings screen and from the TETR.IO FAQ, not from reading the client. Also confirm whether DCD applies after hold and after a hard drop, and whether the carried DAS charge also applies when releasing back to the older key.
+5. Consider TETR.IO's "prevent accidental hard drops" option and IRS/IHS (initial rotation and hold), which are not implemented.
+6. Keybinds are hard-coded in `input.js` (`GAME_KEYS` and the switch). A remapping UI would need a keybind setting and a lookup table.
+7. Gravity drops at most one cell per frame (`update()` in `game.js`), so gravity faster than 1 G is capped. Classic mode tops out at 50 ms per cell, so this does not show yet.
+8. The handling sliders step by 0.1 F. Check whether TETR.IO uses the same step.

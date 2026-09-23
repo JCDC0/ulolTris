@@ -11,6 +11,22 @@ export const MODE_SPRINT = 'sprint';
 export const MODE_BLITZ = 'blitz';
 export const MODE_CLASSIC = 'classic';
 
+const BLITZ_MS = 120000;
+
+/**
+ * Game styles. Modern plays like TETR.IO and Jstris: the next piece appears the moment
+ * one locks. Battle plays like Tetris 99 and Puyo Puyo Tetris: line clears pause the
+ * game (longer for hits that send 4 or more lines) and each piece waits a short entry
+ * delay (ARE). Delays are in milliseconds.
+ */
+export const GAME_STYLES = {
+    modern: { name: 'MODERN', lineClearDelay: 0,   bigHitDelay: 0,    entryDelay: 0 },
+    battle: { name: 'BATTLE', lineClearDelay: 500, bigHitDelay: 1000, entryDelay: 117 },
+};
+
+/** Attack at or above this many lines counts as a big hit. */
+export const BIG_HIT_LINES = 4;
+
 /**
  * Mode display info for the mode select menu.
  */
@@ -19,18 +35,21 @@ export const MODE_INFO = {
         name: '40 LINES',
         subtitle: 'SPRINT',
         description: 'Clear 40 lines as fast as possible.',
+        track: 'competitive',
         icon: '\u23F1',
     },
     [MODE_BLITZ]: {
         name: 'BLITZ',
         subtitle: '2 MINUTES',
         description: 'Score as many points as you can before time runs out.',
+        track: 'competitive',
         icon: '\u26A1',
     },
     [MODE_CLASSIC]: {
         name: 'CLASSIC',
         subtitle: 'MARATHON',
         description: 'Endless mode with increasing gravity. How far can you go?',
+        track: 'calm',
         icon: '\u221E',
     },
 };
@@ -60,6 +79,7 @@ export function createModeState(modeId) {
         tetrises: 0,
         maxCombo: 0,
         perfectClears: 0,
+        linesSent: 0,
         startTime: 0,
     };
 
@@ -74,7 +94,7 @@ export function createModeState(modeId) {
             goalLines = 40;
             break;
         case MODE_BLITZ:
-            timer = createCountdown(120000); // 2 minutes
+            timer = createCountdown(BLITZ_MS);
             break;
         case MODE_CLASSIC:
             timer = createStopwatch(); // Track play time
@@ -111,6 +131,7 @@ export function createModeState(modeId) {
             stats.tetrises = 0;
             stats.maxCombo = 0;
             stats.perfectClears = 0;
+            stats.linesSent = 0;
             stats.startTime = 0;
             completed = false;
             gameOver = false;
@@ -169,6 +190,11 @@ export function createModeState(modeId) {
             if (combo > stats.maxCombo) {
                 stats.maxCombo = combo;
             }
+        },
+
+        /** Record garbage lines sent by a clear */
+        addAttack(lines) {
+            stats.linesSent += lines;
         },
 
         /** Record a perfect clear */
@@ -238,6 +264,26 @@ export function createModeState(modeId) {
             return Math.ceil(timer.getRemaining() / 1000);
         },
 
+        /** Play time in ms (excludes pauses) */
+        getElapsedMs() {
+            if (!timer) return 0;
+            if (modeId === MODE_BLITZ) return BLITZ_MS - timer.getRemaining();
+            return timer.getElapsed();
+        },
+
+        /**
+         * Whether the difficulty has spiked enough for the intense track:
+         * Classic level 10+, Blitz's last 30 seconds, or Sprint's last 10 lines.
+         */
+        isHeated() {
+            switch (modeId) {
+                case MODE_CLASSIC: return stats.level >= 10;
+                case MODE_BLITZ:   return timer.getRemaining() <= 30000;
+                case MODE_SPRINT:  return goalLines - stats.linesCleared <= 10;
+                default:           return false;
+            }
+        },
+
         /** Get results for the game-over screen */
         getResults() {
             const r = { ...stats };
@@ -245,6 +291,8 @@ export function createModeState(modeId) {
             r.modeName = MODE_INFO[modeId]?.name || modeId;
             r.finalTime = timer ? timer.format() : '';
             r.finalTimePrecise = timer && timer.formatPrecise ? timer.formatPrecise() : r.finalTime;
+            const minutes = this.getElapsedMs() / 60000;
+            r.apm = minutes > 0 ? stats.linesSent / minutes : 0;
             r.completed = completed;
             r.gameOver = gameOver;
             return r;

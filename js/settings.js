@@ -32,6 +32,7 @@ export const DEFAULT_SETTINGS = {
     sfxMuted: false,
     musicMuted: false,
     crossfadeDuration: 2,
+    soundtrack: 'auto',        // 'auto', 'calm', 'competitive', 'intense', 'off'
 
     // Visual
     screenShake: 'medium',     // 'off', 'low', 'medium', 'high'
@@ -42,6 +43,7 @@ export const DEFAULT_SETTINGS = {
     // Gameplay
     nextPreviewCount: 5,       // 1-6
     lockDelay: 500,            // ms
+    gameStyle: 'modern',       // 'modern' (TETR.IO, Jstris) or 'battle' (Tetris 99, PPT)
 };
 
 /** Constraints for numeric settings */
@@ -63,6 +65,8 @@ const CONSTRAINTS = {
 const ENUMS = {
     screenShake: ['off', 'low', 'medium', 'high'],
     particleDensity: ['off', 'low', 'medium', 'high'],
+    soundtrack: ['auto', 'calm', 'competitive', 'intense', 'off'],
+    gameStyle: ['modern', 'battle'],
 };
 
 function clamp(value, min, max) {
@@ -166,6 +170,14 @@ export function describeDcd(frames) {
 export function describeSoftDrop(factor) {
     if (factor >= SDF_INFINITE) return '∞ (instant)';
     return `${factor}X`;
+}
+
+export function describeGameStyle(val) {
+    return val === 'battle' ? 'Battle (T99 / PPT)' : 'Modern (TETR.IO / Jstris)';
+}
+
+export function describeSoundtrack(val) {
+    return val === 'auto' ? 'Auto (by mode)' : describeEnum(val);
 }
 
 export function describeVolume(val) {

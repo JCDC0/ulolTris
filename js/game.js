@@ -3,13 +3,17 @@
  * Orchestrates the game loop, piece logic, scoring, effects, and mode state.
  */
 
-import { COLS, BUFFER_ROWS, SHAPES, getNextPiece, fillQueue, getSpawnPos, tryRotate } from './piece.js';
+import { COLS, BUFFER_ROWS, VISIBLE_ROWS, SHAPES, getNextPiece, fillQueue, getSpawnPos, tryRotate } from './piece.js';
 import { createMatrix, collide, merge, clearLines, isGrounded, getGhostY } from './board.js';
-import { createScoringState, detectTSpin, calculateScore, getSoundEvent } from './scoring.js';
+import { createScoringState, detectTSpin, calculateScore, calculateAttack, getSoundEvent } from './scoring.js';
 import { createParticleSystem } from './particles.js';
 import { createRenderer } from './renderer.js';
 import { createInputHandler } from './input.js';
-import { createModeState } from './modes.js';
+import { createModeState, GAME_STYLES, BIG_HIT_LINES, MODE_INFO } from './modes.js';
+
+/** The warning starts when blocks reach this many rows from the top. */
+const DANGER_ROWS = 4;
+const DANGER_INTERVAL_MS = 1000;
 
 /**
  * Create and run a game instance.
@@ -19,11 +23,12 @@ import { createModeState } from './modes.js';
  *   - canvases: { board, hold, next }
  *   - settings: settings reference object
  *   - soundEngine: sound engine (or null)
+ *   - music: music engine (or null)
  *   - onGameOver: (results) => void
  *   - onPause: () => void
  */
 export function createGame(config) {
-    const { modeId, canvases, settings, soundEngine, onGameOver, onPause } = config;
+    const { modeId, canvases, settings, soundEngine, music, onGameOver, onPause } = config;
 
     // State
     const arena = createMatrix(COLS, BUFFER_ROWS);
@@ -65,6 +70,16 @@ export function createGame(config) {
     // Blitz countdown tick tracking
     let lastCountdownSecond = -1;
 
+    // Game style, and the wait between a lock and the next piece
+    const style = GAME_STYLES[settings.gameStyle] || GAME_STYLES.modern;
+    let active = false;         // a piece is in play
+    let freezeTimer = 0;        // ms until the next piece spawns
+    let flash = null;           // { arena, rows, duration, elapsed } during a line clear pause
+
+    // Danger warning
+    let inDanger = false;
+    let dangerTimer = 0;
+
     // Input handler
     const input = createInputHandler(settings, {
         onMove(dir, cells) { return playerMove(dir, cells); },
@@ -86,6 +101,8 @@ export function createGame(config) {
         player.pos.x = spawn.x;
         player.pos.y = spawn.y;
         player.canHold = true;
+        active = true;
+        flash = null;
         lastWasRotation = false;
         lastKickIndex = -1;
         lockTimer = 0;
@@ -103,6 +120,7 @@ export function createGame(config) {
 
     // --- Movement ---
     function playerMove(dir, cells = 1) {
+        if (!active) return 0;
         let moved = 0;
         while (moved < cells && moved < COLS) {
             player.pos.x += dir;
@@ -121,6 +139,7 @@ export function createGame(config) {
     }
 
     function playerRotate(dir) {
+        if (!active) return;
         const result = tryRotate(player, arena, collide, dir);
         if (result.success) {
             lastWasRotation = true;
@@ -143,6 +162,7 @@ export function createGame(config) {
     }
 
     function softDrop(cells = 1) {
+        if (!active) return 0;
         let dropped = 0;
         while (dropped < cells && !playerDrop()) {
             dropped++;
@@ -155,6 +175,7 @@ export function createGame(config) {
     }
 
     function hardDrop() {
+        if (!active) return;
         let rows = 0;
         while (!playerDrop()) {
             rows++;
@@ -165,7 +186,7 @@ export function createGame(config) {
     }
 
     function holdPiece() {
-        if (!player.canHold) return;
+        if (!active || !player.canHold) return;
 
         if (player.held === null) {
             player.held = player.shape;
@@ -210,6 +231,7 @@ export function createGame(config) {
         // Merge piece into arena
         merge(arena, player);
         modeState.addPiece();
+        const lockedArena = arena.map(row => [...row]);
 
         // Spawn placement particles
         particles.spawnPlacement({
@@ -286,14 +308,57 @@ export function createGame(config) {
             playSound('b2b');
         }
 
+        // Attack: the garbage this clear sends
+        const attack = calculateAttack(scoreResult);
+        if (attack > 0) {
+            modeState.addAttack(attack);
+            particles.spawnAttack(clearedRows, attack);
+            playSound('attack', attack);
+        }
+
+        updateDanger();
+
         // Check mode completion
         if (modeState.isCompleted()) {
             endGame();
             return;
         }
 
-        // Spawn next piece
-        spawnPiece();
+        // Next piece: at once (modern), or after the clear pause and entry delay (battle)
+        const clearDelay = linesCleared === 0 ? 0
+            : attack >= BIG_HIT_LINES ? style.bigHitDelay : style.lineClearDelay;
+        const wait = clearDelay + style.entryDelay;
+        if (wait > 0) {
+            active = false;
+            freezeTimer = wait;
+            flash = clearDelay > 0
+                ? { arena: lockedArena, rows: clearedRows, duration: clearDelay, elapsed: 0 }
+                : null;
+        } else {
+            spawnPiece();
+        }
+    }
+
+    function updateDanger() {
+        const top = arena.findIndex(row => row.some(v => v !== 0));
+        const danger = top !== -1 && top < BUFFER_ROWS - VISIBLE_ROWS + DANGER_ROWS;
+        if (danger && !inDanger) dangerTimer = 0;
+        inDanger = danger;
+        canvases.board.classList.toggle('board-danger', inDanger);
+    }
+
+    function updateMusic() {
+        if (!music) return;
+        const choice = settings.soundtrack || 'auto';
+        if (choice === 'off') {
+            music.setTrack(null);
+            return;
+        }
+        const heated = choice === 'auto' && modeState.isHeated();
+        music.setTrack(heated ? 'intense' : choice === 'auto' ? MODE_INFO[modeId].track : choice);
+        // Classic's calm track picks up a little with each level until it turns intense.
+        const levelBoost = modeId === 'classic' && !heated ? (modeState.stats.level - 1) * 0.012 : 0;
+        music.setTempoScale(1 + Math.min(levelBoost, 0.12));
     }
 
     // --- Game Loop ---
@@ -313,6 +378,15 @@ export function createGame(config) {
 
         // Update mode timer
         modeState.updateTimer();
+        updateMusic();
+
+        if (inDanger) {
+            dangerTimer -= deltaTime;
+            if (dangerTimer <= 0) {
+                playSound('danger');
+                dangerTimer = DANGER_INTERVAL_MS;
+            }
+        }
 
         // Blitz countdown tick sound
         if (modeState.isCountdown()) {
@@ -332,32 +406,43 @@ export function createGame(config) {
             }
         }
 
-        // Gravity
-        dropCounter += deltaTime;
-        if (dropCounter > dropInterval) {
-            playerDrop();
-            dropCounter = 0;
-        }
-
-        // Lock delay
-        if (isGrounded(arena, player)) {
-            lockTimer += deltaTime;
-            const lockDelay = settings.lockDelay || 500;
-            if (lockTimer >= lockDelay) {
-                lockPiece();
+        if (active) {
+            // Gravity
+            dropCounter += deltaTime;
+            if (dropCounter > dropInterval) {
+                playerDrop();
+                dropCounter = 0;
             }
-        } else {
-            lockTimer = 0;
+
+            // Lock delay
+            if (isGrounded(arena, player)) {
+                lockTimer += deltaTime;
+                const lockDelay = settings.lockDelay || 500;
+                if (lockTimer >= lockDelay) {
+                    lockPiece();
+                }
+            } else {
+                lockTimer = 0;
+            }
+        } else if (running) {
+            // Battle style pause after a lock
+            freezeTimer -= deltaTime;
+            if (flash) {
+                flash.elapsed += deltaTime;
+                if (flash.elapsed >= flash.duration) flash = null;
+            }
+            if (freezeTimer <= 0) spawnPiece();
         }
 
         // Update particles
         particles.update(deltaTime);
 
         // Render
-        const ghostY = getGhostY(arena, player);
+        const ghostY = active ? getGhostY(arena, player) : undefined;
         renderer.draw({
-            arena,
-            player,
+            arena: flash ? flash.arena : arena,
+            player: active ? player : null,
+            flash: flash ? { rows: flash.rows, progress: flash.elapsed / flash.duration } : null,
             nextQueue,
             held: player.held,
             particles,
@@ -384,6 +469,8 @@ export function createGame(config) {
         }
         if (linesEl) linesEl.textContent = modeState.stats.linesCleared;
         if (levelEl) levelEl.textContent = modeState.stats.level;
+        const sentEl = document.getElementById('sent-display');
+        if (sentEl) sentEl.textContent = modeState.stats.linesSent;
 
         if (timerEl) {
             timerEl.textContent = modeState.getTimerDisplay();
@@ -423,6 +510,11 @@ export function createGame(config) {
         lockMoves = 0;
         lastTime = performance.now();
         lastCountdownSecond = -1;
+        active = false;
+        freezeTimer = 0;
+        flash = null;
+        inDanger = false;
+        canvases.board.classList.remove('board-danger');
 
         dropInterval = modeState.getDropInterval();
         renderer.resizeNextCanvas(settings.nextPreviewCount || 5);
@@ -449,6 +541,7 @@ export function createGame(config) {
         paused = true;
         modeState.pause();
         input.setEnabled(false);
+        music?.setPaused(true);
         if (onPause) onPause();
     }
 
@@ -459,11 +552,13 @@ export function createGame(config) {
         modeState.resume();
         input.setEnabled(true);
         input.resetState();
+        music?.setPaused(false);
     }
 
     function endGame() {
         running = false;
         input.setEnabled(false);
+        canvases.board.classList.remove('board-danger');
 
         // Let particles finish rendering briefly, then show results
         setTimeout(() => {
@@ -480,6 +575,8 @@ export function createGame(config) {
         }
         input.destroy();
         particles.clear();
+        music?.setPaused(false);
+        canvases.board.classList.remove('board-danger');
     }
 
     return {

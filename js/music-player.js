@@ -526,6 +526,7 @@ export function createMusicPlayer(containerEl, settingsRef) {
 
     return {
         toggle,
+        isPlaying: () => state.isPlaying,
         dispose
     };
 }

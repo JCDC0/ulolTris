@@ -1,12 +1,12 @@
 {
   "name": "uloltris",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "Tetr.io-inspired block stacking game",
   "scripts": {
     "build": "npx esbuild js/main.js --bundle --outfile=game.js --format=iife",
     "watch": "npx esbuild js/main.js --bundle --outfile=game.js --format=iife --watch",
     "serve": "npx esbuild js/main.js --bundle --outfile=game.js --format=iife --servedir=. --serve=8123",
-    "test": "npx esbuild tests/handling.test.mjs --bundle --platform=node --format=esm --outfile=tests/.out/handling.mjs --log-level=warning && node tests/.out/handling.mjs"
+    "test": "node tests/run.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.25.0"

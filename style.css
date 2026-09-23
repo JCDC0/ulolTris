@@ -73,6 +73,22 @@ body {
         inset 0 0 30px rgba(0, 0, 0, 0.5);
 }
 
+/* Danger: blocks near the top. Pulses in step with the 1 s alarm. */
+#board-canvas.board-danger {
+    animation: board-danger-pulse 1s ease-in-out infinite;
+}
+
+@keyframes board-danger-pulse {
+    0%, 100% {
+        border-color: #ff2d55;
+        box-shadow: 0 0 28px rgba(255, 45, 85, 0.55), inset 0 0 40px rgba(255, 45, 85, 0.25);
+    }
+    50% {
+        border-color: #5a1a26;
+        box-shadow: 0 0 8px rgba(255, 45, 85, 0.15), inset 0 0 20px rgba(255, 45, 85, 0.08);
+    }
+}
+
 /* === TYPOGRAPHY === */
 h3, .sidebar p {
     margin: 8px 0 4px 0;

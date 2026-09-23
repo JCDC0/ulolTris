@@ -2,9 +2,10 @@
  * renderer.js - Canvas rendering for board, pieces, ghost, hold, next queue, and HUD overlays
  */
 
-import { BLOCK_SIZE, VISIBLE_ROWS, BUFFER_ROWS, SHAPES } from './piece.js';
+import { BLOCK_SIZE, COLS, VISIBLE_ROWS, BUFFER_ROWS, SHAPES } from './piece.js';
 
 const BOARD_OFFSET_Y = BUFFER_ROWS - VISIBLE_ROWS;
+const COLS_PX = COLS * BLOCK_SIZE;
 
 /**
  * Draw a single block on a canvas context.
@@ -129,6 +130,21 @@ export function createRenderer(canvases, settings) {
 
         // Draw locked blocks on the board
         drawMatrix(boardCtx, arena, { x: 0, y: 0 }, null, false, ghostOpacity, true);
+
+        // Battle style line clear pause: cleared rows flash, then fade and squeeze to the center
+        if (state.flash) {
+            const { rows, progress } = state.flash;
+            const width = COLS_PX * (1 - progress);
+            for (const row of rows) {
+                const y = (row - BOARD_OFFSET_Y) * BLOCK_SIZE;
+                boardCtx.fillStyle = '#050508';
+                boardCtx.fillRect(0, y, COLS_PX, BLOCK_SIZE);
+                boardCtx.globalAlpha = 0.9 - progress * 0.6;
+                boardCtx.fillStyle = '#ffffff';
+                boardCtx.fillRect((COLS_PX - width) / 2, y + 2, width, BLOCK_SIZE - 4);
+                boardCtx.globalAlpha = 1;
+            }
+        }
 
         // Draw ghost piece
         if (player && player.matrix) {

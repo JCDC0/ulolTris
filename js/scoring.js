@@ -47,6 +47,39 @@ const ACTION_NAMES = {
 };
 
 /**
+ * Garbage lines sent per clear, from the Tetris guideline versus table
+ * (the one Tetris 99 and Puyo Puyo Tetris use).
+ */
+const ATTACK_TABLE = {
+    'single':            0,
+    'double':            1,
+    'triple':            2,
+    'tetris':            4,
+    'tspin-mini-single': 0,
+    'tspin-mini-double': 1,
+    'tspin-single':      2,
+    'tspin-double':      4,
+    'tspin-triple':      6,
+};
+
+/** Extra lines by combo count (index = combo, capped at the last entry). */
+const COMBO_ATTACK = [0, 1, 1, 2, 2, 3, 3, 4, 4, 4, 5];
+const B2B_ATTACK = 1;
+const PERFECT_CLEAR_ATTACK = 10;
+
+/**
+ * Lines of garbage a clear sends. Call after calculateScore on its result.
+ */
+export function calculateAttack(result) {
+    if (!result.isClearAction) return 0;
+    let lines = ATTACK_TABLE[result.action] || 0;
+    if (result.combo > 0) lines += COMBO_ATTACK[Math.min(result.combo, COMBO_ATTACK.length - 1)];
+    if (result.b2b) lines += B2B_ATTACK;
+    if (result.perfectClear) lines += PERFECT_CLEAR_ATTACK;
+    return lines;
+}
+
+/**
  * Actions that count as "difficult" for back-to-back tracking.
  */
 const DIFFICULT_CLEARS = new Set([

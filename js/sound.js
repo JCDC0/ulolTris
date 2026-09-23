@@ -425,6 +425,37 @@ export function createSoundEngine(settingsRef) {
                 break;
             }
                 
+            case 'danger':
+                // Two-tone alarm pulse, repeated by the game while the stack is near the top
+                [[988, 0], [740, 0.11]].forEach(([freq, offset]) => {
+                    playTone(freq, 'square', t + offset, 0.09, (g, time) => {
+                        g.setValueAtTime(0.12, time);
+                        g.linearRampToValueAtTime(0.1, time + 0.07);
+                        g.linearRampToValueAtTime(0, time + 0.09);
+                    });
+                });
+                break;
+
+            case 'attack': {
+                // Rising whoosh as garbage is sent; comboCount carries the line count
+                const lines = Math.min(comboCount || 1, 10);
+                playNoise(t, 0.35, (g, time) => {
+                    g.setValueAtTime(0, time);
+                    g.linearRampToValueAtTime(0.25 + lines * 0.03, time + 0.05);
+                    g.exponentialRampToValueAtTime(0.01, time + 0.35);
+                }, (f, time) => {
+                    f.type = 'bandpass';
+                    f.Q.value = 2;
+                    f.frequency.setValueAtTime(400, time);
+                    f.frequency.exponentialRampToValueAtTime(2500 + lines * 300, time + 0.3);
+                });
+                playTone(220, 'sawtooth', t, 0.3, (g, time) => {
+                    g.setValueAtTime(0.08, time);
+                    g.exponentialRampToValueAtTime(0.005, time + 0.3);
+                }).osc.frequency.exponentialRampToValueAtTime(880, t + 0.3);
+                break;
+            }
+
             case 'levelUp':
                 playTone(523, 'sine', t, 0.075, (g, time) => {
                     g.setValueAtTime(0.4, time);
