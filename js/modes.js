@@ -42,13 +42,13 @@ export const MODE_INFO = {
         name: 'BLITZ',
         subtitle: '2 MINUTES',
         description: 'Score as many points as you can before time runs out.',
-        track: 'competitive',
+        track: 'intense',
         icon: '\u26A1',
     },
     [MODE_CLASSIC]: {
-        name: 'CLASSIC',
-        subtitle: 'MARATHON',
-        description: 'Endless mode with increasing gravity. How far can you go?',
+        name: 'CASUAL',
+        subtitle: 'ENDLESS',
+        description: 'Relaxed endless play. Gravity rises and the scenery changes as you level up.',
         track: 'calm',
         icon: '\u221E',
     },
@@ -272,16 +272,11 @@ export function createModeState(modeId) {
         },
 
         /**
-         * Whether the difficulty has spiked enough for the intense track:
-         * Classic level 10+, Blitz's last 30 seconds, or Sprint's last 10 lines.
+         * Whether Casual has reached the intense track (level 10+). Sprint and Blitz keep
+         * one track for the whole run, so a switch mid-game never breaks their pace.
          */
         isHeated() {
-            switch (modeId) {
-                case MODE_CLASSIC: return stats.level >= 10;
-                case MODE_BLITZ:   return timer.getRemaining() <= 30000;
-                case MODE_SPRINT:  return goalLines - stats.linesCleared <= 10;
-                default:           return false;
-            }
+            return modeId === MODE_CLASSIC && stats.level >= 10;
         },
 
         /** Get results for the game-over screen */

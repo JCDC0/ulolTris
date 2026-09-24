@@ -4,51 +4,46 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ulolTris</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Silkscreen:wght@400;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
+    <!-- PIXEL ART BACKGROUND -->
+    <div id="bg-layer">
+        <canvas id="bg-canvas"></canvas>
+        <div id="bg-shade"></div>
+    </div>
+
     <!-- MENU OVERLAY CONTAINER -->
     <div id="menu-container"></div>
 
     <!-- GAME AREA (hidden until a mode is selected) -->
     <div id="game-container" class="game-hidden">
-        <div class="sidebar left-sidebar">
-            <h3>HOLD</h3>
-            <div class="canvas-wrapper">
-                <canvas id="hold-canvas" width="120" height="120"></canvas>
+        <div id="playfield" class="playfield">
+            <div class="side side-left">
+                <div class="box hold-box">
+                    <div class="box-label">HOLD</div>
+                    <canvas id="hold-canvas"></canvas>
+                </div>
+                <div id="hud-feed" class="hud-feed"></div>
+                <div id="hud-stats" class="hud-stats"></div>
             </div>
-            <div id="stats">
-                <div class="stat-group">
-                    <p>SCORE</p>
-                    <span id="score-display">0</span>
-                </div>
-                <div class="stat-group">
-                    <p>LINES</p>
-                    <span id="lines-display">0</span>
-                </div>
-                <div class="stat-group">
-                    <p>LEVEL</p>
-                    <span id="level-display">1</span>
-                </div>
-                <div class="stat-group">
-                    <p>SENT</p>
-                    <span id="sent-display">0</span>
-                </div>
-                <div class="stat-group timer-group">
-                    <p>TIME</p>
-                    <span id="timer-display">00:00</span>
-                </div>
+
+            <div class="board-column">
+                <canvas id="board-canvas"></canvas>
+                <div id="hud-under" class="hud-under"></div>
             </div>
-        </div>
 
-        <div class="main-screen">
-            <canvas id="board-canvas" width="300" height="600"></canvas>
-        </div>
+            <div class="meter"><div id="hud-meter-fill" class="meter-fill"></div></div>
 
-        <div class="sidebar right-sidebar">
-            <h3>NEXT</h3>
-            <div class="canvas-wrapper next-wrapper">
-                <canvas id="next-canvas" width="120" height="480"></canvas>
+            <div class="side side-right">
+                <div class="box next-box">
+                    <div class="box-label">NEXT</div>
+                    <canvas id="next-canvas"></canvas>
+                </div>
+                <div id="hud-finesse" class="hud-finesse"></div>
             </div>
         </div>
     </div>

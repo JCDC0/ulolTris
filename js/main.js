@@ -1,12 +1,15 @@
 /**
- * main.js - Entry point. Wires together menu, game, sound, soundtrack, music player, and settings.
+ * main.js - Entry point. Wires together menu, game, background, sound, soundtrack, music player,
+ * and settings.
  */
 
 import { loadSettings, saveSettings, DEFAULT_SETTINGS,
          describeArr, describeFrames, describeDcd, describeSoftDrop, describeVolume, describeCrossfade,
          describeEnum, describeOpacity, describePreviewCount, describeLockDelay,
-         describeGameStyle, describeSoundtrack,
+         describeGameStyle, describeSoundtrack, describeStatsDisplay,
          getConstraint } from './settings.js';
+import { describeSkin, SKINS } from './skins.js';
+import { createBackground, describeScene, CASUAL_SCENES } from './background.js';
 import { createSoundEngine } from './sound.js';
 import { createMusicPlayer } from './music-player.js';
 import { createMusicEngine } from './music.js';
@@ -26,6 +29,11 @@ const settingsPanel = document.getElementById('settings-panel');
 const settingsToggle = document.getElementById('settings-toggle');
 const settingsClose = document.getElementById('settings-close');
 const musicPlayerContainer = document.getElementById('music-player-container');
+
+const playfield = document.getElementById('playfield');
+const background = createBackground(
+    document.getElementById('bg-canvas'), document.getElementById('bg-layer'), settings);
+background.showMenu();
 
 const canvases = {
     board: document.getElementById('board-canvas'),
@@ -98,7 +106,16 @@ menu.onQuit(() => {
     gameContainer.classList.add('game-hidden');
     music.setTempoScale(1);
     music.setTrack(menuTrack());
+    background.showMenu();
 });
+
+// Scale the playfield down on small windows so the board, stats and spawn rows all fit.
+function fitGame() {
+    const scale = Math.min(1, (window.innerHeight - 16) / 780, (window.innerWidth - 16) / 700);
+    gameContainer.style.transform = scale < 1 ? `scale(${scale})` : '';
+}
+window.addEventListener('resize', fitGame);
+fitGame();
 
 // Show main menu on load
 gameContainer.classList.add('game-hidden');
@@ -110,9 +127,11 @@ function startNewGame(modeId) {
         currentGame.destroy();
     }
 
+    background.showMode(modeId);
     currentGame = createGame({
         modeId,
         canvases,
+        playfield,
         settings,
         soundEngine,
         music,
@@ -124,11 +143,19 @@ function startNewGame(modeId) {
         onPause() {
             menu.showScreen('pause');
         },
+        onLevelUp(level) {
+            background.onLevel(modeId, level);
+        },
     });
 
     // Store mode id for restart
     currentGame._modeId = modeId;
     currentGame.start();
+}
+
+const SOUND_PACK_LABELS = { ulol: 'uloltris', arcade: 'Arcade (Jstris-style)', bubbly: 'Bubbly (PPT-style)' };
+function describeSoundPack(val) {
+    return SOUND_PACK_LABELS[val] || val;
 }
 
 // --- Settings Panel ---
@@ -152,14 +179,23 @@ function buildSettingsUI() {
             { key: 'musicVolume', label: 'MUSIC', type: 'range', describe: describeVolume },
             { key: 'sfxMuted', label: 'MUTE SFX', type: 'toggle' },
             { key: 'musicMuted', label: 'MUTE MUSIC', type: 'toggle' },
+            { key: 'soundPack', label: 'SOUND PACK', type: 'enum', values: ['ulol', 'arcade', 'bubbly'], describe: describeSoundPack },
             { key: 'soundtrack', label: 'SOUNDTRACK', type: 'enum', values: ['auto', 'calm', 'competitive', 'intense', 'off'], describe: describeSoundtrack },
             { key: 'crossfadeDuration', label: 'CROSSFADE', type: 'range', describe: describeCrossfade },
         ]},
         { id: 'visual', label: 'VISUAL', settings: [
-            { key: 'screenShake', label: 'SCREEN SHAKE', type: 'enum', values: ['off','low','medium','high'], describe: describeEnum },
-            { key: 'particleDensity', label: 'PARTICLES', type: 'enum', values: ['off','low','medium','high'], describe: describeEnum },
+            { key: 'blockSkin', label: 'BLOCK SKIN', type: 'enum', values: SKINS, describe: describeSkin },
+            { key: 'statsDisplay', label: 'STATS DISPLAY', type: 'enum', values: ['off', 'time', 'speed', 'efficiency', 'versus'], describe: describeStatsDisplay },
+            { key: 'background', label: 'BACKGROUND', type: 'enum', values: ['on', 'dim', 'off'], describe: describeEnum },
+            { key: 'casualScene', label: 'CASUAL SCENE', type: 'enum', values: ['cycle', ...CASUAL_SCENES], describe: describeScene },
             { key: 'ghostOpacity', label: 'GHOST OPACITY', type: 'range', describe: describeOpacity },
-            { key: 'showActionText', label: 'ACTION TEXT', type: 'toggle' },
+            { key: 'showActionText', label: 'CLEAR TEXT', type: 'toggle' },
+        ]},
+        { id: 'effects', label: 'FX', settings: [
+            { key: 'boardBounce', label: 'BOARD BOUNCE', type: 'enum', values: ['off','low','medium','high'], describe: describeEnum },
+            { key: 'placeImpact', label: 'PLACE IMPACT', type: 'enum', values: ['off','low','medium','high'], describe: describeEnum },
+            { key: 'clearEffects', label: 'CLEAR EFFECTS', type: 'enum', values: ['off','low','medium','high'], describe: describeEnum },
+            { key: 'screenShake', label: 'SCREEN SHAKE', type: 'enum', values: ['off','low','medium','high'], describe: describeEnum },
         ]},
         { id: 'gameplay', label: 'GAME', settings: [
             { key: 'gameStyle', label: 'GAME STYLE', type: 'enum', values: ['modern', 'battle'], describe: describeGameStyle },
@@ -291,6 +327,7 @@ function buildSettingsUI() {
             saveSettings(settings);
             // In a game, the engine picks the track every frame; on the menu, switch here.
             if (key === 'soundtrack' && !currentGame?.isRunning()) music.setTrack(menuTrack());
+            if (key === 'soundPack') soundEngine?.play('rotate');
 
             const tab = tabs.find(t => t.settings.some(s => s.key === key));
             const settingDef = tab?.settings.find(s => s.key === key);

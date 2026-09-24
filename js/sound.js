@@ -115,6 +115,85 @@ export function createSoundEngine(settingsRef) {
         };
     }
 
+    /** Quick envelope: attack to peak, then decay to silence over len seconds. */
+    function blip(freq, type, t, len, peak, bendTo) {
+        const { osc } = playTone(freq, type, t, len + 0.02, (g, time) => {
+            g.setValueAtTime(0, time);
+            g.linearRampToValueAtTime(peak, time + 0.004);
+            g.exponentialRampToValueAtTime(0.001, time + len);
+        });
+        if (bendTo) osc.frequency.exponentialRampToValueAtTime(bendTo, t + len);
+    }
+
+    function thump(t, from, to, len, peak) {
+        blip(from, 'sine', t, len, peak, to);
+    }
+
+    const semitone = (base, n) => base * Math.pow(2, n / 12);
+    const MAJOR = [0, 2, 4, 5, 7, 9, 11, 12, 14, 16, 17, 19, 21, 23, 24];
+
+    /**
+     * Sound packs. Each entry replaces the default sound for that event; events a pack
+     * leaves out use the default. Both packs are original synthesis:
+     * arcade is short and clicky like classic web stackers (Jstris style), bubbly is
+     * round, poppy and chiming like Puyo Puyo Tetris.
+     */
+    const PACKS = {
+        arcade: {
+            move: t => blip(1200, 'square', t, 0.012, 0.08),
+            rotate: t => blip(900, 'square', t, 0.022, 0.08, 1300),
+            softdrop: t => blip(800, 'square', t, 0.008, 0.05),
+            harddrop: t => {
+                thump(t, 150, 55, 0.09, 0.5);
+                playNoise(t, 0.05, (g, time) => { g.setValueAtTime(0.25, time); g.exponentialRampToValueAtTime(0.01, time + 0.05); },
+                    (f) => { f.type = 'lowpass'; f.frequency.value = 1500; });
+            },
+            lock: t => blip(420, 'triangle', t, 0.025, 0.2),
+            hold: t => { blip(700, 'square', t, 0.03, 0.07); blip(1000, 'square', t + 0.03, 0.03, 0.07); },
+            clear1: t => blip(523, 'square', t, 0.08, 0.12),
+            clear2: t => [523, 659].forEach((f, i) => blip(f, 'square', t + i * 0.05, 0.08, 0.12)),
+            clear3: t => [523, 659, 784].forEach((f, i) => blip(f, 'square', t + i * 0.05, 0.08, 0.12)),
+            clear4: t => [523, 659, 784, 1047, 1319].forEach((f, i) => blip(f, 'square', t + i * 0.045, 0.1, 0.12)),
+            tspin: t => blip(300, 'square', t, 0.12, 0.1, 900),
+            combo: (t, n) => blip(semitone(440, Math.min(n || 1, 20)), 'square', t, 0.06, 0.1),
+        },
+        bubbly: {
+            move: t => blip(880, 'sine', t, 0.03, 0.12, 1100),
+            rotate: t => { blip(600, 'sine', t, 0.05, 0.16, 950); blip(1200, 'triangle', t, 0.04, 0.05, 1900); },
+            softdrop: t => blip(520, 'sine', t, 0.02, 0.08),
+            harddrop: t => {
+                thump(t, 320, 90, 0.13, 0.55);
+                playNoise(t, 0.09, (g, time) => { g.setValueAtTime(0.18, time); g.exponentialRampToValueAtTime(0.01, time + 0.09); },
+                    (f) => { f.type = 'bandpass'; f.frequency.value = 900; f.Q.value = 0.8; });
+            },
+            lock: t => blip(1300, 'sine', t, 0.06, 0.2, 380),
+            hold: t => blip(420, 'sine', t, 0.09, 0.16, 1300),
+            clear1: t => chime(t, [0, 4], 0.09),
+            clear2: t => chime(t, [0, 4, 7], 0.08),
+            clear3: t => chime(t, [0, 4, 7, 12], 0.07),
+            clear4: t => {
+                chime(t, [0, 4, 7, 12, 16, 19, 24], 0.055);
+                for (let i = 0; i < 6; i++) blip(semitone(1568, i * 2), 'sine', t + 0.35 + i * 0.03, 0.12, 0.05);
+            },
+            tspin: t => { blip(400, 'triangle', t, 0.2, 0.12, 1600); blip(800, 'sine', t + 0.05, 0.2, 0.08, 2400); },
+            combo: (t, n) => {
+                const step = MAJOR[Math.min((n || 1) - 1, MAJOR.length - 1)];
+                bell(semitone(523, step), t, 0.35, 0.18);
+            },
+        },
+    };
+
+    /** Soft bell: sine plus a quiet octave, long decay. */
+    function bell(freq, t, len, peak) {
+        blip(freq, 'sine', t, len, peak);
+        blip(freq * 2, 'sine', t, len * 0.6, peak * 0.3);
+    }
+
+    /** Ascending bell arpeggio on a C major chord, one note per step. */
+    function chime(t, steps, gap) {
+        steps.forEach((st, i) => bell(semitone(523, st), t + i * gap, 0.4, 0.16));
+    }
+
     /**
      * Plays a sound effect by event name.
      * @param {string} eventName - The name of the sound event to play.
@@ -130,6 +209,12 @@ export function createSoundEngine(settingsRef) {
         if (vol === 0) return;
 
         const t = ctx.currentTime;
+
+        const pack = PACKS[settingsRef.soundPack];
+        if (pack && pack[eventName]) {
+            pack[eventName](t, comboCount);
+            return;
+        }
 
         switch (eventName) {
             case 'move':

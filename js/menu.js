@@ -204,7 +204,7 @@ export function createMenuSystem(container) {
             stats.push({ label: 'T-SPINS', value: results.tSpins });
         }
         if (results.tetrises > 0) {
-            stats.push({ label: 'TETRISES', value: results.tetrises });
+            stats.push({ label: 'QUADS', value: results.tetrises });
         }
         if (results.maxCombo > 0) {
             stats.push({ label: 'MAX COMBO', value: results.maxCombo });
@@ -214,6 +214,8 @@ export function createMenuSystem(container) {
         }
         stats.push({ label: 'LINES SENT', value: results.linesSent });
         stats.push({ label: 'APM', value: results.apm.toFixed(1) });
+        stats.push({ label: 'PPS', value: (results.pps ?? 0).toFixed(2) });
+        stats.push({ label: 'FINESSE', value: `${(results.finesse ?? 100).toFixed(1)}%` });
 
         if (results.modeId !== 'sprint') {
             stats.push({ label: 'TIME', value: results.finalTime });

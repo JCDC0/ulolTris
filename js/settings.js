@@ -36,9 +36,16 @@ export const DEFAULT_SETTINGS = {
 
     // Visual
     screenShake: 'medium',     // 'off', 'low', 'medium', 'high'
-    particleDensity: 'medium', // 'off', 'low', 'medium', 'high'
+    boardBounce: 'medium',     // board springs on hard drops, clears and wall bumps
+    placeImpact: 'medium',     // drop trail, landing flash and dust when a piece locks
+    clearEffects: 'medium',    // particles and flashes for line clears, T-spins, B2B, perfect clears
+    statsDisplay: 'time',      // 'off', 'time', 'speed', 'efficiency', 'versus'
+    background: 'on',          // 'on', 'dim', 'off'
+    casualScene: 'cycle',      // 'cycle' or one of CASUAL_SCENES
     ghostOpacity: 40,          // 0-100
     showActionText: true,
+    blockSkin: 'ulol',         // one of SKINS in skins.js
+    soundPack: 'ulol',         // 'ulol', 'arcade' (Jstris-style), 'bubbly' (PPT-style)
 
     // Gameplay
     nextPreviewCount: 5,       // 1-6
@@ -64,9 +71,16 @@ const CONSTRAINTS = {
 /** Valid enum values */
 const ENUMS = {
     screenShake: ['off', 'low', 'medium', 'high'],
-    particleDensity: ['off', 'low', 'medium', 'high'],
+    boardBounce: ['off', 'low', 'medium', 'high'],
+    placeImpact: ['off', 'low', 'medium', 'high'],
+    clearEffects: ['off', 'low', 'medium', 'high'],
+    statsDisplay: ['off', 'time', 'speed', 'efficiency', 'versus'],
+    background: ['on', 'dim', 'off'],
+    casualScene: ['cycle', 'bamboo', 'wheat', 'village', 'castle', 'ocean', 'neon'],
     soundtrack: ['auto', 'calm', 'competitive', 'intense', 'off'],
     gameStyle: ['modern', 'battle'],
+    blockSkin: ['ulol', 'classic', 'glossy', 'flat', 'neon'],
+    soundPack: ['ulol', 'arcade', 'bubbly'],
 };
 
 function clamp(value, min, max) {
@@ -206,27 +220,22 @@ export function describeLockDelay(ms) {
 }
 
 /**
- * Get screen shake multiplier based on setting.
+ * Multiplier for an off/low/medium/high effect setting (screenShake, boardBounce,
+ * placeImpact, clearEffects).
  */
-export function screenShakeMultiplier(settings) {
-    switch (settings.screenShake) {
+export function effectLevel(settings, key) {
+    switch (settings[key]) {
         case 'off':    return 0;
-        case 'low':    return 0.4;
-        case 'medium': return 1.0;
+        case 'low':    return 0.45;
         case 'high':   return 1.8;
         default:       return 1.0;
     }
 }
 
-/**
- * Get particle density multiplier based on setting.
- */
-export function particleDensityMultiplier(settings) {
-    switch (settings.particleDensity) {
-        case 'off':    return 0;
-        case 'low':    return 0.4;
-        case 'medium': return 1.0;
-        case 'high':   return 2.0;
-        default:       return 1.0;
-    }
+const STATS_LABELS = {
+    off: 'Off', time: 'Time', speed: 'Speed (PPS, APM)', efficiency: 'Efficiency (finesse)', versus: 'Versus (VS score)',
+};
+
+export function describeStatsDisplay(val) {
+    return STATS_LABELS[val] || val;
 }

@@ -35,7 +35,7 @@ const ACTION_NAMES = {
     'single':           'SINGLE',
     'double':           'DOUBLE',
     'triple':           'TRIPLE',
-    'tetris':           'TETRIS',
+    'tetris':           'QUAD',
     'tspin-mini':       'T-SPIN MINI',
     'tspin-mini-single':'T-SPIN MINI SINGLE',
     'tspin-mini-double':'T-SPIN MINI DOUBLE',
@@ -298,11 +298,11 @@ export function calculateScore(linesCleared, tSpinType, scoringState, level, are
  */
 export function getActionColor(actionType) {
     if (!actionType) return '#ffffff';
-    if (actionType.startsWith('tspin')) return '#aa00ff';
-    if (actionType === 'tetris') return '#00ffff';
+    if (actionType.startsWith('tspin')) return '#e07af0';
+    if (actionType === 'tetris') return '#5ee8c8';
     if (actionType === 'perfect-clear') return '#ffd700';
-    if (actionType === 'triple') return '#00ff00';
-    if (actionType === 'double') return '#ffa500';
+    if (actionType === 'triple') return '#b2e86a';
+    if (actionType === 'double') return '#f5a45a';
     return '#ffffff';
 }
 

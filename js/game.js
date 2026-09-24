@@ -10,6 +10,12 @@ import { createParticleSystem } from './particles.js';
 import { createRenderer } from './renderer.js';
 import { createInputHandler } from './input.js';
 import { createModeState, GAME_STYLES, BIG_HIT_LINES, MODE_INFO } from './modes.js';
+import { createHud } from './hud.js';
+import { createBoardBounce } from './bounce.js';
+import { minimumInputs } from './finesse.js';
+
+const BLITZ_MS = 120000;
+const SPRINT_LINES = 40;
 
 /** The warning starts when blocks reach this many rows from the top. */
 const DANGER_ROWS = 4;
@@ -21,14 +27,16 @@ const DANGER_INTERVAL_MS = 1000;
  * @param {Object} config
  *   - modeId: string ('sprint' | 'blitz' | 'classic')
  *   - canvases: { board, hold, next }
+ *   - playfield: element that bounces (board, hold and next)
  *   - settings: settings reference object
  *   - soundEngine: sound engine (or null)
  *   - music: music engine (or null)
  *   - onGameOver: (results) => void
  *   - onPause: () => void
+ *   - onLevelUp: (level) => void (optional)
  */
 export function createGame(config) {
-    const { modeId, canvases, settings, soundEngine, music, onGameOver, onPause } = config;
+    const { modeId, canvases, playfield, settings, soundEngine, music, onGameOver, onPause, onLevelUp } = config;
 
     // State
     const arena = createMatrix(COLS, BUFFER_ROWS);
@@ -39,6 +47,10 @@ export function createGame(config) {
     const scoringState = createScoringState();
     const particles = createParticleSystem(settings);
     const renderer = createRenderer(canvases, settings);
+    const hud = createHud(settings, modeId);
+    const bounce = createBoardBounce(playfield, settings);
+    let finesseJudged = 0;
+    let finesseFaults = 0;
 
     // Resize next canvas based on settings
     renderer.resizeNextCanvas(settings.nextPreviewCount || 5);
@@ -134,6 +146,8 @@ export function createGame(config) {
             lastWasRotation = false;
             resetLockTimer();
             playSound('move');
+            // A long slide that stops at a wall knocks the board sideways
+            if (moved < cells && moved >= 3) bounce.kick(dir * (30 + moved * 12), 0);
         }
         return moved;
     }
@@ -182,7 +196,8 @@ export function createGame(config) {
         }
         modeState.addScore(rows * 2);
         playSound('harddrop');
-        lockPiece();
+        bounce.kick(0, 50 + Math.min(rows, 20) * 6);
+        lockPiece(rows);
     }
 
     function holdPiece() {
@@ -202,6 +217,7 @@ export function createGame(config) {
             player.pos.y = spawn.y;
             input.cutDas();
         }
+        input.resetPieceInputs();
         player.canHold = false;
         dropCounter = 0;
         lockTimer = 0;
@@ -221,7 +237,21 @@ export function createGame(config) {
     }
 
     // --- Piece Locking ---
-    function lockPiece() {
+    function lockPiece(dropRows = 0) {
+        // Lock out: a piece that locks entirely above the field ends the game
+        const lockedOut = player.matrix.every((row, y) =>
+            row.every(v => !v || player.pos.y + y < BUFFER_ROWS - VISIBLE_ROWS));
+
+        // Finesse: compare inputs with the fewest that reach this placement
+        const used = input.takePieceInputs();
+        if (!used.softDrop) {
+            const min = minimumInputs(player.shape, player.matrix, player.pos.x);
+            if (min !== null) {
+                finesseJudged++;
+                if (used.inputs > min) finesseFaults++;
+            }
+        }
+
         // Snapshot for T-spin detection
         const tSpinType = detectTSpin(arena, player, lastWasRotation, lastKickIndex);
 
@@ -233,12 +263,18 @@ export function createGame(config) {
         modeState.addPiece();
         const lockedArena = arena.map(row => [...row]);
 
-        // Spawn placement particles
         particles.spawnPlacement({
             shape: player.shape,
             matrix: player.matrix.map(row => [...row]),
             pos: { ...player.pos },
-        });
+        }, dropRows);
+
+        if (lockedOut) {
+            modeState.setGameOver();
+            playSound('gameOver');
+            endGame();
+            return;
+        }
 
         // Clear lines
         const { linesCleared, clearedRows } = clearLines(arena);
@@ -259,7 +295,10 @@ export function createGame(config) {
             const levelBefore = modeState.stats.level;
             modeState.addLines(linesCleared);
             dropInterval = modeState.getDropInterval();
-            if (modeState.stats.level > levelBefore) playSound('levelUp');
+            if (modeState.stats.level > levelBefore) {
+                playSound('levelUp');
+                onLevelUp?.(modeState.stats.level);
+            }
         }
 
         if (scoreResult.action && scoreResult.action.startsWith('tspin')) {
@@ -289,9 +328,6 @@ export function createGame(config) {
             particles.spawnPerfectClear();
         }
 
-        // Action text
-        particles.addActionsFromResult(scoreResult, clearedRows);
-
         // Play sounds
         const soundEvent = getSoundEvent(scoreResult);
         if (soundEvent) {
@@ -315,6 +351,8 @@ export function createGame(config) {
             particles.spawnAttack(clearedRows, attack);
             playSound('attack', attack);
         }
+        if (scoreResult.action || scoreResult.perfectClear) hud.onClear({ ...scoreResult, attack });
+        if (linesCleared > 0) bounce.kick(0, 60 + linesCleared * 45 + attack * 10);
 
         updateDanger();
 
@@ -434,8 +472,8 @@ export function createGame(config) {
             if (freezeTimer <= 0) spawnPiece();
         }
 
-        // Update particles
         particles.update(deltaTime);
+        bounce.update(deltaTime);
 
         // Render
         const ghostY = active ? getGhostY(arena, player) : undefined;
@@ -445,6 +483,9 @@ export function createGame(config) {
             flash: flash ? { rows: flash.rows, progress: flash.elapsed / flash.duration } : null,
             nextQueue,
             held: player.held,
+            holdLocked: !player.canHold,
+            danger: inDanger,
+            time,
             particles,
             shake: particles.getShake(),
             ghostY,
@@ -457,28 +498,26 @@ export function createGame(config) {
     }
 
     function updateHUD() {
-        const scoreEl = document.getElementById('score-display');
-        const linesEl = document.getElementById('lines-display');
-        const levelEl = document.getElementById('level-display');
-        const timerEl = document.getElementById('timer-display');
-
-        if (scoreEl) {
-            scoreEl.textContent = modeState.getPrimaryStatValue().toLocaleString();
-            const label = scoreEl.previousElementSibling;
-            if (label) label.textContent = modeState.getPrimaryStatLabel();
-        }
-        if (linesEl) linesEl.textContent = modeState.stats.linesCleared;
-        if (levelEl) levelEl.textContent = modeState.stats.level;
-        const sentEl = document.getElementById('sent-display');
-        if (sentEl) sentEl.textContent = modeState.stats.linesSent;
-
-        if (timerEl) {
-            timerEl.textContent = modeState.getTimerDisplay();
-            if (modeState.isCountdown()) {
-                const sec = modeState.getRemainingSeconds();
-                timerEl.classList.toggle('timer-urgent', sec !== null && sec <= 10);
-            }
-        }
+        const elapsed = modeState.getElapsedMs();
+        const stats = modeState.stats;
+        const remaining = BLITZ_MS - elapsed;
+        hud.update({
+            pieces: stats.piecesPlaced,
+            lines: stats.linesCleared,
+            level: stats.level,
+            keys: input.getKeyCount(),
+            linesSent: stats.linesSent,
+            elapsedMs: elapsed,
+            clockMs: modeId === 'blitz' ? remaining : elapsed,
+            urgent: modeId === 'blitz' && remaining <= 10000,
+            primaryLabel: modeState.getPrimaryStatLabel(),
+            primaryValue: modeState.getPrimaryStatValue(),
+            progress: modeId === 'sprint' ? stats.linesCleared / SPRINT_LINES
+                : modeId === 'blitz' ? remaining / BLITZ_MS
+                : (stats.linesCleared % 10) / 10,
+            finesseJudged,
+            finesseFaults,
+        });
     }
 
     function playSound(name, ...args) {
@@ -515,6 +554,11 @@ export function createGame(config) {
         flash = null;
         inDanger = false;
         canvases.board.classList.remove('board-danger');
+        finesseJudged = 0;
+        finesseFaults = 0;
+        hud.reset();
+        bounce.reset();
+        input.resetCounts();
 
         dropInterval = modeState.getDropInterval();
         renderer.resizeNextCanvas(settings.nextPreviewCount || 5);
@@ -563,7 +607,12 @@ export function createGame(config) {
         // Let particles finish rendering briefly, then show results
         setTimeout(() => {
             if (onGameOver) {
-                onGameOver(modeState.getResults());
+                const results = modeState.getResults();
+                const sec = modeState.getElapsedMs() / 1000;
+                results.pps = sec > 0 ? results.piecesPlaced / sec : 0;
+                results.finesse = finesseJudged > 0 ? ((finesseJudged - finesseFaults) / finesseJudged) * 100 : 100;
+                results.finesseFaults = finesseFaults;
+                onGameOver(results);
             }
         }, modeState.isCompleted() ? 800 : 400);
     }
@@ -575,6 +624,7 @@ export function createGame(config) {
         }
         input.destroy();
         particles.clear();
+        bounce.reset();
         music?.setPaused(false);
         canvases.board.classList.remove('board-danger');
     }

@@ -9,13 +9,13 @@ export const BLOCK_SIZE = 30;
 
 /** Tetromino shape matrices and colors */
 export const SHAPES = {
-    I: { matrix: [[0,0,0,0], [1,1,1,1], [0,0,0,0], [0,0,0,0]], color: '#00ffff' },
-    J: { matrix: [[1,0,0], [1,1,1], [0,0,0]], color: '#0055ff' },
-    L: { matrix: [[0,0,1], [1,1,1], [0,0,0]], color: '#ffa500' },
-    O: { matrix: [[1,1], [1,1]], color: '#ffff00' },
-    S: { matrix: [[0,1,1], [1,1,0], [0,0,0]], color: '#00ff00' },
-    T: { matrix: [[0,1,0], [1,1,1], [0,0,0]], color: '#aa00ff' },
-    Z: { matrix: [[1,1,0], [0,1,1], [0,0,0]], color: '#ff0000' }
+    I: { matrix: [[0,0,0,0], [1,1,1,1], [0,0,0,0], [0,0,0,0]], color: '#3fd9b8' },
+    J: { matrix: [[1,0,0], [1,1,1], [0,0,0]], color: '#5d55e0' },
+    L: { matrix: [[0,0,1], [1,1,1], [0,0,0]], color: '#ef8a3c' },
+    O: { matrix: [[1,1], [1,1]], color: '#f2cb46' },
+    S: { matrix: [[0,1,1], [1,1,0], [0,0,0]], color: '#94d64a' },
+    T: { matrix: [[0,1,0], [1,1,1], [0,0,0]], color: '#cf5ce0' },
+    Z: { matrix: [[1,1,0], [0,1,1], [0,0,0]], color: '#ec4a5c' }
 };
 
 /** SRS Wall Kick Data (Y-axis inverted for Canvas coordinates) */
@@ -90,13 +90,18 @@ export function getNextPiece(queue) {
  * Get the spawn position for a piece in the buffer.
  */
 export function getSpawnPos(matrix) {
-    // Spawn with the top filled row on the first visible row, so the piece is drawn at once.
-    const firstFilledRow = matrix.findIndex(row => row.some(v => v !== 0));
+    // Spawn just above the visible field (like TETR.IO): the lowest filled row sits on the
+    // row above the field, so the piece shows outside the board and falls in.
+    let lastFilledRow = 0;
+    matrix.forEach((row, y) => { if (row.some(v => v !== 0)) lastFilledRow = y; });
     return {
         x: Math.floor(COLS / 2) - Math.floor(matrix[0].length / 2),
-        y: BUFFER_ROWS - VISIBLE_ROWS - firstFilledRow
+        y: BUFFER_ROWS - VISIBLE_ROWS - 1 - lastFilledRow
     };
 }
+
+/** Rows above the field that are drawn, so spawning pieces are visible. */
+export const SPAWN_ROWS = 3;
 
 /**
  * Attempt to rotate a player piece with SRS wall kicks.

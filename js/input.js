@@ -46,7 +46,14 @@ export function createInputHandler(settings, callbacks) {
         softDropCharge: 0,        // ms accumulated toward the next soft drop cell
         softDropFrom: 0,
         enabled: true,
+        keys: 0,                  // game key presses this game (for KPS and KPP)
+        pieceInputs: 0,           // move and rotate presses for the current piece (finesse)
+        pieceSoftDrop: false,     // soft drop used on the current piece (skips finesse)
     };
+
+    const COUNTED = new Set(['ArrowLeft', 'ArrowRight', 'ArrowDown', 'ArrowUp', 'KeyX', 'KeyZ',
+        'KeyC', 'ShiftLeft', 'ShiftRight', 'Space']);
+    const FINESSE_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'KeyX', 'KeyZ']);
 
     function heldFor(dir) {
         return dir < 0 ? state.leftHeld : state.rightHeld;
@@ -97,6 +104,9 @@ export function createInputHandler(settings, callbacks) {
         if (event.repeat) return;
 
         const now = performance.now();
+        if (COUNTED.has(event.code)) state.keys++;
+        if (FINESSE_KEYS.has(event.code)) state.pieceInputs++;
+        if (event.code === 'ArrowDown') state.pieceSoftDrop = true;
 
         switch (event.code) {
             case 'ArrowLeft':
@@ -229,6 +239,35 @@ export function createInputHandler(settings, callbacks) {
             if (settings.dcd > 0) {
                 state.dcdUntil = performance.now() + framesToMs(settings.dcd);
             }
+        },
+
+        /** Game key presses so far (moves, rotations, holds, drops). */
+        getKeyCount() {
+            return state.keys;
+        },
+
+        /**
+         * Inputs used on the piece that just locked, then start counting the next one.
+         * @returns {{ inputs: number, softDrop: boolean }}
+         */
+        takePieceInputs() {
+            const r = { inputs: state.pieceInputs, softDrop: state.pieceSoftDrop || state.downHeld };
+            state.pieceInputs = 0;
+            state.pieceSoftDrop = false;
+            return r;
+        },
+
+        /** Start counting a fresh piece (after a hold swap). */
+        resetPieceInputs() {
+            state.pieceInputs = 0;
+            state.pieceSoftDrop = false;
+        },
+
+        /** Reset the key count (new game). */
+        resetCounts() {
+            state.keys = 0;
+            state.pieceInputs = 0;
+            state.pieceSoftDrop = false;
         },
 
         /** Enable or disable input processing */
