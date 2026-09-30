@@ -14,6 +14,7 @@ import { createSoundEngine } from './sound.js';
 import { createMusicPlayer } from './music-player.js';
 import { createMusicEngine } from './music.js';
 import { createAmbience } from './ambience.js';
+import { createTouchControls } from './touch.js';
 import { createMenuSystem } from './menu.js';
 import { createGame } from './game.js';
 
@@ -113,12 +114,28 @@ menu.onQuit(() => {
     background.showMenu();
 });
 
-// Scale the playfield down on small windows so the board, stats and spawn rows all fit.
+// --- Touch controls ---
+const touchControls = createTouchControls(
+    [document.getElementById('touch-controls'), document.getElementById('touch-pause')], settings);
+
+/** Layout sizes in CSS pixels before scaling. The touch layout has narrower side columns. */
+const LAYOUT = { height: 780, width: 700, touchWidth: 590, touchButtons: 176 };
+
+/**
+ * Scale the playfield down so the board, stats and spawn rows all fit. With touch
+ * controls in portrait, the playfield sits at the top and leaves room for the buttons.
+ */
 function fitGame() {
-    const scale = Math.min(1, (window.innerHeight - 16) / 780, (window.innerWidth - 16) / 700);
+    const touch = touchControls.refresh();
+    const portrait = touch && window.innerHeight >= window.innerWidth;
+    document.body.classList.toggle('touch-portrait', portrait);
+    const height = window.innerHeight - 16 - (portrait ? LAYOUT.touchButtons : 0);
+    const width = window.innerWidth - (touch ? 8 : 16);
+    const scale = Math.min(1, height / LAYOUT.height, width / (touch ? LAYOUT.touchWidth : LAYOUT.width));
     gameContainer.style.transform = scale < 1 ? `scale(${scale})` : '';
 }
 window.addEventListener('resize', fitGame);
+window.matchMedia?.('(pointer: coarse)').addEventListener?.('change', fitGame);
 fitGame();
 
 // Show main menu on load
@@ -207,6 +224,7 @@ function buildSettingsUI() {
             { key: 'gameStyle', label: 'GAME STYLE', type: 'enum', values: ['modern', 'battle'], describe: describeGameStyle },
             { key: 'nextPreviewCount', label: 'NEXT PIECES', type: 'range', describe: describePreviewCount },
             { key: 'lockDelay', label: 'LOCK DELAY', type: 'range', describe: describeLockDelay },
+            { key: 'touchControls', label: 'TOUCH CONTROLS', type: 'enum', values: ['auto', 'on', 'off'], describe: describeEnum },
         ]},
     ];
 
@@ -273,6 +291,7 @@ function buildSettingsUI() {
         Object.assign(settings, DEFAULT_SETTINGS);
         saveSettings(settings);
         buildSettingsUI();
+        fitGame();
     });
     contentContainer.appendChild(resetBtn);
 
@@ -334,6 +353,7 @@ function buildSettingsUI() {
             // In a game, the engine picks the track every frame; on the menu, switch here.
             if (key === 'soundtrack' && !currentGame?.isRunning()) music.setTrack(menuTrack());
             if (key === 'soundPack') soundEngine?.play('rotate');
+            if (key === 'touchControls') fitGame();
 
             const tab = tabs.find(t => t.settings.some(s => s.key === key));
             const settingDef = tab?.settings.find(s => s.key === key);

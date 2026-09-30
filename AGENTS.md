@@ -46,6 +46,7 @@ Every module uses a factory (`createX(...)` returning an object of closures), no
 - **Presentation**: `renderer.js` (board, hold, next canvases), `skins.js` (block skins, cached sprites), `particles.js` (particles and screen shake on the board canvas), `bounce.js` (spring on the playfield element), `hud.js` (DOM around the board: clear feed, stats, number under the board, progress meter, finesse), `menu.js` (all menu screens in `#menu-container`), `background.js` plus `scenes/` (pixel art backgrounds).
 - **Audio**: `sound.js` synthesizes all effects with Web Audio (no files), including the `danger` alarm and the `attack` whoosh. The default Tetris clear (`clear4`) is a bell "bling": three grace notes into a ringing high note, each a stack of decaying sine partials. Sound packs (`PACKS` in `sound.js`: `arcade` in a Jstris style, `bubbly` in a Puyo Puyo Tetris style, both original synthesis) replace individual events; events a pack leaves out use the default. `music.js` plays the procedural soundtrack from `tracks.js`. `music-player.js` plays user-dropped files through two crossfading `Audio` elements; while it plays, the soundtrack goes silent (`setSuppressor`). `ambience.js` synthesizes the scene sounds (see "Scene sounds").
 - The menu opens the settings panel by dispatching a `uloltris-open-settings` DOM event.
+- **Touch** (`touch.js`): on-screen buttons for phones and tablets (see "Mobile and touch").
 
 ### Board geometry
 
@@ -115,6 +116,20 @@ Three original arrangements of Korobeiniki (the public-domain folk song behind t
 
 To change a song, edit the bar builders in `tracks.js`. Events are `{ s, l, v, n, g }` on a 16-step bar; `npm test` checks their shape.
 
+### Mobile and touch
+
+`index.html` holds the buttons in `#touch-controls` (left, right, soft drop on the left; rotate left, rotate right, hold, hard drop on the right) and `#touch-pause`. Each has a `data-key` with a keyboard code. `touch.js` turns a press into the same `keydown` and `keyup` events a keyboard sends, dispatched on `document`, so `input.js` needs no touch code: a held button charges DAS and auto-repeats like a held key, and finesse and key counts work as before. Multi-touch works because each pointer is tracked on its own.
+
+The `touchControls` setting (GAME tab) is auto, on or off. Auto shows the buttons when `(pointer: coarse)` matches. `touchControls.refresh()` sets the `touch-ui` class on `body`; CSS shows the buttons only while `#game-container` is not hidden, and menus cover them.
+
+`fitGame()` in `main.js` scales the playfield. With `touch-ui` the side columns are narrower (design width 590 instead of 700) so the board is larger on a phone. In portrait (`touch-portrait` class) the playfield is pinned to the top and 176 px are kept free for the buttons; in landscape the buttons sit in the bottom corners beside the board. The page uses `100dvh`, `viewport-fit=cover` and safe-area insets, and blocks pinch zoom and overscroll.
+
+`manifest.webmanifest` and `icon.svg` let a phone add the game to its home screen. There is no service worker, so it does not work offline.
+
+### Deployment
+
+`.github/workflows/pages.yml` runs on every push to `main`: `npm ci`, `npm test`, `npm run build`, then publishes only `index.html`, `style.css`, `game.js`, `icon.svg` and `manifest.webmanifest` to GitHub Pages. All paths in `index.html` are relative, so the site works under `/ulolTris/`. A new file the page needs at runtime must be added to the "Collect site files" step. The repo setting Pages > Source must be "GitHub Actions". Site: https://jcdc0.github.io/ulolTris/
+
 ### Settings
 
 `settings.js` holds `DEFAULT_SETTINGS`, per-key `CONSTRAINTS`, `normalizeSettings` (clamps and fills missing keys), and persistence to `localStorage` under `uloltris-settings`. Saves carry `version: 2`. `migrateSettings` converts version 1 saves (handling in milliseconds) to frames and resets SDF.
@@ -155,7 +170,10 @@ Visual update, done on 2026-09-25 (version 1.3.0): TETR.IO-style layout (hold an
 
 Scenes, scene sounds and music, done on 2026-09-30 (versions 1.4.0 and 1.4.1): wheat, castle and bamboo scenes redrawn; three new Casual scenes (sakura, aurora, falls); synthesized scene sounds with a toggle and volume; gapless track handoff; Casual and 40 Lines on calm, Blitz on intense, no mid-run switch; bell "bling" for the default Tetris clear. Checked in a browser: every scene was rendered and looked at, each builds in under 35 ms and draws in about 1 ms or less, and ambience levels were measured offline (scene mixes sit 5 to 20 dB under the soundtrack's RMS). Nothing here was listened to by a person.
 
+Mobile and GitHub Pages, done on 2026-09-30 (version 1.5.0): touch buttons, a narrower touch layout, small-screen menu styles, a web manifest and icon, and the Pages workflow. Checked in the browser pane at 375 x 812 (portrait) and 812 x 375 (landscape): the board, HUD and buttons fit, and the buttons moved, rotated, dropped and paused a real game. Not checked: a real phone (thumb reach, latency, iOS Safari audio unlock with three AudioContexts), and the workflow itself, which has not run yet.
+
 Next steps, in order:
+0. Try the game on a real phone and tune button size and placement. Consider PNG icons (iOS ignores SVG for the home screen icon) and a service worker for offline play.
 1. Listen and tune the soundtrack, the two sound packs, the scene sounds and the new Tetris "bling" by ear. They were balanced by measurement, not by listening.
 2. Incoming garbage: a training opponent or garbage timer that sends lines back, with a red incoming-garbage meter beside the board (Tetris 99 and Puyo Puyo Tetris both show one). Attack is already calculated, and the progress meter between the board and the next queue is where an incoming meter would go.
 3. Fonts load from Google Fonts. Offline, the page falls back to system fonts. Self-host the two fonts (both under the SIL Open Font License) if the game should look the same offline.

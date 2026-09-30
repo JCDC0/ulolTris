@@ -55,8 +55,10 @@
     // 1-6
     lockDelay: 500,
     // ms
-    gameStyle: "modern"
+    gameStyle: "modern",
     // 'modern' (TETR.IO, Jstris) or 'battle' (Tetris 99, PPT)
+    touchControls: "auto"
+    // on-screen buttons: 'auto' (touch devices), 'on', 'off'
   };
   var CONSTRAINTS = {
     arr: { min: 0, max: 5, step: 0.1 },
@@ -83,7 +85,8 @@
     soundtrack: ["auto", "calm", "competitive", "intense", "off"],
     gameStyle: ["modern", "battle"],
     blockSkin: ["ulol", "classic", "glossy", "flat", "neon"],
-    soundPack: ["ulol", "arcade", "bubbly"]
+    soundPack: ["ulol", "arcade", "bubbly"],
+    touchControls: ["auto", "on", "off"]
   };
   function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
@@ -4049,6 +4052,52 @@
     };
   }
 
+  // js/touch.js
+  function createTouchControls(roots, settings2) {
+    const coarse = window.matchMedia?.("(pointer: coarse)");
+    const held = /* @__PURE__ */ new Map();
+    function send(type, code) {
+      document.dispatchEvent(new KeyboardEvent(type, { code, key: code, bubbles: true, cancelable: true }));
+    }
+    function press(e) {
+      const btn = e.target.closest("[data-key]");
+      if (!btn) return;
+      e.preventDefault();
+      if (held.has(e.pointerId)) return;
+      held.set(e.pointerId, btn);
+      btn.setPointerCapture?.(e.pointerId);
+      btn.classList.add("pressed");
+      navigator.vibrate?.(8);
+      send("keydown", btn.dataset.key);
+    }
+    function release(e) {
+      const btn = held.get(e.pointerId);
+      if (!btn) return;
+      held.delete(e.pointerId);
+      btn.classList.remove("pressed");
+      send("keyup", btn.dataset.key);
+    }
+    for (const root of roots) {
+      root.addEventListener("pointerdown", press);
+      root.addEventListener("pointerup", release);
+      root.addEventListener("pointercancel", release);
+      root.addEventListener("lostpointercapture", release);
+      root.addEventListener("contextmenu", (e) => e.preventDefault());
+    }
+    return {
+      /**
+       * Whether the buttons should show: forced on or off by the setting, otherwise
+       * on when the main pointer is a finger. Also sets the `touch-ui` body class.
+       */
+      refresh() {
+        const mode = settings2.touchControls || "auto";
+        const active = mode === "on" || mode === "auto" && !!coarse?.matches;
+        document.body.classList.toggle("touch-ui", active);
+        return active;
+      }
+    };
+  }
+
   // js/timer.js
   function formatTime(ms) {
     if (ms < 0) ms = 0;
@@ -6498,11 +6547,22 @@
     music.setTrack(menuTrack());
     background.showMenu();
   });
+  var touchControls = createTouchControls(
+    [document.getElementById("touch-controls"), document.getElementById("touch-pause")],
+    settings
+  );
+  var LAYOUT = { height: 780, width: 700, touchWidth: 590, touchButtons: 176 };
   function fitGame() {
-    const scale = Math.min(1, (window.innerHeight - 16) / 780, (window.innerWidth - 16) / 700);
+    const touch = touchControls.refresh();
+    const portrait = touch && window.innerHeight >= window.innerWidth;
+    document.body.classList.toggle("touch-portrait", portrait);
+    const height = window.innerHeight - 16 - (portrait ? LAYOUT.touchButtons : 0);
+    const width = window.innerWidth - (touch ? 8 : 16);
+    const scale = Math.min(1, height / LAYOUT.height, width / (touch ? LAYOUT.touchWidth : LAYOUT.width));
     gameContainer.style.transform = scale < 1 ? `scale(${scale})` : "";
   }
   window.addEventListener("resize", fitGame);
+  window.matchMedia?.("(pointer: coarse)").addEventListener?.("change", fitGame);
   fitGame();
   gameContainer.classList.add("game-hidden");
   menu.showScreen("main");
@@ -6579,7 +6639,8 @@
       { id: "gameplay", label: "GAME", settings: [
         { key: "gameStyle", label: "GAME STYLE", type: "enum", values: ["modern", "battle"], describe: describeGameStyle },
         { key: "nextPreviewCount", label: "NEXT PIECES", type: "range", describe: describePreviewCount },
-        { key: "lockDelay", label: "LOCK DELAY", type: "range", describe: describeLockDelay }
+        { key: "lockDelay", label: "LOCK DELAY", type: "range", describe: describeLockDelay },
+        { key: "touchControls", label: "TOUCH CONTROLS", type: "enum", values: ["auto", "on", "off"], describe: describeEnum }
       ] }
     ];
     tabContainer.innerHTML = "";
@@ -6635,6 +6696,7 @@
       Object.assign(settings, DEFAULT_SETTINGS);
       saveSettings(settings);
       buildSettingsUI();
+      fitGame();
     });
     contentContainer.appendChild(resetBtn);
     if (settingsListenersBound) return;
@@ -6683,6 +6745,7 @@
         saveSettings(settings);
         if (key === "soundtrack" && !currentGame?.isRunning()) music.setTrack(menuTrack());
         if (key === "soundPack") soundEngine?.play("rotate");
+        if (key === "touchControls") fitGame();
         const tab = tabs.find((t) => t.settings.some((s) => s.key === key));
         const settingDef = tab?.settings.find((s) => s.key === key);
         const readout = contentContainer.querySelector(`[data-readout="${key}"]`);

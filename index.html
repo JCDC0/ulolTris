@@ -2,8 +2,12 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+    <meta name="theme-color" content="#07070d">
+    <meta name="description" content="ulolTris, a cozy block stacker with pixel art scenes.">
     <title>ulolTris</title>
+    <link rel="icon" href="icon.svg" type="image/svg+xml">
+    <link rel="manifest" href="manifest.webmanifest">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Silkscreen:wght@400;700&display=swap" rel="stylesheet">
@@ -47,6 +51,22 @@
             </div>
         </div>
     </div>
+
+    <!-- TOUCH CONTROLS (phones and tablets; each button stands for a key) -->
+    <div id="touch-controls" class="touch-controls">
+        <div class="touch-cluster">
+            <button type="button" class="touch-btn" data-key="ArrowLeft" aria-label="Move left">&#x25C0;</button>
+            <button type="button" class="touch-btn" data-key="ArrowRight" aria-label="Move right">&#x25B6;</button>
+            <button type="button" class="touch-btn touch-wide" data-key="ArrowDown" aria-label="Soft drop">&#x25BC;</button>
+        </div>
+        <div class="touch-cluster">
+            <button type="button" class="touch-btn" data-key="KeyZ" aria-label="Rotate left">&#x21BA;</button>
+            <button type="button" class="touch-btn" data-key="ArrowUp" aria-label="Rotate right">&#x21BB;</button>
+            <button type="button" class="touch-btn touch-text" data-key="KeyC" aria-label="Hold">HOLD</button>
+            <button type="button" class="touch-btn touch-text touch-drop" data-key="Space" aria-label="Hard drop">DROP</button>
+        </div>
+    </div>
+    <button id="touch-pause" class="touch-pause" type="button" data-key="Escape" aria-label="Pause">&#x275A;&#x275A;</button>
 
     <!-- SETTINGS PANEL -->
     <button id="settings-toggle" class="settings-toggle" type="button" aria-label="Open settings">&#x2699;</button>

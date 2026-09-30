@@ -53,6 +53,7 @@ export const DEFAULT_SETTINGS = {
     nextPreviewCount: 5,       // 1-6
     lockDelay: 500,            // ms
     gameStyle: 'modern',       // 'modern' (TETR.IO, Jstris) or 'battle' (Tetris 99, PPT)
+    touchControls: 'auto',     // on-screen buttons: 'auto' (touch devices), 'on', 'off'
 };
 
 /** Constraints for numeric settings */
@@ -84,6 +85,7 @@ const ENUMS = {
     gameStyle: ['modern', 'battle'],
     blockSkin: ['ulol', 'classic', 'glossy', 'flat', 'neon'],
     soundPack: ['ulol', 'arcade', 'bubbly'],
+    touchControls: ['auto', 'on', 'off'],
 };
 
 function clamp(value, min, max) {
