@@ -1,11 +1,13 @@
 /**
- * aurora.js - Northern lights over a frozen lake, with a lit cabin among snowy
- * pines (Casual).
+ * aurora.js - A frozen lake among snowy mountains, with a cabin and snowy pines
+ * (Casual). Signature look: night, when the northern lights dance. Rain falls as
+ * snow here, and a thunderstorm becomes a blizzard.
  */
 
 import { W, H, rng, layer, rect, px, ditherGradient, ridge, glow, wrap } from './pixel.js';
 
 const SHORE = 128;
+const GLASS = '#3f5070';
 const CURTAINS = [
     { y: 34, amp: 11, len: 34, speed: 0.22, freq: 0.021, core: [126, 255, 196], edge: [60, 190, 170] },
     { y: 22, amp: 8, len: 26, speed: -0.16, freq: 0.034, core: [150, 140, 255], edge: [90, 80, 200] },
@@ -24,17 +26,21 @@ function snowPine(ctx, x, base, h, body, snow) {
 export default {
     id: 'aurora',
     name: 'Northern Lights',
-    ambience: { wind: 0.9, owl: 0.35 },
-    create() {
-        const sky = layer();
-        ditherGradient(sky.ctx, 0, 0, W, SHORE, ['#050814', '#081226', '#0c1d38', '#12304a', '#1b4a58']);
+    signature: 'night',
+    horizon: SHORE,
+    precip: 'snow',
+    celestial: { sunX: 240, sunHighY: 26, sunLowY: 92, moonX: 70, moonY: 30 },
+    fog: [86, 150],
+    sounds: { always: { wind: 0.35 }, day: {}, night: { owl: 0.35 } },
+    create(env) {
+        const sky = env.makeSky();
         const r = rng(404);
-        for (let i = 0; i < 70; i++) px(sky.ctx, r() * W, r() * 90, r() < 0.3 ? '#ffffff' : '#9fb4d8');
+        const showLights = env.id === 'night';
 
         // Two ranges of mountains, each capped with snow along its ridge line
         const land = layer();
         const l = land.ctx;
-        for (const [base, amp, color, seed, freq, jag] of [[112, 14, '#223452', 61, 0.017, 6], [120, 9, '#16233c', 62, 0.026, 4]]) {
+        for (const [base, amp, color, seed, freq, jag] of [[112, 14, '#7c92b8', 61, 0.017, 6], [120, 9, '#6a80a8', 62, 0.026, 4]]) {
             const range = layer();
             ridge(range.ctx, base, amp, color, seed, { freq, jag });
             const data = range.ctx.getImageData(0, 0, W, SHORE).data;
@@ -42,41 +48,50 @@ export default {
                 let y = 0;
                 while (y < SHORE && data[(y * W + x) * 4 + 3] === 0) y++;
                 const depth = 3 + Math.round(Math.sin(x * 0.3) + Math.sin(x * 0.11) * 2);
-                for (let k = 0; k < depth; k++) px(range.ctx, x, y + k, k === 0 ? '#e6f0ff' : '#aac0e0');
+                for (let k = 0; k < depth; k++) px(range.ctx, x, y + k, k === 0 ? '#f4f8ff' : '#c8d8f0');
             }
             l.drawImage(range.canvas, 0, 0);
         }
         l.clearRect(0, SHORE, W, H - SHORE);
+        env.grade(land.canvas);
 
         // The frozen lake, a snowy near shore, and the cabin on a point of land
         const lake = layer();
-        ditherGradient(lake.ctx, 0, SHORE, W, H - SHORE, ['#1b4a58', '#173a52', '#122c46', '#0d2038']);
+        ditherGradient(lake.ctx, 0, SHORE, W, H - SHORE, ['#b8dcf0', '#9cc8e4', '#82b4d8', '#6ca0c8']);
+        env.grade(lake.canvas);
+
         const near = layer();
         const n = near.ctx;
+        const lights = [];
         const shoreY = x => Math.round(164 - Math.exp(-(((x - 236) / 60) ** 2)) * 20 + Math.sin(x * 0.04) * 3);
         for (let x = 0; x < W; x++) {
             const y = shoreY(x);
-            rect(n, x, y, 1, H - y, '#b8cbe6');
-            rect(n, x, y, 1, 2, '#eef4ff');
-            if (r() < 0.25) px(n, x, y + 3 + r() * 14, '#8ea6cc');
+            rect(n, x, y, 1, H - y, '#dce8f8');
+            rect(n, x, y, 1, 2, '#ffffff');
+            if (r() < 0.25) px(n, x, y + 3 + r() * 14, '#b0c4e4');
         }
         const cabinBase = shoreY(232) + 2;
-        rect(n, 220, cabinBase - 12, 26, 12, '#3a2630');
-        for (let y = cabinBase - 11; y < cabinBase; y += 3) rect(n, 220, y, 26, 1, '#24161e');
-        for (let i = 0; i < 9; i++) rect(n, 217 + (8 - i) * 1.7, cabinBase - 21 + i, 32 - (8 - i) * 3.4, 1, i > 6 ? '#8ea6cc' : '#eef4ff');
-        rect(n, 238, cabinBase - 25, 4, 7, '#2a1c24');
-        rect(n, 237, cabinBase - 26, 6, 1, '#eef4ff');
-        rect(n, 225, cabinBase - 8, 5, 5, '#ffcf6b');
-        rect(n, 227, cabinBase - 8, 1, 5, '#8a5a30');
-        rect(n, 236, cabinBase - 8, 5, 8, '#1c1218');
-        glow(n, 227, cabinBase + 4, 8, '#e8b870', 0.35);
+        rect(n, 220, cabinBase - 12, 26, 12, '#8a5a3e');
+        for (let y = cabinBase - 11; y < cabinBase; y += 3) rect(n, 220, y, 26, 1, '#6a4028');
+        for (let i = 0; i < 9; i++) rect(n, 217 + (8 - i) * 1.7, cabinBase - 21 + i, 32 - (8 - i) * 3.4, 1, i > 6 ? '#b8c8e0' : '#f2f8ff');
+        rect(n, 238, cabinBase - 25, 4, 7, '#5a4038');
+        rect(n, 237, cabinBase - 26, 6, 1, '#f2f8ff');
+        rect(n, 225, cabinBase - 8, 5, 5, GLASS);
+        rect(n, 227, cabinBase - 8, 1, 5, '#6a4028');
+        lights.push({ x: 225, y: cabinBase - 8, w: 5, h: 5 });
+        rect(n, 236, cabinBase - 8, 5, 8, '#4a2c20');
         for (let i = 0; i < 14; i++) {
             const x = Math.round(i < 5 ? 6 + r() * 60 : 170 + r() * 146);
             if (x > 212 && x < 254) continue;
-            snowPine(n, x, shoreY(x) + 1, 14 + Math.floor(r() * 22), '#0e1a2c', '#dbe8fb');
+            snowPine(n, x, shoreY(x) + 1, 14 + Math.floor(r() * 22), '#245040', '#f2f8ff');
         }
+        env.grade(near.canvas);
 
         const flakes = Array.from({ length: 60 }, () => ({ x: r() * W, y: r() * H, s: 8 + r() * 10, p: r() * 6 }));
+        const sparkles = Array.from({ length: 40 }, () => ({ x: Math.floor(r() * W), y: 150 + Math.floor(r() * 28), p: r() * 10 }));
+        const smokeColor = env.rgb('#e8eef8');
+        const sparkle = env.c('#ffffff');
+        const day = !env.night && env.rain === 0 && env.id !== 'sunset';
 
         function curtain(ctx, c, t, mirror) {
             for (let x = 0; x < W; x += 2) {
@@ -103,23 +118,38 @@ export default {
 
         return {
             draw(ctx, t) {
-                ctx.drawImage(sky.canvas, 0, 0);
-                for (const c of CURTAINS) curtain(ctx, c, t, false);
+                sky.draw(ctx, t);
+                if (showLights) for (const c of CURTAINS) curtain(ctx, c, t, false);
                 ctx.drawImage(land.canvas, 0, 0);
                 ctx.drawImage(lake.canvas, 0, 0);
-                for (const c of CURTAINS) curtain(ctx, c, t, true);
+                if (showLights) for (const c of CURTAINS) curtain(ctx, c, t, true);
                 ctx.drawImage(near.canvas, 0, 0);
 
-                // Smoke from the cabin chimney
+                if (env.lit > 0.05) {
+                    ctx.globalAlpha = env.lit;
+                    ctx.fillStyle = '#ffcf6b';
+                    for (const w of lights) ctx.fillRect(w.x, w.y, w.w, w.h);
+                    glow(ctx, 227, cabinBase + 4, 9, '#e8b870', 0.4);
+                    ctx.globalAlpha = 1;
+                }
+
+                // Smoke from the cabin chimney, blown along by the wind
                 for (let k = 0; k < 6; k++) {
                     const age = wrap(t * 0.3 + k / 6, 1);
-                    rect(ctx, 240 + Math.sin(age * 5 + k) * 2 - age * 8, cabinBase - 27 - age * 22, age > 0.5 ? 2 : 1, 1,
-                        age < 0.5 ? '#9aa8c0' : '#5a6a88');
+                    ctx.fillStyle = `rgba(${smokeColor[0]}, ${smokeColor[1]}, ${smokeColor[2]}, ${(0.85 - age * 0.6).toFixed(2)})`;
+                    ctx.fillRect(Math.round(240 + Math.sin(age * 5 + k) * 2 - age * (8 + env.wind * 8)), Math.round(cabinBase - 27 - age * 22), age > 0.5 ? 2 : 1, 1);
                 }
-                for (const f of flakes) {
-                    const y = wrap(f.y + t * f.s, H);
-                    const x = wrap(f.x + Math.sin(t * 0.7 + f.p) * 8 - t * 5, W);
-                    px(ctx, x, y, '#eef4ff');
+                if (day) {
+                    ctx.fillStyle = sparkle;
+                    for (const s of sparkles) if (Math.sin(t * 3 + s.p * 5) > 0.93) ctx.fillRect(s.x, s.y, 1, 1);
+                }
+                if (env.rain === 0) {
+                    ctx.fillStyle = sparkle;
+                    for (const f of flakes) {
+                        const y = wrap(f.y + t * f.s, H);
+                        const x = wrap(f.x + Math.sin(t * 0.7 + f.p) * 8 - t * 5, W);
+                        ctx.fillRect(Math.round(x), Math.round(y), 1, 1);
+                    }
                 }
             },
         };

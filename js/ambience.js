@@ -2,20 +2,32 @@
  * ambience.js - Background sounds for the pixel art scenes: rain, wind, rustling
  * wheat, water, surf, birds, crickets, thunder and so on.
  *
- * Everything is synthesized with Web Audio from filtered noise and sine tones; no
- * audio files are loaded. Each scene lists the layers it wants and how loud
- * (`ambience: { rain: 1, birds: 0.2 }`). When the scene changes, every layer glides
- * to its new level, so a layer two scenes share never drops out.
+ * Everything is synthesized; no audio files are loaded. Each scene (with its weather)
+ * lists the layers it wants and how loud (`{ rain: 1, birds: 0.2 }`). When the scene
+ * changes, every layer glides to its new level, so a layer two scenes share never
+ * drops out.
  *
- * Beds (rain, wind, ...) are continuous and are built the first time a scene needs
- * them. Calls (birds, thunder, ...) are short sounds scheduled at random intervals.
+ * Three kinds of layer:
+ * - Beds are continuous. Filtered-noise beds (wind, waves, hum, city) are live Web
+ *   Audio graphs. Textured beds (rain, storm, wheat, water) are loops of thousands of
+ *   single grains built by ambience-synth.js: drops on stone and leaves, stalks
+ *   touching, bubbles in a stream. They are built in short slices the first time a
+ *   scene needs them, so a scene change never stalls a frame.
+ * - Calls (birds, crickets, owl, gulls, chimes, traffic) are short sounds scheduled at
+ *   random intervals.
+ * - Flags (thunder) do nothing on their own. Thunder plays when the picture flashes:
+ *   background.js reports each lightning strike and strike() answers with a clap
+ *   that arrives after a delay that grows with distance, like the real thing.
  */
 
+import { rainLoop, wheatLoop, thunderClap, RAIN_KINDS } from './ambience-synth.js';
+
 const BEDS = ['rain', 'storm', 'wind', 'wheat', 'water', 'waves', 'hum', 'city'];
-const CALLS = ['birds', 'crickets', 'owl', 'gulls', 'chimes', 'thunder', 'traffic'];
+const CALLS = ['birds', 'crickets', 'owl', 'gulls', 'chimes', 'traffic'];
+const FLAGS = ['thunder'];
 
 /** Every layer name a scene may use. */
-export const AMBIENCE_LAYERS = [...BEDS, ...CALLS];
+export const AMBIENCE_LAYERS = [...BEDS, ...CALLS, ...FLAGS];
 
 const GLIDE_S = 0.9;
 const TICK_MS = 200;
@@ -23,6 +35,10 @@ const LOOKAHEAD_S = 0.6;
 const MASTER_GAIN = 0.5;
 /** Seconds a bed stays built after it fades out, in case the next scene wants it again. */
 const IDLE_S = 8;
+/** Thunderclaps kept ready: near, middle and far, two takes of each. */
+const CLAPS = [[0.12, 1], [0.12, 2], [0.42, 3], [0.42, 4], [0.75, 5], [0.75, 6]];
+/** The sound of thunder reaches you after the flash: seconds of delay at distance 1. */
+const SOUND_LAG_S = 2.4;
 
 const rand = (min, max) => min + Math.random() * (max - min);
 const pick = list => list[Math.floor(Math.random() * list.length)];
@@ -35,10 +51,28 @@ function createNoiseBuffer(ctx) {
 }
 
 /**
+ * Run a builder generator in slices of a few milliseconds so the page stays smooth.
+ * @returns {Promise<Float32Array[]>} what the generator returned
+ */
+function inSlices(gen) {
+    return new Promise(resolve => {
+        function step() {
+            const start = performance.now();
+            let result;
+            do { result = gen.next(); } while (!result.done && performance.now() - start < 6);
+            if (result.done) resolve(result.value);
+            else setTimeout(step, 0);
+        }
+        step();
+    });
+}
+
+/**
  * The sound sources bound to one AudioContext.
- * @returns {{ bed: (name: string, dest: AudioNode) => () => void,
- *             call: (name: string, t: number, dest: AudioNode) => number }}
- *   bed() starts a continuous layer and returns a function that stops it.
+ * @returns {{ bed: (name: string, dest: AudioNode) => { ready: Promise, stop: () => void },
+ *             call: (name: string, t: number, dest: AudioNode) => number,
+ *             prepareClaps: () => void, clapFor: (distance: number) => AudioBuffer | null }}
+ *   bed() starts a continuous layer; `ready` resolves once its sound is playing.
  *   call() schedules one short sound at time t and returns seconds until the next.
  */
 function createSources(ctx, noise) {
@@ -88,34 +122,72 @@ function createSources(ctx, noise) {
         return g;
     }
 
+    // --- Grain loops, built once per kind and shared by every layer that uses them ---
+
+    const loops = new Map();
+
+    function toBuffer([left, right]) {
+        const buffer = ctx.createBuffer(2, left.length, ctx.sampleRate);
+        buffer.copyToChannel(left, 0);
+        buffer.copyToChannel(right, 1);
+        return buffer;
+    }
+
+    function loop(key, make) {
+        if (!loops.has(key)) loops.set(key, inSlices(make()).then(toBuffer));
+        return loops.get(key);
+    }
+
+    /**
+     * Play several loops of different lengths together. Their combined pattern only
+     * repeats after the lengths line up, which takes about a minute.
+     */
+    async function loopBed(dest, nodes, isStopped, builders, level) {
+        const buffers = await Promise.all(builders.map(([key, make]) => loop(key, make)));
+        if (isStopped()) return;
+        for (const buffer of buffers) {
+            const src = ctx.createBufferSource();
+            src.buffer = buffer;
+            src.loop = true;
+            src.start(0, Math.random() * buffer.duration);
+            const g = gain(level, nodes);
+            src.connect(g);
+            g.connect(dest);
+            nodes.push(src);
+        }
+    }
+
+    const rainBuilders = kind => RAIN_KINDS[kind].map((o, i) =>
+        [`${kind}${i}`, () => rainLoop(ctx.sampleRate, o)]);
+    const wheatBuilders = [
+        ['wheat0', () => wheatLoop(ctx.sampleRate, { seconds: 9, seed: 7 })],
+        ['wheat1', () => wheatLoop(ctx.sampleRate, { seconds: 11.3, seed: 8 })],
+    ];
+
     const beds = {
-        rain(dest, nodes) {
-            noisePath(nodes, dest, 0.22, filter('highpass', 2200, 0, nodes), filter('lowpass', 9000, 0, nodes));
-            const body = noisePath(nodes, dest, 0.3, filter('bandpass', 700, 0.4, nodes));
-            lfo(body.gain, 0.07, 0.08, nodes);
+        rain(dest, nodes, isStopped) {
+            // A low bed of far-off rain under the drops, so the gaps between them are not dead
+            noisePath(nodes, dest, 0.03, filter('lowpass', 500, 0, nodes));
+            return loopBed(dest, nodes, isStopped, rainBuilders('rain'), 0.7);
         },
-        storm(dest, nodes) {
-            noisePath(nodes, dest, 0.5, filter('lowpass', 2600, 0, nodes));
-            const hiss = noisePath(nodes, dest, 0.2, filter('highpass', 3000, 0, nodes));
-            lfo(hiss.gain, 0.19, 0.08, nodes);
+        storm(dest, nodes, isStopped) {
+            noisePath(nodes, dest, 0.05, filter('lowpass', 700, 0, nodes));
+            return loopBed(dest, nodes, isStopped, rainBuilders('storm'), 0.7);
         },
         wind(dest, nodes) {
-            const band = filter('bandpass', 420, 1.4, nodes);
-            const g = noisePath(nodes, dest, 0.75, band);
-            lfo(band.frequency, 0.11, 170, nodes);
-            lfo(g.gain, 0.07, 0.4, nodes);
-            lfo(g.gain, 0.23, 0.15, nodes);
+            const band = filter('bandpass', 380, 1.1, nodes);
+            const g = noisePath(nodes, dest, 0.55, band, filter('lowpass', 900, 0, nodes));
+            lfo(band.frequency, 0.11, 140, nodes);
+            lfo(g.gain, 0.07, 0.3, nodes);
+            lfo(g.gain, 0.23, 0.12, nodes);
         },
-        // Dry stalks brushing together: high, thin noise that swells with each gust
-        wheat(dest, nodes) {
-            const g = noisePath(nodes, dest, 0.2, filter('bandpass', 5200, 0.8, nodes), filter('highpass', 2500, 0, nodes));
-            lfo(g.gain, 0.24, 0.1, nodes);
-            lfo(g.gain, 0.056, 0.08, nodes);
+        // Stalks touching, ears sliding past each other, in swells as each gust passes
+        wheat(dest, nodes, isStopped) {
+            return loopBed(dest, nodes, isStopped, wheatBuilders, 1.5);
         },
-        water(dest, nodes) {
-            noisePath(nodes, dest, 0.5, filter('lowpass', 1700, 0, nodes), filter('highpass', 120, 0, nodes));
-            const spray = noisePath(nodes, dest, 0.1, filter('highpass', 4000, 0, nodes));
-            lfo(spray.gain, 0.31, 0.04, nodes);
+        water(dest, nodes, isStopped) {
+            noisePath(nodes, dest, 0.3, filter('lowpass', 1500, 0, nodes), filter('highpass', 120, 0, nodes));
+            return loopBed(dest, nodes, isStopped, rainBuilders('water'), 0.6);
         },
         waves(dest, nodes) {
             const low = noisePath(nodes, dest, 0.3, filter('lowpass', 800, 0, nodes));
@@ -245,23 +317,6 @@ function createSources(ctx, noise) {
             }
             return rand(5, 12);
         },
-        thunder(t, dest) {
-            const len = rand(2.5, 4.5);
-            // The crack, then a rumble that rolls and fades
-            burst(dest, t, 0.3, 'lowpass', 1400, 0.5, (g) => {
-                g.linearRampToValueAtTime(0.8, t + 0.01);
-                g.exponentialRampToValueAtTime(0.0001, t + 0.28);
-            });
-            burst(dest, t, len, 'lowpass', 220, 0.7, (g, f) => {
-                g.linearRampToValueAtTime(1.6, t + 0.12);
-                g.setValueAtTime(1.6, t + 0.3);
-                g.linearRampToValueAtTime(0.6, t + len * 0.35);
-                g.linearRampToValueAtTime(0.9, t + len * 0.5);
-                g.exponentialRampToValueAtTime(0.0001, t + len - 0.05);
-                f.frequency.exponentialRampToValueAtTime(70, t + len);
-            });
-            return rand(5, 12);
-        },
         // A car passing on the highway
         traffic(t, dest) {
             const len = rand(2.2, 3.6);
@@ -275,14 +330,46 @@ function createSources(ctx, noise) {
         },
     };
 
+    // --- Thunderclaps, built one at a time in the background ---
+
+    const claps = [];
+    let clapsStarted = false;
+
     return {
         bed(name, dest) {
             const nodes = [];
-            beds[name](dest, nodes);
-            return () => nodes.forEach(n => { n.stop?.(); n.disconnect(); });
+            let stopped = false;
+            const ready = Promise.resolve(beds[name](dest, nodes, () => stopped));
+            return {
+                ready,
+                stop() {
+                    stopped = true;
+                    for (const n of nodes) {
+                        try { n.stop?.(); } catch { /* never started */ }
+                        n.disconnect();
+                    }
+                },
+            };
         },
         call(name, t, dest) {
             return calls[name](t, dest);
+        },
+        /** Start building the thunderclaps. Safe to call again; it only runs once. */
+        prepareClaps() {
+            if (clapsStarted) return;
+            clapsStarted = true;
+            (async () => {
+                for (const [distance, seed] of CLAPS) {
+                    const samples = await inSlices(thunderClap(ctx.sampleRate, { distance, seed }));
+                    claps.push({ distance, buffer: toBuffer(samples) });
+                }
+            })();
+        },
+        /** The built clap closest to a distance (0 overhead, 1 far), or null if none is ready. */
+        clapFor(distance) {
+            if (!claps.length) return null;
+            const near = claps.filter(c => Math.abs(c.distance - distance) < 0.2);
+            return pick(near.length ? near : claps).buffer;
         },
     };
 }
@@ -290,21 +377,23 @@ function createSources(ctx, noise) {
 /**
  * Render a scene's ambience without playing it, for level checks.
  * @param {Object} levels - layer name to 0..1, as in a scene's `ambience`
- * @returns {Promise<AudioBuffer>} mono buffer
+ * @returns {Promise<AudioBuffer>} stereo buffer
  */
-export function renderAmbienceOffline(levels, seconds, sampleRate = 44100) {
-    const ctx = new OfflineAudioContext(1, Math.ceil(seconds * sampleRate), sampleRate);
+export async function renderAmbienceOffline(levels, seconds, sampleRate = 44100) {
+    const ctx = new OfflineAudioContext(2, Math.ceil(seconds * sampleRate), sampleRate);
     const sources = createSources(ctx, createNoiseBuffer(ctx));
     const master = ctx.createGain();
     master.gain.value = MASTER_GAIN;
     master.connect(ctx.destination);
+    const pending = [];
     for (const [name, level] of Object.entries(levels)) {
         const g = ctx.createGain();
         g.gain.value = level;
         g.connect(master);
-        if (BEDS.includes(name)) sources.bed(name, g);
-        else for (let t = 0.2; t < seconds;) t += sources.call(name, t, g);
+        if (BEDS.includes(name)) pending.push(sources.bed(name, g).ready);
+        else if (CALLS.includes(name)) for (let t = 0.2; t < seconds;) t += sources.call(name, t, g);
     }
+    await Promise.all(pending);
     return ctx.startRendering();
 }
 
@@ -332,8 +421,9 @@ export function createAmbience(settings) {
         g.gain.value = 0;
         g.connect(master);
         const layer = { gain: g, level: 0, idleSince: 0, next: ctx.currentTime + rand(0.3, 2.5) };
-        layer.stop = BEDS.includes(name) ? sources.bed(name, g) : () => {};
+        layer.stop = BEDS.includes(name) ? sources.bed(name, g).stop : () => {};
         layers.set(name, layer);
+        if (name === 'thunder') sources.prepareClaps();
         return layer;
     }
 
@@ -365,7 +455,7 @@ export function createAmbience(settings) {
                 }
                 continue;
             }
-            if (BEDS.includes(name) || vol === 0) continue;
+            if (!CALLS.includes(name) || vol === 0) continue;
             if (layer.next < now) layer.next = now + 0.05;
             while (layer.next < now + LOOKAHEAD_S) {
                 // Quieter layers also call less often
@@ -394,6 +484,26 @@ export function createAmbience(settings) {
         setScene(levels) {
             wanted = levels || {};
             apply();
+        },
+
+        /**
+         * Lightning struck. Plays a thunderclap after a delay that grows with distance,
+         * if the scene has thunder and a clap has been built.
+         * @param {number} distance - 0 (overhead) to 1 (far away)
+         */
+        strike(distance = 0.4) {
+            const layer = layers.get('thunder');
+            if (!ctx || !layer || layer.level === 0 || targetVolume() === 0) return;
+            const buffer = sources.clapFor(distance);
+            if (!buffer) return;
+            const src = ctx.createBufferSource();
+            src.buffer = buffer;
+            const g = ctx.createGain();
+            g.gain.value = 1.3 - 0.45 * distance;
+            src.connect(g);
+            g.connect(layer.gain);
+            src.start(ctx.currentTime + 0.06 + distance * SOUND_LAG_S);
+            src.onended = () => g.disconnect();
         },
 
         dispose() {

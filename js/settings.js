@@ -44,6 +44,7 @@ export const DEFAULT_SETTINGS = {
     statsDisplay: 'time',      // 'off', 'time', 'speed', 'efficiency', 'versus'
     background: 'on',          // 'on', 'dim', 'off'
     casualScene: 'cycle',      // 'cycle' or one of CASUAL_SCENES
+    weather: 'default',        // 'default' (each scene's own look), 'cycle' (by level), or one of VARIANTS
     ghostOpacity: 40,          // 0-100
     showActionText: true,
     blockSkin: 'ulol',         // one of SKINS in skins.js
@@ -81,6 +82,7 @@ const ENUMS = {
     statsDisplay: ['off', 'time', 'speed', 'efficiency', 'versus'],
     background: ['on', 'dim', 'off'],
     casualScene: ['cycle', 'bamboo', 'wheat', 'sakura', 'village', 'falls', 'castle', 'ocean', 'aurora', 'neon'],
+    weather: ['default', 'cycle', 'sunny', 'cloudy', 'sunset', 'rain', 'thunder', 'night', 'nightthunder'],
     soundtrack: ['auto', 'calm', 'competitive', 'intense', 'off'],
     gameStyle: ['modern', 'battle'],
     blockSkin: ['ulol', 'classic', 'glossy', 'flat', 'neon'],

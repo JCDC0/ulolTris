@@ -21,7 +21,8 @@ You can also open `index.html` directly after `npm run build`, because the bundl
 `npm test` bundles each test with esbuild for Node and stubs `document`, `window`, and `performance` where needed, so it needs no browser:
 - `handling.test.mjs` drives `js/input.js` frame by frame at 60 Hz: DAS, ARR, DCD, SDF, the two toggles, settings migration.
 - `modes.test.mjs`: the track each mode plays, lines sent and APM, game style delays.
-- `content.test.mjs`: the attack table, song data (known voices, events inside their bars, note range, the Korobeiniki motif in every track, keys and tempos), and scenes (each has a name and known ambience layers; every Casual scene can be picked in settings).
+- `content.test.mjs`: the attack table, song data (known voices, events inside their bars, note range, the Korobeiniki motif in every track, keys and tempos), scenes (each has a name, signature weather, horizon and known sounds; every Casual scene and every weather can be picked in settings), and the sound mix in all seven weathers of every scene (rain only in rain, thunder only with lightning, no daytime animals at night).
+- `synth.test.mjs`: the grain-built sounds in `ambience-synth.js`. Rain, storm, water and wheat loops must be peaky and uneven in loudness (kurtosis above 5, where white noise scores 2.7), hold their level, join up at the loop point; thunder must be loudest at the start and die away, and overhead thunder must crack harder than distant thunder.
 - `finesse.test.mjs`: every piece spawns just above the field, and the finesse minimums match the standard chart.
 
 Add a check to the matching file when you change that area. Audio output itself is not covered by `npm test`; to hear a track without playing the game, call `renderTrackOffline(name, seconds)` from `js/music.js` in a browser and save the buffer. `renderAmbienceOffline(levels, seconds)` in `js/ambience.js` does the same for scene sounds.
@@ -44,7 +45,7 @@ Every module uses a factory (`createX(...)` returning an object of closures), no
 - **Pure logic** (no DOM): `piece.js` (shapes, SRS kicks, 7-bag, spawn position), `board.js` (collide, merge, line clear, ghost), `scoring.js` (T-spin detection, combo, back-to-back, perfect clear, attack, sound and color mapping), `finesse.js` (fewest inputs per placement).
 - **Modes** (`modes.js`, `timer.js`): 40 Lines (`sprint`), Blitz (2 minutes), Casual (`classic` in code: endless, level-based gravity). To add a mode, add an ID, a `MODE_INFO` entry, and handling in `createModeState`. The menu reads `MODE_INFO`.
 - **Presentation**: `renderer.js` (board, hold, next canvases), `skins.js` (block skins, cached sprites), `particles.js` (particles and screen shake on the board canvas), `bounce.js` (spring on the playfield element), `hud.js` (DOM around the board: clear feed, stats, number under the board, progress meter, finesse), `menu.js` (all menu screens in `#menu-container`), `background.js` plus `scenes/` (pixel art backgrounds).
-- **Audio**: `sound.js` synthesizes all effects with Web Audio (no files), including the `danger` alarm and the `attack` whoosh. The default Tetris clear (`clear4`) is a bell "bling": three grace notes into a ringing high note, each a stack of decaying sine partials. Sound packs (`PACKS` in `sound.js`: `arcade` in a Jstris style, `bubbly` in a Puyo Puyo Tetris style, both original synthesis) replace individual events; events a pack leaves out use the default. `music.js` plays the procedural soundtrack from `tracks.js`. `music-player.js` plays user-dropped files through two crossfading `Audio` elements; while it plays, the soundtrack goes silent (`setSuppressor`). `ambience.js` synthesizes the scene sounds (see "Scene sounds").
+- **Audio**: `sound.js` synthesizes all effects with Web Audio (no files), including the `danger` alarm and the `attack` whoosh. The default Tetris clear (`clear4`) is a bell "bling": three grace notes into a ringing high note, each a stack of decaying sine partials. Sound packs (`PACKS` in `sound.js`: `arcade` in a Jstris style, `bubbly` in a Puyo Puyo Tetris style, both original synthesis) replace individual events; events a pack leaves out use the default. `music.js` plays the procedural soundtrack from `tracks.js`. `music-player.js` plays user-dropped files through two crossfading `Audio` elements; while it plays, the soundtrack goes silent (`setSuppressor`). `ambience.js` and `ambience-synth.js` synthesize the scene sounds (see "Scene sounds").
 - The menu opens the settings panel by dispatching a `uloltris-open-settings` DOM event.
 - **Touch** (`touch.js`): on-screen buttons for phones and tablets (see "Mobile and touch").
 
@@ -80,25 +81,52 @@ Independent off/low/medium/high levels (`effectLevel()` in `settings.js`): `boar
 
 ### Backgrounds
 
-`background.js` draws a scene at 320 x 180 on `#bg-canvas`, scaled up with crisp pixels to cover the window, at 30 fps, paused while the tab is hidden, with a 1.6 s crossfade between scenes. Each scene in `scenes/` builds its static layers once (lazily, the first time it shows) and animates only what moves; `scenes/pixel.js` has the shared helpers (seeded random, dithered gradients, haze, discs, ridges, clouds).
+`background.js` draws a scene at 320 x 180 on `#bg-canvas`, scaled up with crisp pixels to cover the window, at 30 fps, paused while the tab is hidden, with a 1.6 s crossfade between scenes. Each scene in `scenes/` builds its static layers once (lazily, the first time it shows) and animates only what moves; `scenes/pixel.js` has the shared helpers (seeded random, dithered gradients, haze, discs, ridges, clouds). Built scenes are cached per scene and weather (four kept), and Casual builds the next level's scene 2.5 s after a level starts so a level up never stalls a frame.
 
-| Scene | Where |
-|---|---|
-| bamboo (path through the rain), wheat (golden hour), sakura (shrine gate, petals), village (night), falls (waterfall), castle (crag above a lake, dusk), ocean (day), aurora (northern lights, cabin), neon (falling blocks) | Casual only: one per level, cycling, or a fixed one from the `casualScene` setting. The menu cycles through them. |
-| city (Midnight Circuit: neon skyline, light streaks on a highway) | 40 Lines |
-| storm (Thunder Peak: snowy peaks, heavy rain, lightning) | Blitz |
+| Scene | Signature weather | Where |
+|---|---|---|
+| bamboo (path through the forest) | rain | Casual |
+| wheat (windmill, scarecrow) | sunset | Casual |
+| sakura (shrine gate, petals) | sunny | Casual |
+| village | night | Casual |
+| falls (waterfall) | sunny | Casual |
+| castle (crag above a lake) | sunset | Casual |
+| ocean | sunny | Casual |
+| aurora (frozen lake, cabin; rain falls as snow) | night | Casual |
+| neon (falling blocks, retro sun) | night | Casual |
+| city (Midnight Circuit: skyline, light streaks on a highway) | night | 40 Lines |
+| storm (Thunder Peak: snowy peaks) | thunder | Blitz |
 
-The `background` setting is on, dim (darker overlay) or off. Measured cost: under 1.5 ms per scene frame; building a scene takes 3 to 115 ms.
+The `background` setting is on, dim (darker overlay) or off. Measured cost: under 1.6 ms per scene frame; building a scene takes 17 to 110 ms.
 
-To add a scene: write `scenes/<id>.js` exporting `{ id, name, ambience, create() }`, add it to `SCENES` (and `CASUAL_SCENES` if Casual should use it) in `background.js`, and add the id to `ENUMS.casualScene` in `settings.js`.
+### Weather
 
-Scene notes. Wheat: each stalk is a sprite (bent stem, ear of staggered kernels, awns on the top kernels) drawn once per size at nine lean angles; the wind picks a lean per stalk each frame. Castle: `wall()` and `roundTower()` take a `ground(x)` function and run every column down to the rock, so nothing floats; all left faces are lit by the sun at `SUN`; the lake is a flipped, darkened copy of the finished scene. Bamboo: `pathHalf(y)` is the half width of the path at row y, and `forestLayer` leaves out any stalk that would stand on it.
+Every scene can show seven weathers (`VARIANTS` in `scenes/atmosphere.js`): sunny, cloudy, sunset, rain (Cloudy (Rain)), thunder (Thunderstorm), night, nightthunder (Night Thunderstorm). The `weather` setting (VISUAL tab) is `default` (each scene's signature), `cycle` (Casual walks through `CYCLE_ORDER` as levels go up; 40 Lines and Blitz keep their signature) or one fixed weather for all scenes.
+
+How it works: a scene is drawn once in daylight colors, and `createEnv(variant, scene)` returns an `env` the scene uses:
+- `env.makeSky(opts)`: gradient, sun or moon, stars, two scrolling cloud layers and lightning for the weather. `sky.canvas` is the still sky (no clouds) for reflections; scenes may draw onto it (bamboo paints the clearing). Options: `horizon`, `palette` (sakura and neon use their own), `noSun`.
+- `env.grade(canvas)` and `env.gradeData(pixels)` shift a layer's colors (saturation, brightness, tint) for the weather; `env.c(hex)`, `env.rgb(hex)` and `env.rgba(hex, a)` do the same for single colors drawn every frame. Never grade twice: anything drawn after grading that should keep its own color (haze, water tint, lights) uses the raw color.
+- `env.lit` (0 day to 1 night) is how many lights are on. Scenes draw windows, lamps and torches with it, after grading, so they glow. `env.night`, `env.rain`, `env.storm`, `env.wind` drive animals, fireflies, sway and wave height. `env.sun` is `{ x, y, kind }` (`'sun'`, `'moon'` or null) for glitter on water.
+- `env.overlay(ctx, t)` is called by `background.js` after the scene draws: fog band, rain (or snow when the scene has `precip: 'snow'`), splash rings in the scene's `rainBand`, and the lightning flash. `env.poll(t, fire)` reports each strike so thunder follows the flash.
+
+A scene module exports `{ id, name, signature, horizon, celestial, fog, rainBand, precip?, sounds, create(env) }`. `horizon` is where the sky meets the land; `celestial` is `{ sunX, sunHighY, sunLowY, moonX, moonY }`; `fog` and `rainBand` are `[y0, y1]` rows; `sounds` is `{ always, day, night }` (see "Scene sounds"). To add a scene: write it, add it to `SCENES` (and `CASUAL_SCENES` for Casual) in `background.js`, and add the id to `ENUMS.casualScene` in `settings.js`. `npm test` checks that it works in all seven weathers sound-wise; look at it in all seven by eye.
+
+Lightning is deterministic: strike n of a variant falls at a time set by `rng(n)`, so the flash, the bolt and the thunder sound agree. Only `thunder` and `nightthunder` have strikes (about every 6.5 s and 5.5 s). Day scenes are the reference look; night and storm are made by grading, so a scene's daylight palette must stay readable when darkened (dark greens go black at night; that is intended).
+
+Scene notes. Wheat: each stalk is a sprite (bent stem, ear of staggered kernels, awns on the top kernels) drawn once per size and sheared in memory into nine lean angles; the wind picks a lean per stalk each frame, and its strength follows `env.wind`. Castle: `wall()` and `roundTower()` take a `ground(x)` function and run every column down to the rock, so nothing floats; all left faces are lit by the sun at `SUN`; the lake is a flipped, darkened copy of the finished scene. Bamboo: `pathHalf(y)` is the half width of the path at row y, and `forestLayer` leaves out any stalk that would stand on it.
 
 ### Scene sounds
 
-`ambience.js` plays background sounds that match the scene. Everything is synthesized with Web Audio (filtered noise and sine tones); there are no audio files. Each scene lists its layers and levels, for example `ambience: { rain: 1, wind: 0.2, birds: 0.15 }`. Beds are continuous (`rain`, `storm`, `wind`, `wheat`, `water`, `waves`, `hum`, `city`); calls are short sounds at random intervals (`birds`, `crickets`, `owl`, `gulls`, `chimes`, `thunder`, `traffic`). `background.js` reports each scene change through its `onScene` callback, and `main.js` passes it to `ambience.setScene()`. Every layer glides to its new level (about 1 s), so a layer two scenes share keeps playing. Beds are built when first needed and freed 8 s after they fade out.
+`ambience.js` plays background sounds that match the scene and its weather. Everything is synthesized (no audio files). A scene's `sounds` are `{ always, day, night }` layer-to-level maps, and `ambienceFor(scene, variant)` in `atmosphere.js` turns that into the mix: the `always` layers, plus `day` or `night` animals (hushed to 25 % in light rain, silent in a storm), plus rain (`rain` bed) or `storm` bed, plus `thunder` in stormy weather, plus wind by how hard the weather blows. Rain falling as snow (scenes with `precip: 'snow'`) plays no rain.
 
-Settings: `ambience` (SCENE SOUNDS toggle) and `ambienceVolume`, both in the AUDIO tab. Scene sounds also go silent when `background` is off or the tab is hidden. Thunder is not synced to the lightning flashes in the storm scene.
+Three kinds of layer:
+- Beds run all the time. Wind, waves, hum and city are live Web Audio graphs of filtered noise. Rain, storm, water and wheat are loops of thousands of single events built by `ambience-synth.js`, because filtered noise alone sounds like static: rain is soft drops (short rising chirps, like drops on leaves and puddles), hard drops (a sharp tick with a low pat, like drops on stone) and heavy drips into standing water over a quiet wash; the storm is mostly hard drops, driven in gusts; water is many small bubbles; wheat is dry ticks where stalks touch, papery brushes where ears slide past and hollow stem knocks, in swells that cross the stereo field as each gust passes, with near silence between gusts. Each bed plays two loops of different lengths together so the pattern takes about a minute to repeat. Loops are built in 6 ms slices (`inSlices`) the first time a scene needs them (50 to 90 ms of work each) and shared afterwards.
+- Calls are short sounds at random intervals: `birds`, `crickets`, `owl`, `gulls`, `chimes`, `traffic`.
+- Flags do nothing alone. `thunder` turns on the thunder that follows lightning: `background.js` reports each strike through its `onStrike` hook, `main.js` calls `ambience.strike(distance)`, and a pre-built clap (three distances, two takes each; overhead claps have a sharp crack, far ones a long dull rumble) plays after `0.06 + distance * 2.4` s, like sound lagging a flash.
+
+`background.js` reports each scene change through its `onScene` hook (`info.sounds`), and `main.js` passes it to `ambience.setScene()`. Every layer glides to its new level (about 1 s), so a layer two scenes share keeps playing. Beds are built when first needed and freed 8 s after they fade out. `renderAmbienceOffline(levels, seconds)` renders a mix for level checks.
+
+Settings: `ambience` (SCENE SOUNDS toggle) and `ambienceVolume`, both in the AUDIO tab. Scene sounds also go silent when `background` is off or the tab is hidden.
 
 ### Soundtrack
 
@@ -171,6 +199,8 @@ Visual update, done on 2026-09-25 (version 1.3.0): TETR.IO-style layout (hold an
 Scenes, scene sounds and music, done on 2026-09-30 (versions 1.4.0 and 1.4.1): wheat, castle and bamboo scenes redrawn; three new Casual scenes (sakura, aurora, falls); synthesized scene sounds with a toggle and volume; gapless track handoff; Casual and 40 Lines on calm, Blitz on intense, no mid-run switch; bell "bling" for the default Tetris clear. Checked in a browser: every scene was rendered and looked at, each builds in under 35 ms and draws in about 1 ms or less, and ambience levels were measured offline (scene mixes sit 5 to 20 dB under the soundtrack's RMS). Nothing here was listened to by a person.
 
 Mobile and GitHub Pages, done on 2026-09-30 (version 1.5.0): touch buttons, a narrower touch layout, small-screen menu styles, a web manifest and icon, and the Pages workflow. Checked in the browser pane at 375 x 812 (portrait) and 812 x 375 (landscape): the board, HUD and buttons fit, and the buttons moved, rotated, dropped and paused a real game. Not checked: a real phone (thumb reach, latency, iOS Safari audio unlock with three AudioContexts), and the workflow itself, which has not run yet.
+
+Weather and scene sounds, done on 2026-10-01 (version 1.6.0): every scene in seven weathers (see "Weather"), with a shared sky, grading, rain, snow, fog and lightning; rain, storm, water and wheat rebuilt from single drops, bubbles and stalks instead of noise; thunder that follows each lightning strike. Checked in a browser: all 77 scene and weather combinations build without errors (17 to 110 ms) and draw in under 1.6 ms a frame; a real AudioContext plays the rain and a clap adds 6 dB of peak on top of it; synth loops measured offline (peaky, uneven, steady level). Nothing was listened to by a person: levels are set by measurement, and the rain and wheat beds in particular need a listen.
 
 Next steps, in order:
 0. Try the game on a real phone and tune button size and placement. Consider PNG icons (iOS ignores SVG for the home screen icon) and a service worker for offline play.

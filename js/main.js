@@ -10,6 +10,7 @@ import { loadSettings, saveSettings, DEFAULT_SETTINGS,
          getConstraint } from './settings.js';
 import { describeSkin, SKINS } from './skins.js';
 import { createBackground, describeScene, CASUAL_SCENES } from './background.js';
+import { describeWeather } from './scenes/atmosphere.js';
 import { createSoundEngine } from './sound.js';
 import { createMusicPlayer } from './music-player.js';
 import { createMusicEngine } from './music.js';
@@ -35,8 +36,10 @@ const musicPlayerContainer = document.getElementById('music-player-container');
 const playfield = document.getElementById('playfield');
 const ambience = createAmbience(settings);
 const background = createBackground(
-    document.getElementById('bg-canvas'), document.getElementById('bg-layer'), settings,
-    levels => ambience.setScene(levels));
+    document.getElementById('bg-canvas'), document.getElementById('bg-layer'), settings, {
+        onScene: info => ambience.setScene(info.sounds),
+        onStrike: strike => ambience.strike(strike.distance),
+    });
 background.showMenu();
 
 const canvases = {
@@ -211,6 +214,7 @@ function buildSettingsUI() {
             { key: 'statsDisplay', label: 'STATS DISPLAY', type: 'enum', values: ['off', 'time', 'speed', 'efficiency', 'versus'], describe: describeStatsDisplay },
             { key: 'background', label: 'BACKGROUND', type: 'enum', values: ['on', 'dim', 'off'], describe: describeEnum },
             { key: 'casualScene', label: 'CASUAL SCENE', type: 'enum', values: ['cycle', ...CASUAL_SCENES], describe: describeScene },
+            { key: 'weather', label: 'WEATHER', type: 'enum', values: ['default', 'cycle', 'sunny', 'cloudy', 'sunset', 'rain', 'thunder', 'night', 'nightthunder'], describe: describeWeather },
             { key: 'ghostOpacity', label: 'GHOST OPACITY', type: 'range', describe: describeOpacity },
             { key: 'showActionText', label: 'CLEAR TEXT', type: 'toggle' },
         ]},
@@ -354,6 +358,7 @@ function buildSettingsUI() {
             if (key === 'soundtrack' && !currentGame?.isRunning()) music.setTrack(menuTrack());
             if (key === 'soundPack') soundEngine?.play('rotate');
             if (key === 'touchControls') fitGame();
+            if (key === 'casualScene' || key === 'weather') background.refresh();
 
             const tab = tabs.find(t => t.settings.some(s => s.key === key));
             const settingDef = tab?.settings.find(s => s.key === key);

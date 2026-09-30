@@ -3,6 +3,7 @@ import { TRACKS } from '../js/tracks.js';
 import { SCENES, CASUAL_SCENES } from '../js/background.js';
 import { AMBIENCE_LAYERS } from '../js/ambience.js';
 import { normalizeSettings } from '../js/settings.js';
+import { VARIANTS, VARIANT_INFO, CYCLE_ORDER, ambienceFor, cycleVariant } from '../js/scenes/atmosphere.js';
 
 let failures = 0;
 function check(name, cond, detail) {
@@ -57,10 +58,42 @@ check('tempos rise calm < competitive < intense',
 
 // --- Scenes and their background sounds ---
 for (const [id, scene] of Object.entries(SCENES)) {
-    const layers = Object.entries(scene.ambience || {});
-    const bad = layers.find(([name, level]) => !AMBIENCE_LAYERS.includes(name) || !(level > 0 && level <= 1));
-    check(`${id}: has a name and known ambience layers`, scene.id === id && !!scene.name && layers.length > 0 && !bad, bad && bad.join(' '));
+    const named = scene.id === id && !!scene.name && VARIANTS.includes(scene.signature) && Number.isFinite(scene.horizon);
+    const listed = ['always', 'day', 'night'].flatMap(k => Object.entries(scene.sounds?.[k] || {}));
+    const bad = listed.find(([name, level]) => !AMBIENCE_LAYERS.includes(name) || !(level > 0 && level <= 1));
+    check(`${id}: has a name, a signature weather, a horizon and known sounds`, named && !!scene.sounds && !bad, bad && bad.join(' '));
+
+    // The sound mix in every weather follows the picture
+    const problems = [];
+    for (const v of VARIANTS) {
+        const mix = ambienceFor(scene, v);
+        const info = VARIANT_INFO[v];
+        for (const [name, level] of Object.entries(mix)) {
+            if (!AMBIENCE_LAYERS.includes(name) || !(level > 0 && level <= 1)) problems.push(`${v}: bad layer ${name} ${level}`);
+        }
+        if (info.storm && mix.thunder !== 1) problems.push(`${v}: no thunder`);
+        if (!info.storm && mix.thunder) problems.push(`${v}: thunder without lightning`);
+        if (info.rain > 0 && scene.precip !== 'snow' && !(mix.rain || mix.storm)) problems.push(`${v}: no rain sound`);
+        if (info.rain === 0 && (mix.rain || mix.storm)) problems.push(`${v}: rain sound in dry weather`);
+        if (info.lit >= 0.7 && (mix.birds || mix.gulls)) problems.push(`${v}: daytime animals at night`);
+        if (info.storm && (mix.birds || mix.gulls)) problems.push(`${v}: animals in a storm`);
+    }
+    check(`${id}: sounds fit all ${VARIANTS.length} weathers`, problems.length === 0, problems.join('; '));
 }
+check('every weather has a name, a sky, grading and clouds',
+    VARIANTS.every(v => {
+        const i = VARIANT_INFO[v];
+        return i.name && i.sky.length === 6 && i.grade && i.clouds.near !== undefined && i.lit >= 0 && i.lit <= 1;
+    }));
+check('stormy weathers have rain and lightning, calm ones have neither',
+    VARIANTS.every(v => VARIANT_INFO[v].storm ? VARIANT_INFO[v].rain === 1 : VARIANT_INFO[v].rain < 1));
+check('night weathers turn the lights on, day weathers leave them off',
+    VARIANT_INFO.night.lit === 1 && VARIANT_INFO.nightthunder.lit === 1 && VARIANT_INFO.sunny.lit === 0);
+check('cycle by level walks through every weather before repeating',
+    new Set(CYCLE_ORDER.map((_, i) => cycleVariant(i + 1))).size === VARIANTS.length && cycleVariant(1) === cycleVariant(VARIANTS.length + 1));
+check('every weather can be picked in settings',
+    ['default', 'cycle', ...VARIANTS].every(w => normalizeSettings({ version: 2, weather: w }).weather === w)
+    && normalizeSettings({ version: 2, weather: 'hail' }).weather === 'default');
 check('every Casual scene exists and can be picked in settings',
     CASUAL_SCENES.every(id => SCENES[id] && normalizeSettings({ version: 2, casualScene: id }).casualScene === id),
     `${CASUAL_SCENES.length} scenes`);

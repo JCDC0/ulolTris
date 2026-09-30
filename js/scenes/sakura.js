@@ -1,11 +1,13 @@
 /**
- * sakura.js - Cherry blossoms around a hillside shrine gate on a spring morning,
- * petals drifting on the breeze (Casual).
+ * sakura.js - Cherry blossoms around a hillside shrine gate, petals drifting on the
+ * breeze (Casual). Signature look: sunny (a spring morning).
  */
 
-import { W, H, rng, layer, rect, px, ditherGradient, disc, ridge, cloud, hazeBand, wrap } from './pixel.js';
+import { W, H, rng, layer, rect, px, disc, glow, ridge, hazeBand, wrap } from './pixel.js';
 
 const PINK = ['#f7b9cf', '#ee8fb2', '#d96a97', '#fde0ea'];
+/** A peach horizon for the sunny variant only, so the morning feels like spring. */
+const SPRING_SKY = ['#6fa8dc', '#8fbfe6', '#b5d6ee', '#dbe6f2', '#f6dfe2', '#fbcfd4'];
 
 /** A mass of blossom: overlapping discs, dark underneath, light on top. */
 function blossom(ctx, r, x, y, size) {
@@ -53,14 +55,14 @@ function torii(ctx, x, base) {
 export default {
     id: 'sakura',
     name: 'Blossom Shrine',
-    ambience: { birds: 1, wind: 0.3, chimes: 0.6 },
-    create() {
-        const sky = layer();
-        ditherGradient(sky.ctx, 0, 0, W, 150, ['#6fa8dc', '#8fbfe6', '#b5d6ee', '#dbe6f2', '#f6dfe2', '#fbcfd4']);
-
-        const clouds = layer(W * 2, 80);
-        const cr = rng(71);
-        for (let i = 0; i < 7; i++) cloud(clouds.ctx, cr() * W * 2, 14 + cr() * 44, 5 + cr() * 6, '#ffffff', '#f3cfd9', 900 + i);
+    signature: 'sunny',
+    horizon: 150,
+    celestial: { sunX: 190, sunHighY: 26, sunLowY: 108, moonX: 190, moonY: 30 },
+    fog: [96, 156],
+    rainBand: [H - 24, H - 3],
+    sounds: { always: { chimes: 0.6 }, day: { birds: 1 }, night: { owl: 0.35, crickets: 0.4 } },
+    create(env) {
+        const sky = env.makeSky(env.id === 'sunny' ? { palette: SPRING_SKY } : {});
 
         const land = layer();
         const l = land.ctx;
@@ -78,40 +80,47 @@ export default {
                 }
             }
         }
-        hazeBand(l, 96, 132, '#f6dfe2', 0.7, 0.9);
-        ridge(l, 126, 7, '#8aa88e', 21, { freq: 0.02 });
-        for (let i = 0; i < 26; i++) disc(l, r() * W, 122 + r() * 8, 2 + Math.floor(r() * 2), r() < 0.6 ? '#eea4bf' : '#f7c4d6');
-        ridge(l, 142, 8, '#5f8f68', 22, { freq: 0.016 });
+        env.grade(land.canvas);
+        hazeBand(l, 96, 132, env.info.sky[env.info.sky.length - 1], 0.7, 0.9);
+
+        const hills = layer();
+        const h = hills.ctx;
+        ridge(h, 126, 7, '#8aa88e', 21, { freq: 0.02 });
+        for (let i = 0; i < 26; i++) disc(h, r() * W, 122 + r() * 8, 2 + Math.floor(r() * 2), r() < 0.6 ? '#eea4bf' : '#f7c4d6');
+        ridge(h, 142, 8, '#5f8f68', 22, { freq: 0.016 });
         for (let i = 0; i < 18; i++) {
             const x = r() * W, y = 136 + r() * 8;
-            rect(l, x, y, 1, 4, '#4a3a3a');
-            disc(l, x, y - 1, 3, '#e98bb0');
-            disc(l, x - 1, y - 2, 2, '#f7bfd3');
+            rect(h, x, y, 1, 4, '#4a3a3a');
+            disc(h, x, y - 1, 3, '#e98bb0');
+            disc(h, x - 1, y - 2, 2, '#f7bfd3');
         }
 
         // The shrine hill with stone steps up to the gate
         const hillY = x => Math.round(150 - Math.exp(-(((x - 120) / 70) ** 2)) * 22 + Math.sin(x * 0.05) * 1.5);
         for (let x = 0; x < W; x++) {
             const y = hillY(x);
-            rect(l, x, y, 1, H - y, '#3f7a4c');
-            rect(l, x, y, 1, 2, '#6cab62');
-            if (r() < 0.3) px(l, x, y + 3 + r() * 20, '#57955a');
-            if (r() < 0.12) px(l, x, y + 2 + r() * 24, '#f7bfd3');
+            rect(h, x, y, 1, H - y, '#3f7a4c');
+            rect(h, x, y, 1, 2, '#6cab62');
+            if (r() < 0.3) px(h, x, y + 3 + r() * 20, '#57955a');
+            if (r() < 0.12) px(h, x, y + 2 + r() * 24, '#f7bfd3');
         }
         for (let i = 0; i < 17; i++) {
             const y = 129 + i * 3;
             const half = 5 + i * 1.3;
-            rect(l, 120 - half, y, half * 2, 3, i % 2 ? '#b9b4ae' : '#cfcac2');
-            rect(l, 120 - half, y + 2, half * 2, 1, '#8d8890');
+            rect(h, 120 - half, y, half * 2, 3, i % 2 ? '#b9b4ae' : '#cfcac2');
+            rect(h, 120 - half, y + 2, half * 2, 1, '#8d8890');
         }
-        torii(l, 120, 130);
-        // Stone lanterns flanking the steps
-        for (const lx of [98, 142]) {
-            rect(l, lx, 138, 3, 7, '#9a96a0');
-            rect(l, lx - 1, 135, 5, 3, '#7c7884');
-            px(l, lx + 1, 136, '#ffd27a');
-            rect(l, lx - 2, 133, 7, 2, '#9a96a0');
+        torii(h, 120, 130);
+        // Stone lanterns flanking the steps: dark glass now, a flame when it is dark
+        const lanterns = [98, 142];
+        for (const lx of lanterns) {
+            rect(h, lx, 138, 3, 7, '#9a96a0');
+            rect(h, lx - 1, 135, 5, 3, '#7c7884');
+            px(h, lx + 1, 136, '#5a5a66');
+            rect(h, lx - 2, 133, 7, 2, '#9a96a0');
         }
+        env.grade(hills.canvas);
+        l.drawImage(hills.canvas, 0, 0);
 
         // The big cherry tree that frames the right side
         const tree = layer();
@@ -133,34 +142,60 @@ export default {
         for (const [x, y] of tips) blossom(tc, tr, x, y, 5 + Math.floor(tr() * 5));
         blossom(tc, tr, 290, 58, 12);
         blossom(tc, tr, 250, 46, 10);
+        env.grade(tree.canvas);
 
+        const petalColors = PINK.map(c => env.c(c));
         const petals = Array.from({ length: 46 }, () => ({
-            x: r() * W, y: r() * H, fall: 7 + r() * 9, drift: 8 + r() * 10, p: r() * 6, c: PINK[Math.floor(r() * 4)],
+            x: r() * W, y: r() * H, fall: 7 + r() * 9, drift: 8 + r() * 10, p: r() * 6, c: petalColors[Math.floor(r() * 4)],
         }));
         const birds = Array.from({ length: 3 }, (_, i) => ({ x: r() * W, y: 24 + r() * 30, speed: 10 + r() * 6, p: i * 2 }));
+        const flies = Array.from({ length: 12 }, () => ({ x: 20 + r() * 200, y: 128 + r() * 26, p: r() * 10 }));
+        const bird = env.c('#4a5a78');
+        const showBirds = !env.night && env.rain === 0;
+        const blow = 0.6 + env.wind * 1.4;
 
         return {
             draw(ctx, t) {
-                ctx.drawImage(sky.canvas, 0, 0);
-                const cx = Math.round(wrap(t * 2, W * 2));
-                ctx.drawImage(clouds.canvas, -cx, 0);
-                ctx.drawImage(clouds.canvas, W * 2 - cx, 0);
-                for (const b of birds) {
-                    const x = wrap(b.x + t * b.speed, W + 20) - 10;
-                    const y = Math.round(b.y + Math.sin(t * 0.8 + b.p) * 3);
-                    const up = Math.floor(t * 5 + b.p) % 2 === 0;
-                    px(ctx, x, y, '#4a5a78');
-                    px(ctx, x - 1, y + (up ? -1 : 1), '#4a5a78');
-                    px(ctx, x + 1, y + (up ? -1 : 1), '#4a5a78');
+                sky.draw(ctx, t);
+                if (showBirds) {
+                    ctx.fillStyle = bird;
+                    for (const b of birds) {
+                        const x = Math.round(wrap(b.x + t * b.speed, W + 20) - 10);
+                        const y = Math.round(b.y + Math.sin(t * 0.8 + b.p) * 3);
+                        const up = Math.floor(t * 5 + b.p) % 2 === 0 ? -1 : 1;
+                        ctx.fillRect(x, y, 1, 1);
+                        ctx.fillRect(x - 1, y + up, 1, 1);
+                        ctx.fillRect(x + 1, y + up, 1, 1);
+                    }
                 }
                 ctx.drawImage(land.canvas, 0, 0);
+
+                if (env.lit > 0.05) {
+                    ctx.globalAlpha = env.lit;
+                    for (const lx of lanterns) {
+                        const flick = Math.sin(t * 9 + lx) > 0;
+                        rect(ctx, lx, 136, 3, 2, flick ? '#ffe9a0' : '#ffd27a');
+                        glow(ctx, lx + 1, 137, 9, '#ffb84a', 0.5);
+                    }
+                    ctx.globalAlpha = 1;
+                }
+                if (env.night && env.rain === 0) {
+                    for (const f of flies) {
+                        const on = Math.sin(t * 2.2 + f.p);
+                        if (on < 0.1) continue;
+                        ctx.fillStyle = on > 0.7 ? '#eaff9a' : '#a8d85a';
+                        ctx.fillRect(Math.round(f.x + Math.sin(t * 0.6 + f.p) * 14), Math.round(f.y + Math.sin(t * 1.3 + f.p * 2) * 5), 1, 1);
+                    }
+                }
+
                 ctx.drawImage(tree.canvas, 0, 0);
 
                 for (const p of petals) {
-                    const y = wrap(p.y + t * p.fall, H + 8) - 4;
-                    const x = wrap(p.x - t * p.drift + Math.sin(t * 1.3 + p.p) * 7, W + 8) - 4;
+                    const y = wrap(p.y + t * p.fall * blow, H + 8) - 4;
+                    const x = wrap(p.x - t * p.drift * blow + Math.sin(t * 1.3 + p.p) * 7, W + 8) - 4;
                     const flip = Math.sin(t * 4 + p.p) > 0;
-                    rect(ctx, x, y, flip ? 2 : 1, flip ? 1 : 2, p.c);
+                    ctx.fillStyle = p.c;
+                    ctx.fillRect(Math.round(x), Math.round(y), flip ? 2 : 1, flip ? 1 : 2);
                 }
             },
         };
