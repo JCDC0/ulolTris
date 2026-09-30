@@ -38,6 +38,7 @@ const background = createBackground(
             menu?.setSceneTag(sceneTag);
         },
         onStrike: strike => ambience.strike(strike.distance),
+        onCue: cue => ambience.cue(cue.kind),
     });
 background.showMenu();
 

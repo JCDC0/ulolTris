@@ -46,6 +46,8 @@ export function describeScene(id) {
  *   onScene({ id, variant, sceneName, weatherName, sounds }): the scene changed;
  *     `sounds` maps ambience layer names to levels (0..1)
  *   onStrike({ distance }): lightning flashed in the current scene
+ *   onCue({ t, kind }): something happened in a scene that makes a sound (the Neon Fall
+ *     stacker moved, locked or cleared four rows)
  */
 export function createBackground(canvas, layerEl, settings, hooks = {}) {
     canvas.width = W;
@@ -73,7 +75,7 @@ export function createBackground(canvas, layerEl, settings, hooks = {}) {
             const scene = SCENES[id];
             const env = createEnv(variant, scene);
             const drawing = scene.create(env);
-            inst = { env, draw(c, t) { drawing.draw(c, t); env.overlay(c, t); } };
+            inst = { env, events: drawing.events, draw(c, t) { drawing.draw(c, t); env.overlay(c, t); } };
             instances.set(key, inst);
             for (const old of instances.keys()) {
                 if (instances.size <= KEEP_INSTANCES) break;
@@ -159,6 +161,7 @@ export function createBackground(canvas, layerEl, settings, hooks = {}) {
         const inst = instance(current);
         inst.draw(ctx, t);
         if (hooks.onStrike) inst.env.poll(t, hooks.onStrike);
+        if (hooks.onCue && inst.events) inst.events(t, hooks.onCue);
         const k = (t - fadeStart) / FADE_S;
         if (previous && k < 1) {
             instance(previous).draw(fadeCtx, t);

@@ -1,11 +1,15 @@
 /**
- * neon.js - Neon block outlines falling over a scrolling synthwave grid (Casual).
- * Signature look: night. This scene keeps its own sky and colors in every weather,
- * because its palette is made of light: a retro striped sun on the horizon, a grid
- * that glows, and blocks that fall in every kind of weather.
+ * neon.js - An 80s arcade night over a scrolling synthwave grid (Casual). Signature
+ * look: night. This scene keeps its own sky and colors in every weather, because its
+ * palette is made of light: a retro striped sun on the horizon, a grid that glows, and
+ * a glowing block stacker that plays itself on the right (see neon-demo.js): it builds
+ * four rows, drops an I piece down the well for a Tetris, lets the rest fall, and starts
+ * over for ever. A few neon pieces drift down the left half behind it. The demo reports
+ * its moves through `events` so the arcade sounds land on the beat of the picture.
  */
 
-import { W, H, rng, layer, rect, px, ditherGradient, glow, wrap } from './pixel.js';
+import { W, H, rng, layer, rect, ditherGradient, glow, wrap } from './pixel.js';
+import { createDemo, COLS, ROWS, KINDS, shapeOf } from './neon-demo.js';
 
 const HORIZON = 118;
 const SHAPES = [
@@ -18,6 +22,50 @@ const SHAPES = [
     [[1, 1, 0], [0, 1, 1]],
 ];
 const COLORS = ['#3ff5d0', '#ff4fb4', '#ffd84a', '#7a6bff', '#9bff5a', '#ff7a3a'];
+/** The stacker's piece colors, in the order of KINDS (I O T S Z J L). */
+const KIND_COLORS = ['#3ff5d0', '#ffd84a', '#b06bff', '#9bff5a', '#ff4f7a', '#4f8bff', '#ff9a3a'];
+const CELL = 7;
+const BOARD = { x: 232, y: 30 };
+const PANEL = { x: 187, y: 30, w: 39 };
+
+/** A 3 x 5 pixel font: the letters and digits the stacker's readout needs. */
+const GLYPHS = {
+    0: '111101101101111', 1: '010110010010111', 2: '111001111100111', 3: '111001111001111', 4: '101101111001001',
+    5: '111100111001111', 6: '111100111101111', 7: '111001001001001', 8: '111101111101111', 9: '111101111001111',
+    T: '111010010010010', E: '111100111100111', R: '111101111110101', I: '111010010010111', S: '111100111001111',
+    L: '100100100100111', N: '111101101101101', V: '101101101101010', C: '111100100100111', O: '111101101101111',
+    X: '101101010101101', D: '110101101101110',
+};
+
+/** Draw a string in the pixel font; `scale` makes each font pixel a square of that many pixels. */
+function text(ctx, str, x, y, color, scale = 1) {
+    ctx.fillStyle = color;
+    let cx = x;
+    for (const ch of String(str)) {
+        const g = GLYPHS[ch];
+        if (g) for (let i = 0; i < 15; i++) if (g[i] === '1') ctx.fillRect(cx + (i % 3) * scale, y + Math.floor(i / 3) * scale, scale, scale);
+        cx += 4 * scale;
+    }
+}
+const textWidth = (str, scale = 1) => String(str).length * 4 * scale - scale;
+
+/** One block as a neon outline with a dim fill, drawn once and stamped. */
+function cellSprite(color, white) {
+    const c = document.createElement('canvas');
+    c.width = c.height = CELL;
+    const g = c.getContext('2d');
+    g.fillStyle = white ? '#ffffff' : color;
+    g.fillRect(0, 0, CELL, CELL);
+    g.fillStyle = white ? 'rgba(255,255,255,0.78)' : 'rgba(8,2,20,0.66)';
+    g.fillRect(1, 1, CELL - 2, CELL - 2);
+    g.globalAlpha = white ? 0 : 0.42;
+    g.fillStyle = color;
+    g.fillRect(2, 2, CELL - 4, CELL - 4);
+    g.globalAlpha = 0.75;
+    g.fillStyle = '#ffffff';
+    g.fillRect(1, 1, 1, 1);
+    return c;
+}
 
 /**
  * The look in each weather: sky gradient, floor gradient, grid color, the retro sun
@@ -104,7 +152,7 @@ export default {
     celestial: { sunX: 160, sunHighY: 60, sunLowY: 60, moonX: 160, moonY: 60 },
     fog: [HORIZON - 30, HORIZON + 40],
     rainBand: [HORIZON + 10, H - 4],
-    sounds: { always: { hum: 0.6 }, day: {}, night: {} },
+    sounds: { always: { hum: 0.35, arcade: 1, cabinets: 0.6 }, day: {}, night: {} },
     create(env) {
         const look = LOOKS[env.id];
         const sky = env.makeSky({ palette: look.sky, noSun: true });
@@ -117,16 +165,99 @@ export default {
         rect(floor.ctx, 0, HORIZON, W, 1, look.horizon);
 
         const r = rng(71);
-        const pieces = Array.from({ length: 18 }, () => {
+        // A few pieces drift down the left half; the stacker owns the right
+        const pieces = Array.from({ length: 10 }, () => {
             let shape = SHAPES[Math.floor(r() * SHAPES.length)];
             for (let k = Math.floor(r() * 4); k > 0; k--) shape = rotate(shape);
             const cell = r() < 0.35 ? 7 : r() < 0.6 ? 5 : 4;
             return {
-                shape, cell, x: r() * (W - 30), y: r() * H, speed: 6 + cell * 2.2 + r() * 6,
+                shape, cell, x: r() * 150, y: r() * H, speed: 6 + cell * 2.2 + r() * 6,
                 color: COLORS[Math.floor(r() * COLORS.length)], p: r() * 6,
             };
         }).sort((a, b) => a.cell - b.cell);
         const rush = 1.4 + env.wind * 0.3;
+
+        const demo = createDemo(9, 6);
+        const sprites = KIND_COLORS.map(c => cellSprite(c, false));
+        const flashSprites = KIND_COLORS.map(c => cellSprite(c, true));
+        const ink = look.grid === '#ffffff' ? '#e8f4ff' : look.grid;
+        const cellsW = COLS * CELL, cellsH = ROWS * CELL;
+
+        /** The stacker: panel, board, pieces, sparks and the TETRIS banner. */
+        function drawStacker(ctx, t) {
+            const f = demo.frame(t);
+            const { x: bx, y: by } = BOARD;
+
+            // Readout on the left of the board
+            ctx.fillStyle = 'rgba(6,2,16,0.5)';
+            ctx.fillRect(PANEL.x, PANEL.y, PANEL.w, 100);
+            text(ctx, 'NEXT', PANEL.x + 5, PANEL.y + 4, ink);
+            const shape = shapeOf(KINDS[f.next]);
+            const small = 4;
+            const sx = PANEL.x + Math.round((PANEL.w - shape.w * small) / 2);
+            for (const [dx, dy] of shape.cells) rect(ctx, sx + dx * small, PANEL.y + 13 + dy * small, small - 1, small - 1, KIND_COLORS[f.next]);
+            text(ctx, 'LINES', PANEL.x + 5, PANEL.y + 32, ink);
+            text(ctx, String(f.lines % 1000).padStart(3, '0'), PANEL.x + 5, PANEL.y + 40, '#ffffff');
+            text(ctx, 'LEVEL', PANEL.x + 5, PANEL.y + 54, ink);
+            text(ctx, String(f.level % 100).padStart(2, '0'), PANEL.x + 5, PANEL.y + 62, '#ffffff');
+            text(ctx, 'SCORE', PANEL.x + 5, PANEL.y + 76, ink);
+            text(ctx, String(f.score % 100000).padStart(5, '0'), PANEL.x + 5, PANEL.y + 84, '#ffffff');
+
+            // Well: glow, dark glass, faint grid, frame
+            ctx.globalAlpha = 0.18 + 0.05 * Math.sin(t * 2.4);
+            ctx.fillStyle = ink;
+            ctx.fillRect(bx - 3, by - 3, cellsW + 6, cellsH + 6);
+            ctx.globalAlpha = 1;
+            ctx.fillStyle = 'rgba(6,2,16,0.72)';
+            ctx.fillRect(bx, by, cellsW, cellsH);
+            ctx.fillStyle = ink;
+            ctx.globalAlpha = 0.07;
+            for (let x = 1; x < COLS; x++) ctx.fillRect(bx + x * CELL, by, 1, cellsH);
+            for (let y = 1; y < ROWS; y++) ctx.fillRect(bx, by + y * CELL, cellsW, 1);
+            ctx.globalAlpha = 1;
+            ctx.fillRect(bx - 1, by, 1, cellsH + 1);
+            ctx.fillRect(bx + cellsW, by, 1, cellsH + 1);
+            ctx.fillRect(bx - 1, by + cellsH, cellsW + 2, 1);
+
+            if (f.ghost) {
+                ctx.globalAlpha = 0.4;
+                ctx.fillStyle = ink;
+                for (const [x, y] of f.ghost) {
+                    const cx = bx + x * CELL, cy = by + Math.round(y) * CELL;
+                    ctx.fillRect(cx, cy, CELL, 1);
+                    ctx.fillRect(cx, cy + CELL - 1, CELL, 1);
+                    ctx.fillRect(cx, cy, 1, CELL);
+                    ctx.fillRect(cx + CELL - 1, cy, 1, CELL);
+                }
+                ctx.globalAlpha = 1;
+            }
+            for (const c of f.cells) {
+                ctx.drawImage((c.flash ? flashSprites : sprites)[c.k], bx + c.x * CELL, by + Math.round(c.y * CELL));
+            }
+            if (f.piece) {
+                for (const [x, y] of f.piece.cells) ctx.drawImage(sprites[f.piece.k], bx + x * CELL, by + Math.round(y * CELL));
+            }
+            for (const s of f.sparks) {
+                ctx.globalAlpha = Math.max(0, s.a);
+                rect(ctx, bx + Math.round(s.x * CELL), by + Math.round(s.y * CELL), 2, 2, s.a > 0.6 ? '#ffffff' : KIND_COLORS[s.k]);
+            }
+            ctx.globalAlpha = 1;
+
+            if (f.title > 0) {
+                const scale = 2;
+                const word = 'TETRIS';
+                const tx = bx + Math.round((cellsW - textWidth(word, scale)) / 2);
+                const ty = by + 52 - Math.round((1 - f.title) * 6);
+                ctx.globalAlpha = f.title;
+                ctx.fillStyle = 'rgba(6,2,16,0.75)';
+                ctx.fillRect(tx - 4, ty - 4, textWidth(word, scale) + 8, 18);
+                text(ctx, word, tx + 1, ty + 1, '#ff2d8a', scale);
+                text(ctx, word, tx, ty, Math.floor(t * 12) % 2 ? '#ffffff' : '#ffe066', scale);
+                ctx.globalAlpha = 1;
+            }
+        }
+
+        let lastEventT = null;
 
         return {
             draw(ctx, t) {
@@ -158,6 +289,13 @@ export default {
                     drawPiece(ctx, p.shape, x, y - p.cell * 1.5, p.cell, p.color, 0.3 * look.glow);
                     drawPiece(ctx, p.shape, x, y, p.cell, p.color, Math.min(1, 0.55 + 0.45 * look.glow));
                 }
+
+                drawStacker(ctx, t);
+            },
+            /** Report the stacker's moves since the last call, so the arcade sounds can follow them. */
+            events(t, fire) {
+                if (lastEventT !== null && t > lastEventT && t - lastEventT < 1) for (const e of demo.events(lastEventT, t)) fire(e);
+                lastEventT = t;
             },
         };
     },

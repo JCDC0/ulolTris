@@ -2038,9 +2038,353 @@
     }
   };
 
+  // js/scenes/neon-demo.js
+  var COLS = 10;
+  var ROWS = 20;
+  var KINDS = ["I", "O", "T", "S", "Z", "J", "L"];
+  var WELL = COLS - 1;
+  var STACK_TOP = ROWS - 4;
+  var SHAPES = {
+    I: [[1, 1, 1, 1]],
+    O: [[1, 1], [1, 1]],
+    T: [[0, 1, 0], [1, 1, 1]],
+    S: [[0, 1, 1], [1, 1, 0]],
+    Z: [[1, 1, 0], [0, 1, 1]],
+    J: [[1, 0, 0], [1, 1, 1]],
+    L: [[0, 0, 1], [1, 1, 1]]
+  };
+  var rotateCw = (m) => m[0].map((_, i) => m.map((row) => row[i]).reverse());
+  var ROTATIONS = Object.fromEntries(KINDS.map((kind) => {
+    const list = [];
+    let m = SHAPES[kind];
+    for (let i = 0; i < 4; i++) {
+      const cells = [];
+      m.forEach((row, dy) => row.forEach((v, dx) => {
+        if (v) cells.push([dx, dy]);
+      }));
+      list.push({ cells, w: m[0].length, h: m.length });
+      m = rotateCw(m);
+    }
+    return [kind, list];
+  }));
+  var ORIENTS = Object.fromEntries(KINDS.map((kind) => {
+    const seen = /* @__PURE__ */ new Set();
+    const list = [];
+    ROTATIONS[kind].forEach((o, rot) => {
+      const key = o.cells.join(";");
+      if (!seen.has(key)) {
+        seen.add(key);
+        list.push({ ...o, rot });
+      }
+    });
+    return [kind, list];
+  }));
+  var flatBottom = (o) => Array.from({ length: o.w }, (_, dx) => o.cells.some(([x, y]) => x === dx && y === o.h - 1)).every(Boolean);
+  var TOPPERS = KINDS.flatMap((kind) => ORIENTS[kind].filter((o) => o.h <= 2 && flatBottom(o)).map((o) => ({ kind, o })));
+  var at = (x, y) => y * COLS + x;
+  function fits(board, cells, x, y) {
+    return cells.every(([dx, dy]) => {
+      const cx = x + dx, cy = y + dy;
+      return cx >= 0 && cx < COLS && cy < ROWS && (cy < 0 || board[at(cx, cy)] === 0);
+    });
+  }
+  function landing(board, cells, x) {
+    if (!fits(board, cells, x, 0)) return -1;
+    let y = 0;
+    while (fits(board, cells, x, y + 1)) y++;
+    return y;
+  }
+  function paint(board, move) {
+    const v = KINDS.indexOf(move.kind) + 1;
+    for (const [dx, dy] of move.o.cells) board[at(move.x + dx, move.y + dy)] = v;
+  }
+  function shuffle(list, r) {
+    for (let i = list.length - 1; i > 0; i--) {
+      const j = Math.floor(r() * (i + 1));
+      [list[i], list[j]] = [list[j], list[i]];
+    }
+    return list;
+  }
+  function tile(board, r) {
+    const cover = new Int8Array(COLS * ROWS).fill(-1);
+    const pieces = [];
+    let nodes = 0;
+    const options = KINDS.flatMap((kind) => ORIENTS[kind].map((o) => ({ kind, o })));
+    const firstEmpty = () => {
+      for (let y = STACK_TOP; y < ROWS; y++) for (let x = 0; x < WELL; x++) if (board[at(x, y)] === 0 && cover[at(x, y)] < 0) return [x, y];
+      return null;
+    };
+    const solve = () => {
+      const spot = firstEmpty();
+      if (!spot) return true;
+      if (++nodes > 4e3) return false;
+      const [x, y] = spot;
+      for (const { kind, o } of shuffle(options.slice(), r)) {
+        const ox = x - o.cells[0][0], oy = y - o.cells[0][1];
+        const ok = o.cells.every(([dx, dy]) => {
+          const cx = ox + dx, cy = oy + dy;
+          return cx >= 0 && cx < WELL && cy >= STACK_TOP && cy < ROWS && board[at(cx, cy)] === 0 && cover[at(cx, cy)] < 0;
+        });
+        if (!ok) continue;
+        for (const [dx, dy] of o.cells) cover[at(ox + dx, oy + dy)] = pieces.length;
+        pieces.push({ kind, o, x: ox, y: oy });
+        if (solve()) return true;
+        pieces.pop();
+        for (const [dx, dy] of o.cells) cover[at(ox + dx, oy + dy)] = -1;
+      }
+      return false;
+    };
+    return solve() ? pieces : null;
+  }
+  function dropOrder(board, pieces, r) {
+    const filled = board.slice();
+    const left = pieces.slice();
+    const order = [];
+    const supported = (p) => p.o.cells.every(([dx, dy]) => {
+      const cx = p.x + dx, cy = p.y + dy + 1;
+      return cy >= ROWS || p.o.cells.some(([ex, ey]) => ex === dx && ey === dy + 1) || filled[at(cx, cy)] !== 0;
+    });
+    while (left.length) {
+      const ready = left.filter(supported);
+      if (!ready.length) return null;
+      const p = ready[Math.floor(r() * ready.length)];
+      paint(filled, p);
+      order.push(p);
+      left.splice(left.indexOf(p), 1);
+    }
+    return order;
+  }
+  function planStack(board, r) {
+    for (let attempt = 0; attempt < 60; attempt++) {
+      const pieces = tile(board, r);
+      const order = pieces && dropOrder(board, pieces, r);
+      if (order) return order;
+    }
+    return null;
+  }
+  function chooseToppers(block, r) {
+    const board = block.slice();
+    const moves = [];
+    const count = r() < 0.5 ? 2 : 1;
+    for (let k = 0; k < count; k++) {
+      for (let tries = 0; tries < 30; tries++) {
+        const { kind, o } = TOPPERS[Math.floor(r() * TOPPERS.length)];
+        const x = Math.floor(r() * (COLS - o.w));
+        const y = landing(board, o.cells, x);
+        if (y < 0 || y > STACK_TOP - 1) continue;
+        const holeFree = o.cells.every(([dx, dy]) => dy < o.h - 1 || y + dy + 1 >= ROWS || board[at(x + dx, y + dy + 1)] !== 0);
+        if (!holeFree) continue;
+        const move = { kind, o, x, y };
+        paint(board, move);
+        moves.push(move);
+        break;
+      }
+    }
+    return moves;
+  }
+  function afterClear(board) {
+    const next = new Uint8Array(COLS * ROWS);
+    for (let y = 0; y < STACK_TOP; y++) for (let x = 0; x < COLS; x++) next[at(x, y + 4)] = board[at(x, y)];
+    return next;
+  }
+  function planCycles(r, count) {
+    const cycles = [];
+    let left = new Uint8Array(COLS * ROWS);
+    let stack = planStack(left, r);
+    for (let c = 0; c < count; c++) {
+      const last = c === count - 1;
+      const block = left.slice();
+      for (const m of stack) paint(block, m);
+      let toppers = [];
+      let nextLeft = new Uint8Array(COLS * ROWS);
+      let nextStack = null;
+      for (let attempt = 0; attempt < 120 && !last; attempt++) {
+        toppers = chooseToppers(block, r);
+        const after = block.slice();
+        for (const m of toppers) paint(after, m);
+        nextLeft = afterClear(after);
+        nextStack = planStack(nextLeft, r);
+        if (nextStack) break;
+      }
+      if (!last && !nextStack) throw new Error("neon demo: no plan for the next cycle");
+      const well = { kind: "I", o: ORIENTS.I.find((o) => o.h === 4), x: WELL, y: STACK_TOP };
+      cycles.push({ left, stack, toppers, well, nextLeft });
+      left = nextLeft;
+      stack = nextStack;
+    }
+    return cycles;
+  }
+  function shapeOf(kind) {
+    return ROTATIONS[kind][0];
+  }
+  var easeIn = (u) => u * u;
+  var clamp01 = (u) => Math.max(0, Math.min(1, u));
+  function createDemo(seed = 9, cycleCount = 6) {
+    const r = rng(seed);
+    const cycles = planCycles(r, cycleCount);
+    const moves = [];
+    const events = [];
+    const bursts = [];
+    let cursor = 0;
+    cycles.forEach((cycle, ci) => {
+      const board = cycle.left.slice();
+      const list = [
+        ...cycle.stack.map((m) => ({ ...m, role: "stack" })),
+        ...cycle.toppers.map((m) => ({ ...m, role: "topper" })),
+        { ...cycle.well, role: "well" }
+      ];
+      for (const m of list) {
+        const spawnX = Math.floor((COLS - ROTATIONS[m.kind][0].w) / 2);
+        const steps = m.o.rot === 3 ? [3] : Array.from({ length: m.o.rot }, (_, i) => i + 1);
+        const t0 = cursor;
+        let t = t0 + 0.16 + r() * 0.08;
+        const rotTimes = steps.map(() => {
+          const at0 = t;
+          t += 0.11;
+          return at0;
+        });
+        const slideAt = t;
+        const cols = Math.abs(m.x - spawnX);
+        t += cols * 0.05 + 0.05;
+        const dropAt = t;
+        t += Math.max(0.1, m.y / 55);
+        const move = {
+          ...m,
+          cycle: ci,
+          before: board.slice(),
+          spawnX,
+          steps,
+          rotTimes,
+          slideAt,
+          cols,
+          dropAt,
+          lockAt: t,
+          spawnAt: t0
+        };
+        moves.push(move);
+        rotTimes.forEach((rt) => events.push({ t: rt, kind: "rotate" }));
+        if (cols > 0) events.push({ t: slideAt, kind: "move" });
+        events.push({ t: dropAt, kind: "drop" }, { t, kind: "lock" });
+        paint(board, m);
+        cursor = t + 0.14 + r() * 0.2;
+        if (m.role === "well") {
+          move.clear = { flashEnd: t + 0.6, burstAt: t + 0.6, collapseStart: t + 0.62, collapseEnd: t + 0.95, settled: cycle.toppers.length > 0 };
+          move.after = board.slice();
+          events.push({ t, kind: "tetris" });
+          bursts.push(t + 0.6);
+          if (move.clear.settled) events.push({ t: t + 0.95, kind: "land" });
+          cursor = t + (ci === cycles.length - 1 ? 1.6 : 1.4);
+        }
+      }
+    });
+    const period = cursor;
+    events.sort((a, b) => a.t - b.t);
+    const scores = [0];
+    const scoreAfter = (n) => {
+      while (scores.length <= n) {
+        const i = scores.length - 1;
+        scores.push(scores[i] + 800 * (1 + Math.floor(i * 4 / 10)));
+      }
+      return scores[n];
+    };
+    const sparkSeed = rng(seed * 31 + 7);
+    const sparkVel = Array.from({ length: COLS * ROWS * 2 }, () => [(sparkSeed() - 0.5) * 30, -6 - sparkSeed() * 22]);
+    function frame(t) {
+      const loops = Math.floor(t / period);
+      const tt = t - loops * period;
+      let idx = 0;
+      for (let lo = 0, hi = moves.length - 1; lo <= hi; ) {
+        const mid = lo + hi >> 1;
+        if (moves[mid].spawnAt <= tt) {
+          idx = mid;
+          lo = mid + 1;
+        } else hi = mid - 1;
+      }
+      const m = moves[idx];
+      const out = { cells: [], piece: null, ghost: null, sparks: [], title: 0, next: 0, lines: 0, level: 1, score: 0 };
+      const addBoard = (board, from, to, dy = 0, flash = false) => {
+        for (let y = from; y < to; y++) for (let x = 0; x < COLS; x++) {
+          const v = board[at(x, y)];
+          if (v) out.cells.push({ x, y: y + dy, k: v - 1, flash });
+        }
+      };
+      out.next = KINDS.indexOf(moves[(idx + 1) % moves.length].kind);
+      if (tt < m.lockAt) {
+        addBoard(m.before, 0, ROWS);
+        const k = KINDS.indexOf(m.kind);
+        let rot = 0;
+        m.rotTimes.forEach((rt, i) => {
+          if (tt >= rt) rot = m.steps[i];
+        });
+        const shape = ROTATIONS[m.kind][rot].cells;
+        let px2 = m.spawnX;
+        let py = 0;
+        if (tt >= m.slideAt) {
+          const moved = Math.min(m.cols, Math.floor((tt - m.slideAt) / 0.05) + 1);
+          px2 = m.spawnX + Math.sign(m.x - m.spawnX) * moved;
+        }
+        if (tt >= m.dropAt) py = m.y * easeIn(clamp01((tt - m.dropAt) / (m.lockAt - m.dropAt)));
+        if (tt >= m.dropAt) px2 = m.x;
+        out.piece = { k, cells: shape.map(([dx, dy]) => [px2 + dx, py + dy]) };
+        if (tt >= m.slideAt + Math.max(0, m.cols * 0.05) - 0.01) {
+          out.ghost = m.o.cells.map(([dx, dy]) => [m.x + dx, m.y + dy]);
+        }
+      } else if (!m.clear) {
+        addBoard(m.before, 0, ROWS);
+        const lockedFor = tt - m.lockAt;
+        for (const [dx, dy] of m.o.cells) out.cells.push({ x: m.x + dx, y: m.y + dy, k: KINDS.indexOf(m.kind), flash: lockedFor < 0.06 });
+      } else {
+        const c = m.clear;
+        const since = tt - m.lockAt;
+        if (tt < c.flashEnd) {
+          const flash = Math.floor(since / 0.05) % 2 === 0;
+          addBoard(m.after, 0, STACK_TOP);
+          addBoard(m.after, STACK_TOP, ROWS, 0, flash);
+        } else {
+          const u = clamp01((tt - c.collapseStart) / (c.collapseEnd - c.collapseStart));
+          addBoard(m.after, 0, STACK_TOP, 4 * easeIn(u));
+          const age = tt - c.burstAt;
+          if (age < 0.9) {
+            for (let y = STACK_TOP; y < ROWS; y++) for (let x = 0; x < COLS; x++) {
+              const v = m.after[at(x, y)];
+              if (!v) continue;
+              for (let s = 0; s < 2; s++) {
+                const [vx, vy] = sparkVel[at(x, y) * 2 + s];
+                out.sparks.push({ x: x + 0.5 + vx * age / 7, y: y + 0.5 + (vy * age + 38 * age * age) / 7, k: v - 1, a: 1 - age / 0.9 });
+              }
+            }
+          }
+        }
+        if (since < 1.5) out.title = Math.min(1, since / 0.12) * (since > 1.1 ? (1.5 - since) / 0.4 : 1);
+      }
+      const done = bursts.filter((b) => b <= tt).length;
+      const tetrises = loops * cycles.length + done;
+      out.lines = tetrises * 4;
+      out.level = 1 + Math.floor(out.lines / 10);
+      out.score = scoreAfter(tetrises);
+      return out;
+    }
+    return {
+      period,
+      cycles,
+      moves,
+      frame,
+      events(t0, t1) {
+        const found = [];
+        for (let p = Math.floor(t0 / period); p <= Math.floor(t1 / period); p++) {
+          for (const e of events) {
+            const at0 = p * period + e.t;
+            if (at0 > t0 && at0 <= t1) found.push({ t: at0, kind: e.kind });
+          }
+        }
+        return found;
+      }
+    };
+  }
+
   // js/scenes/neon.js
   var HORIZON3 = 118;
-  var SHAPES = [
+  var SHAPES2 = [
     [[1, 1, 1, 1]],
     [[1, 0, 0], [1, 1, 1]],
     [[0, 0, 1], [1, 1, 1]],
@@ -2050,6 +2394,62 @@
     [[1, 1, 0], [0, 1, 1]]
   ];
   var COLORS = ["#3ff5d0", "#ff4fb4", "#ffd84a", "#7a6bff", "#9bff5a", "#ff7a3a"];
+  var KIND_COLORS = ["#3ff5d0", "#ffd84a", "#b06bff", "#9bff5a", "#ff4f7a", "#4f8bff", "#ff9a3a"];
+  var CELL = 7;
+  var BOARD = { x: 232, y: 30 };
+  var PANEL = { x: 187, y: 30, w: 39 };
+  var GLYPHS = {
+    0: "111101101101111",
+    1: "010110010010111",
+    2: "111001111100111",
+    3: "111001111001111",
+    4: "101101111001001",
+    5: "111100111001111",
+    6: "111100111101111",
+    7: "111001001001001",
+    8: "111101111101111",
+    9: "111101111001111",
+    T: "111010010010010",
+    E: "111100111100111",
+    R: "111101111110101",
+    I: "111010010010111",
+    S: "111100111001111",
+    L: "100100100100111",
+    N: "111101101101101",
+    V: "101101101101010",
+    C: "111100100100111",
+    O: "111101101101111",
+    X: "101101010101101",
+    D: "110101101101110"
+  };
+  function text(ctx, str, x, y, color, scale = 1) {
+    ctx.fillStyle = color;
+    let cx = x;
+    for (const ch of String(str)) {
+      const g = GLYPHS[ch];
+      if (g) {
+        for (let i = 0; i < 15; i++) if (g[i] === "1") ctx.fillRect(cx + i % 3 * scale, y + Math.floor(i / 3) * scale, scale, scale);
+      }
+      cx += 4 * scale;
+    }
+  }
+  var textWidth = (str, scale = 1) => String(str).length * 4 * scale - scale;
+  function cellSprite(color, white) {
+    const c = document.createElement("canvas");
+    c.width = c.height = CELL;
+    const g = c.getContext("2d");
+    g.fillStyle = white ? "#ffffff" : color;
+    g.fillRect(0, 0, CELL, CELL);
+    g.fillStyle = white ? "rgba(255,255,255,0.78)" : "rgba(8,2,20,0.66)";
+    g.fillRect(1, 1, CELL - 2, CELL - 2);
+    g.globalAlpha = white ? 0 : 0.42;
+    g.fillStyle = color;
+    g.fillRect(2, 2, CELL - 4, CELL - 4);
+    g.globalAlpha = 0.75;
+    g.fillStyle = "#ffffff";
+    g.fillRect(1, 1, 1, 1);
+    return c;
+  }
   var LOOKS = {
     sunny: {
       sky: ["#5a6cf0", "#7f84f4", "#b48cf0", "#ee8cd0", "#ffb0b8", "#ffd8a8"],
@@ -2147,7 +2547,7 @@
     celestial: { sunX: 160, sunHighY: 60, sunLowY: 60, moonX: 160, moonY: 60 },
     fog: [HORIZON3 - 30, HORIZON3 + 40],
     rainBand: [HORIZON3 + 10, H - 4],
-    sounds: { always: { hum: 0.6 }, day: {}, night: {} },
+    sounds: { always: { hum: 0.35, arcade: 1, cabinets: 0.6 }, day: {}, night: {} },
     create(env) {
       const look = LOOKS[env.id];
       const sky = env.makeSky({ palette: look.sky, noSun: true });
@@ -2158,14 +2558,14 @@
       ditherGradient(floor.ctx, 0, HORIZON3, W, H - HORIZON3, look.floor);
       rect(floor.ctx, 0, HORIZON3, W, 1, look.horizon);
       const r = rng(71);
-      const pieces = Array.from({ length: 18 }, () => {
-        let shape = SHAPES[Math.floor(r() * SHAPES.length)];
+      const pieces = Array.from({ length: 10 }, () => {
+        let shape = SHAPES2[Math.floor(r() * SHAPES2.length)];
         for (let k = Math.floor(r() * 4); k > 0; k--) shape = rotate(shape);
         const cell = r() < 0.35 ? 7 : r() < 0.6 ? 5 : 4;
         return {
           shape,
           cell,
-          x: r() * (W - 30),
+          x: r() * 150,
           y: r() * H,
           speed: 6 + cell * 2.2 + r() * 6,
           color: COLORS[Math.floor(r() * COLORS.length)],
@@ -2173,6 +2573,78 @@
         };
       }).sort((a, b) => a.cell - b.cell);
       const rush = 1.4 + env.wind * 0.3;
+      const demo = createDemo(9, 6);
+      const sprites = KIND_COLORS.map((c) => cellSprite(c, false));
+      const flashSprites = KIND_COLORS.map((c) => cellSprite(c, true));
+      const ink = look.grid === "#ffffff" ? "#e8f4ff" : look.grid;
+      const cellsW = COLS * CELL, cellsH = ROWS * CELL;
+      function drawStacker(ctx, t) {
+        const f = demo.frame(t);
+        const { x: bx, y: by } = BOARD;
+        ctx.fillStyle = "rgba(6,2,16,0.5)";
+        ctx.fillRect(PANEL.x, PANEL.y, PANEL.w, 100);
+        text(ctx, "NEXT", PANEL.x + 5, PANEL.y + 4, ink);
+        const shape = shapeOf(KINDS[f.next]);
+        const small = 4;
+        const sx = PANEL.x + Math.round((PANEL.w - shape.w * small) / 2);
+        for (const [dx, dy] of shape.cells) rect(ctx, sx + dx * small, PANEL.y + 13 + dy * small, small - 1, small - 1, KIND_COLORS[f.next]);
+        text(ctx, "LINES", PANEL.x + 5, PANEL.y + 32, ink);
+        text(ctx, String(f.lines % 1e3).padStart(3, "0"), PANEL.x + 5, PANEL.y + 40, "#ffffff");
+        text(ctx, "LEVEL", PANEL.x + 5, PANEL.y + 54, ink);
+        text(ctx, String(f.level % 100).padStart(2, "0"), PANEL.x + 5, PANEL.y + 62, "#ffffff");
+        text(ctx, "SCORE", PANEL.x + 5, PANEL.y + 76, ink);
+        text(ctx, String(f.score % 1e5).padStart(5, "0"), PANEL.x + 5, PANEL.y + 84, "#ffffff");
+        ctx.globalAlpha = 0.18 + 0.05 * Math.sin(t * 2.4);
+        ctx.fillStyle = ink;
+        ctx.fillRect(bx - 3, by - 3, cellsW + 6, cellsH + 6);
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = "rgba(6,2,16,0.72)";
+        ctx.fillRect(bx, by, cellsW, cellsH);
+        ctx.fillStyle = ink;
+        ctx.globalAlpha = 0.07;
+        for (let x = 1; x < COLS; x++) ctx.fillRect(bx + x * CELL, by, 1, cellsH);
+        for (let y = 1; y < ROWS; y++) ctx.fillRect(bx, by + y * CELL, cellsW, 1);
+        ctx.globalAlpha = 1;
+        ctx.fillRect(bx - 1, by, 1, cellsH + 1);
+        ctx.fillRect(bx + cellsW, by, 1, cellsH + 1);
+        ctx.fillRect(bx - 1, by + cellsH, cellsW + 2, 1);
+        if (f.ghost) {
+          ctx.globalAlpha = 0.4;
+          ctx.fillStyle = ink;
+          for (const [x, y] of f.ghost) {
+            const cx = bx + x * CELL, cy = by + Math.round(y) * CELL;
+            ctx.fillRect(cx, cy, CELL, 1);
+            ctx.fillRect(cx, cy + CELL - 1, CELL, 1);
+            ctx.fillRect(cx, cy, 1, CELL);
+            ctx.fillRect(cx + CELL - 1, cy, 1, CELL);
+          }
+          ctx.globalAlpha = 1;
+        }
+        for (const c of f.cells) {
+          ctx.drawImage((c.flash ? flashSprites : sprites)[c.k], bx + c.x * CELL, by + Math.round(c.y * CELL));
+        }
+        if (f.piece) {
+          for (const [x, y] of f.piece.cells) ctx.drawImage(sprites[f.piece.k], bx + x * CELL, by + Math.round(y * CELL));
+        }
+        for (const s of f.sparks) {
+          ctx.globalAlpha = Math.max(0, s.a);
+          rect(ctx, bx + Math.round(s.x * CELL), by + Math.round(s.y * CELL), 2, 2, s.a > 0.6 ? "#ffffff" : KIND_COLORS[s.k]);
+        }
+        ctx.globalAlpha = 1;
+        if (f.title > 0) {
+          const scale = 2;
+          const word = "TETRIS";
+          const tx = bx + Math.round((cellsW - textWidth(word, scale)) / 2);
+          const ty = by + 52 - Math.round((1 - f.title) * 6);
+          ctx.globalAlpha = f.title;
+          ctx.fillStyle = "rgba(6,2,16,0.75)";
+          ctx.fillRect(tx - 4, ty - 4, textWidth(word, scale) + 8, 18);
+          text(ctx, word, tx + 1, ty + 1, "#ff2d8a", scale);
+          text(ctx, word, tx, ty, Math.floor(t * 12) % 2 ? "#ffffff" : "#ffe066", scale);
+          ctx.globalAlpha = 1;
+        }
+      }
+      let lastEventT = null;
       return {
         draw(ctx, t) {
           sky.draw(ctx, t);
@@ -2200,6 +2672,12 @@
             drawPiece(ctx, p.shape, x, y - p.cell * 1.5, p.cell, p.color, 0.3 * look.glow);
             drawPiece(ctx, p.shape, x, y, p.cell, p.color, Math.min(1, 0.55 + 0.45 * look.glow));
           }
+          drawStacker(ctx, t);
+        },
+        /** Report the stacker's moves since the last call, so the arcade sounds can follow them. */
+        events(t, fire) {
+          if (lastEventT !== null && t > lastEventT && t - lastEventT < 1) for (const e of demo.events(lastEventT, t)) fire(e);
+          lastEventT = t;
         }
       };
     }
@@ -2931,7 +3409,7 @@
         const scene = SCENES[id];
         const env = createEnv(variant, scene);
         const drawing = scene.create(env);
-        inst = { env, draw(c, t) {
+        inst = { env, events: drawing.events, draw(c, t) {
           drawing.draw(c, t);
           env.overlay(c, t);
         } };
@@ -3008,6 +3486,7 @@
       const inst = instance(current);
       inst.draw(ctx, t);
       if (hooks.onStrike) inst.env.poll(t, hooks.onStrike);
+      if (hooks.onCue && inst.events) inst.events(t, hooks.onCue);
       const k = (t - fadeStart) / FADE_S;
       if (previous && k < 1) {
         instance(previous).draw(fadeCtx, t);
@@ -3363,19 +3842,19 @@
           feedback.connect(delay);
           delay.connect(wet);
           wet.connect(masterGain);
-          const ring = (freq, at, len, peak) => {
+          const ring = (freq, at2, len, peak) => {
             for (const [ratio, level, decay] of [[1, 1, 1], [2, 0.3, 0.6], [3.01, 0.16, 0.35], [5.4, 0.07, 0.2]]) {
               const osc = ctx.createOscillator();
               const g = ctx.createGain();
               osc.frequency.value = freq * ratio;
-              g.gain.setValueAtTime(0, at);
-              g.gain.linearRampToValueAtTime(peak * level, at + 3e-3);
-              g.gain.exponentialRampToValueAtTime(1e-4, at + len * decay);
+              g.gain.setValueAtTime(0, at2);
+              g.gain.linearRampToValueAtTime(peak * level, at2 + 3e-3);
+              g.gain.exponentialRampToValueAtTime(1e-4, at2 + len * decay);
               osc.connect(g);
               g.connect(masterGain);
               g.connect(delay);
-              osc.start(at);
-              osc.stop(at + len * decay + 0.02);
+              osc.start(at2);
+              osc.stop(at2 + len * decay + 0.02);
               osc.onended = () => g.disconnect();
             }
           };
@@ -4548,17 +5027,17 @@
         for (const p of players) if (p.stopAt === null) p.nextBarTime = now + 0.1;
       }
     }
-    function release(p, at) {
+    function release(p, at2) {
       const now = ctx.currentTime;
-      p.stopAt = at;
+      p.stopAt = at2;
       p.gain.gain.cancelScheduledValues(now);
-      p.gain.gain.setValueAtTime(TRACK_GAIN, at);
-      p.gain.gain.linearRampToValueAtTime(0, at + HANDOFF_S);
+      p.gain.gain.setValueAtTime(TRACK_GAIN, at2);
+      p.gain.gain.linearRampToValueAtTime(0, at2 + HANDOFF_S);
       setTimeout(() => {
         p.gain.disconnect();
         p.nodes.forEach((n) => n.disconnect());
         players.splice(players.indexOf(p), 1);
-      }, (at - now + HANDOFF_S) * 1e3 + 500);
+      }, (at2 - now + HANDOFF_S) * 1e3 + 500);
     }
     function applyTrack() {
       if (!ctx) return;
@@ -4729,15 +5208,15 @@
     const g = new Float32Array(Math.ceil(sr * 0.1));
     let made = 0;
     const when = () => {
-      let at = Math.floor(r() * n);
+      let at2 = Math.floor(r() * n);
       if (gusts > 0) {
         for (let tries = 0; tries < 4; tries++) {
-          const wave = 0.5 + 0.5 * Math.sin(TAU * 2 * at / n + gustPhase);
+          const wave = 0.5 + 0.5 * Math.sin(TAU * 2 * at2 / n + gustPhase);
           if (r() < 1 - gusts + gusts * wave) break;
-          at = Math.floor(r() * n);
+          at2 = Math.floor(r() * n);
         }
       }
-      return at;
+      return at2;
     };
     const loud = () => 0.25 + 0.75 * r() ** 2;
     for (let i = Math.round(ticks * seconds); i > 0; i--) {
@@ -4751,12 +5230,12 @@
       if (++made % 64 === 0) yield;
     }
     for (let i = Math.round(drips * seconds); i > 0; i--) {
-      const at = when();
+      const at2 = when();
       const pan = r() * 1.6 - 0.8;
       let len = noiseGrain(g, sr, r, 4200, 2, 2e-4, 1e-3, 3);
-      mix(out, at, g, len, pan);
+      mix(out, at2, g, len, pan);
       len = noiseGrain(g, sr, r, 2400 + r() * 1800, 14, 4e-4, 6e-3 + r() * 6e-3, 3.5);
-      mix(out, at, g, len, pan);
+      mix(out, at2, g, len, pan);
     }
     yield;
     return normalize(out, 0.085);
@@ -4838,18 +5317,18 @@
     const gust = gustCurve(n, sr, r, Math.max(2, Math.round(seconds / 2.4)), 0.9, 2.2);
     let made = 0;
     for (let i = Math.round(200 * seconds); i > 0; i--) {
-      const at = Math.floor(r() * n);
-      const s = gust[at];
+      const at2 = Math.floor(r() * n);
+      const s = gust[at2];
       if (r() > 0.1 + 0.9 * s ** 1.3) continue;
       const len = noiseGrain(g, sr, r, 1600 + r() * 3e3, 0.8 + r() * 0.7, 0.012 + r() * 0.03, 0.035 + r() * 0.08, (0.3 + 0.7 * r()) * (0.3 + 0.7 * s));
-      mix(out, at, g, len, (r() * 2 - 1) * 0.85);
+      mix(out, at2, g, len, (r() * 2 - 1) * 0.85);
       if (++made % 48 === 0) yield;
     }
     for (let i = Math.round(5 * seconds); i > 0; i--) {
-      const at = Math.floor(r() * n);
-      if (r() > 0.15 + 0.85 * gust[at]) continue;
+      const at2 = Math.floor(r() * n);
+      if (r() > 0.15 + 0.85 * gust[at2]) continue;
       const len = noiseGrain(g, sr, r, 1800 + r() * 1800, 1.2, 2e-3, 0.01 + r() * 0.012, 0.16 * (0.4 + 0.6 * r()));
-      mix(out, at, g, len, (r() * 2 - 1) * 0.85);
+      mix(out, at2, g, len, (r() * 2 - 1) * 0.85);
       if (++made % 48 === 0) yield;
     }
     yield;
@@ -5057,9 +5536,9 @@
     const g = new Float32Array(Math.ceil(sr * 0.6));
     if (near > 0.25) {
       for (let k2 = 2 + Math.floor(r() * 2); k2 > 0; k2--) {
-        const at = Math.floor(r() * 0.05 * sr);
+        const at2 = Math.floor(r() * 0.05 * sr);
         const len2 = noiseGrain(g, sr, r, 350 + r() * 600, 0.7, 4e-4, 4e-3 + r() * 0.012, near * (0.5 + r() * 0.5) * 2.2);
-        mix(out, at, g, Math.min(len2, n - at), r() * 0.6 - 0.3);
+        mix(out, at2, g, Math.min(len2, n - at2), r() * 0.6 - 0.3);
       }
     }
     const low = 42 + r() * 20;
@@ -5068,9 +5547,9 @@
     len = sineGrain(g, sr, low * 2.4, low * 1.8, 0.12, 0.45);
     mix(out, 0, g, Math.min(len, n), 0);
     for (let k2 = 2 + Math.floor(r() * 2); k2 > 0; k2--) {
-      const at = Math.floor((0.5 + r() * seconds * 0.4) * sr);
-      len = sineGrain(g, sr, (low + 6) * 1.1, low * 0.85, 0.3, 0.5 * (1 - at / n));
-      mix(out, at, g, Math.min(len, n - at), r() * 0.8 - 0.4);
+      const at2 = Math.floor((0.5 + r() * seconds * 0.4) * sr);
+      len = sineGrain(g, sr, (low + 6) * 1.1, low * 0.85, 0.3, 0.5 * (1 - at2 / n));
+      mix(out, at2, g, Math.min(len, n - at2), r() * 0.8 - 0.4);
     }
     let peak = 0;
     for (const ch of out) for (let i = 0; i < n; i++) peak = Math.max(peak, Math.abs(ch[i]));
@@ -5169,8 +5648,8 @@
 
   // js/ambience.js
   var BEDS = ["rain", "storm", "wind", "gale", "wheat", "water", "surf", "hum", "city"];
-  var CALLS = ["birds", "crickets", "owl", "gulls", "bell", "traffic"];
-  var FLAGS = ["thunder"];
+  var CALLS = ["birds", "crickets", "owl", "gulls", "bell", "traffic", "cabinets"];
+  var FLAGS = ["thunder", "arcade"];
   var AMBIENCE_LAYERS = [...BEDS, ...CALLS, ...FLAGS];
   var GLIDE_S = 0.9;
   var TICK_MS2 = 200;
@@ -5334,9 +5813,10 @@
         lfo(g.gain, 0.05, 0.15, nodes);
       }
     };
-    function tone(dest, t, { type = "sine", from, to = from, len, peak, attack = 5e-3, pan = 0 }) {
+    function tone(dest, t, { type = "sine", wave = null, from, to = from, len, peak, attack = 5e-3, pan = 0 }) {
       const o = ctx.createOscillator();
-      o.type = type;
+      if (wave) o.setPeriodicWave(wave);
+      else o.type = type;
       o.frequency.setValueAtTime(from, t);
       if (to !== from) o.frequency.exponentialRampToValueAtTime(to, t + len);
       const g = ctx.createGain();
@@ -5380,7 +5860,90 @@
         g.disconnect();
       };
     }
+    const pulses = /* @__PURE__ */ new Map();
+    function pulse(duty) {
+      if (!pulses.has(duty)) {
+        const size = 48;
+        const real = new Float32Array(size);
+        const imag = new Float32Array(size);
+        for (let k = 1; k < size; k++) real[k] = 2 / (k * Math.PI) * Math.sin(k * Math.PI * duty);
+        pulses.set(duty, ctx.createPeriodicWave(real, imag));
+      }
+      return pulses.get(duty);
+    }
+    function chipRun(dest, t, notes, { duty = 0.25, peak = 0.05, cutoff = 2600, pan = 0 }) {
+      const f = ctx.createBiquadFilter();
+      f.type = "lowpass";
+      f.frequency.value = cutoff;
+      f.connect(dest);
+      let end = 0;
+      for (const [freq, at2, len] of notes) {
+        tone(f, t + at2, { wave: pulse(duty), from: freq, len, peak, attack: 2e-3, pan });
+        end = Math.max(end, at2 + len);
+      }
+      setTimeout(() => f.disconnect(), (t - ctx.currentTime + end + 0.5) * 1e3);
+    }
+    const cues = {
+      move(t, dest) {
+        chipRun(dest, t, [[440, 0, 0.022]], { duty: 0.125, peak: 0.03, cutoff: 5e3 });
+      },
+      rotate(t, dest) {
+        chipRun(dest, t, [[660, 0, 0.03], [990, 0.03, 0.03]], { duty: 0.25, peak: 0.04, cutoff: 5e3 });
+      },
+      drop(t, dest) {
+        tone(dest, t, { wave: pulse(0.5), from: 880, to: 160, len: 0.1, peak: 0.05, attack: 2e-3 });
+      },
+      lock(t, dest) {
+        tone(dest, t, { wave: pulse(0.5), from: 150, to: 90, len: 0.07, peak: 0.07, attack: 2e-3 });
+        burst(dest, t, 0.04, "bandpass", 2400, 1, (g) => {
+          g.linearRampToValueAtTime(0.05, t + 2e-3);
+          g.exponentialRampToValueAtTime(1e-4, t + 0.035);
+        });
+      },
+      land(t, dest) {
+        tone(dest, t, { wave: pulse(0.5), from: 110, to: 70, len: 0.1, peak: 0.06, attack: 2e-3 });
+      },
+      // Four rows gone: a rising arpeggio and a held top note, with a bass under it
+      tetris(t, dest) {
+        const notes = [523.25, 659.25, 783.99, 1046.5, 1318.5, 1567.98];
+        chipRun(dest, t, [...notes.map((f, i) => [f, i * 0.065, 0.07]), [2093, notes.length * 0.065, 0.55]], { duty: 0.25, peak: 0.06, cutoff: 6e3 });
+        chipRun(dest, t, [[261.63, 0, 0.2], [523.25, notes.length * 0.065, 0.45]], { duty: 0.5, peak: 0.035, cutoff: 3e3 });
+        tone(dest, t, { type: "triangle", from: 130.81, len: 0.5, peak: 0.07, attack: 4e-3 });
+      }
+    };
     const calls = {
+      // Somewhere else in the arcade, other machines: coin, laser, power-up, blips, a jingle, a boom
+      cabinets(t, dest) {
+        const pan = rand(-0.85, 0.85);
+        const far = { duty: pick([0.125, 0.25, 0.5]), peak: rand(0.03, 0.05), cutoff: rand(1800, 3e3), pan };
+        const kind = pick(["coin", "laser", "power", "blips", "jingle", "boom"]);
+        if (kind === "coin") chipRun(dest, t, [[987.77, 0, 0.07], [1318.51, 0.07, 0.32]], far);
+        else if (kind === "laser") {
+          const f = ctx.createBiquadFilter();
+          f.type = "lowpass";
+          f.frequency.value = far.cutoff;
+          f.connect(dest);
+          tone(f, t, { wave: pulse(0.5), from: rand(1600, 2200), to: rand(180, 320), len: rand(0.14, 0.26), peak: far.peak, attack: 2e-3, pan });
+          setTimeout(() => f.disconnect(), (t - ctx.currentTime + 1) * 1e3);
+        } else if (kind === "power") {
+          const base = pick([392, 440, 523.25]);
+          chipRun(dest, t, [0, 4, 7, 12, 16, 19].map((s, i) => [base * 2 ** (s / 12), i * 0.055, 0.06]), far);
+        } else if (kind === "blips") {
+          const n = 2 + Math.floor(Math.random() * 3);
+          chipRun(dest, t, Array.from({ length: n }, (_, i) => [rand(500, 1400), i * rand(0.09, 0.14), 0.05]), far);
+        } else if (kind === "jingle") {
+          const scale = [0, 2, 4, 7, 9, 12];
+          const base = pick([262, 294, 330]);
+          chipRun(dest, t, Array.from({ length: 7 }, (_, i) => [base * 2 ** (pick(scale) / 12), i * 0.12, 0.1]), far);
+        } else {
+          burst(dest, t, 0.5, "lowpass", 900, 0.7, (g, f) => {
+            g.linearRampToValueAtTime(far.peak * 6, t + 0.01);
+            g.exponentialRampToValueAtTime(1e-4, t + 0.45);
+            f.frequency.exponentialRampToValueAtTime(180, t + 0.45);
+          });
+        }
+        return rand(4, 11);
+      },
       birds(t, dest) {
         const pan = rand(-0.7, 0.7);
         const base = rand(2600, 4600);
@@ -5477,6 +6040,10 @@
       },
       call(name, t, dest) {
         return calls[name](t, dest);
+      },
+      /** Play one of the stacker's cues ('move', 'rotate', 'drop', 'lock', 'land', 'tetris') at time t. */
+      cue(kind, t, dest) {
+        cues[kind]?.(t, dest);
       },
       /** Start building the bells. Safe to call again; it only runs once. Resolves when all are ready. */
       prepareBells() {
@@ -5605,6 +6172,15 @@
         g.connect(layer2.gain);
         src.start(ctx.currentTime + SOUND_LAG_MIN_S + distance * SOUND_LAG_S);
         src.onended = () => g.disconnect();
+      },
+      /**
+       * The Neon Fall stacker did something. Plays its little arcade sound if the scene has them.
+       * @param {string} kind - 'move', 'rotate', 'drop', 'lock', 'land' or 'tetris'
+       */
+      cue(kind) {
+        const layer2 = layers.get("arcade");
+        if (!ctx || !layer2 || layer2.level === 0 || targetVolume() === 0) return;
+        sources.cue(kind, ctx.currentTime + 0.03, layer2.gain);
       },
       dispose() {
         if (timer) clearInterval(timer);
@@ -6186,8 +6762,8 @@
       if (n.kind === "toggle") return change(n, !settings2[n.def.key]);
       if (n.kind === "enum") {
         const values = n.def.values;
-        const at = values.indexOf(settings2[n.def.key]);
-        return change(n, values[(at + dir + values.length) % values.length]);
+        const at2 = values.indexOf(settings2[n.def.key]);
+        return change(n, values[(at2 + dir + values.length) % values.length]);
       }
       if (n.kind === "range") {
         const c = getConstraint(n.def.key);
@@ -6564,8 +7140,8 @@
         if (!root.hidden) render();
       },
       /** The line at the bottom right naming the scene and weather behind the menu. */
-      setSceneTag(text) {
-        el.scene.textContent = text;
+      setSceneTag(text2) {
+        el.scene.textContent = text2;
       },
       onModeSelect(fn) {
         cb.modeSelect = fn;
@@ -6583,11 +7159,11 @@
   }
 
   // js/piece.js
-  var COLS = 10;
+  var COLS2 = 10;
   var VISIBLE_ROWS = 20;
   var BUFFER_ROWS = 40;
   var BLOCK_SIZE = 30;
-  var SHAPES2 = {
+  var SHAPES3 = {
     I: { matrix: [[0, 0, 0, 0], [1, 1, 1, 1], [0, 0, 0, 0], [0, 0, 0, 0]], color: "#3fd9b8" },
     J: { matrix: [[1, 0, 0], [1, 1, 1], [0, 0, 0]], color: "#5d55e0" },
     L: { matrix: [[0, 0, 1], [1, 1, 1], [0, 0, 0]], color: "#ef8a3c" },
@@ -6623,7 +7199,7 @@
     if (dir > 0) return transposed.map((row) => row.reverse());
     return transposed.reverse();
   }
-  function shuffle(array) {
+  function shuffle2(array) {
     for (let i = array.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [array[i], array[j]] = [array[j], array[i]];
@@ -6631,7 +7207,7 @@
     return array;
   }
   function generateBag() {
-    return shuffle(["I", "J", "L", "O", "S", "T", "Z"]);
+    return shuffle2(["I", "J", "L", "O", "S", "T", "Z"]);
   }
   function fillQueue(queue, minSize = 7) {
     while (queue.length < minSize) {
@@ -6648,7 +7224,7 @@
       if (row.some((v) => v !== 0)) lastFilledRow = y;
     });
     return {
-      x: Math.floor(COLS / 2) - Math.floor(matrix[0].length / 2),
+      x: Math.floor(COLS2 / 2) - Math.floor(matrix[0].length / 2),
       y: BUFFER_ROWS - VISIBLE_ROWS - 1 - lastFilledRow
     };
   }
@@ -6995,7 +7571,7 @@
     function spawnPlacement(piece, dropRows = 0) {
       const mul = place();
       if (mul === 0) return;
-      const color = SHAPES2[piece.shape].color;
+      const color = SHAPES3[piece.shape].color;
       const cells = [];
       piece.matrix.forEach((row, y) => row.forEach((v, x) => {
         if (v) cells.push({ x: x + piece.pos.x, y: y + piece.pos.y });
@@ -7044,7 +7620,7 @@
           add({ type: "row", x: 0, y: y - BLOCK_SIZE / 2, life: 220, color: "#ffffff" });
           for (let col = 0; col < 10; col++) {
             const cellShape = arenaSnapshot?.[rowY]?.[col];
-            const color = SHAPES2[cellShape]?.color || "#ffffff";
+            const color = SHAPES3[cellShape]?.color || "#ffffff";
             const count = Math.floor((2 + Math.random() * 3) * mul * intensity);
             for (let i = 0; i < count; i++) {
               const angle = Math.random() * Math.PI * 2;
@@ -7065,7 +7641,7 @@
         }
         if (isQuad) {
           const mid = clearedRows.reduce((s, r) => s + r, 0) / clearedRows.length;
-          add({ type: "flash", x: 0, y: rowToY(mid) - BLOCK_SIZE * 2, h: BLOCK_SIZE * 5, life: 220, color: SHAPES2.I.color });
+          add({ type: "flash", x: 0, y: rowToY(mid) - BLOCK_SIZE * 2, h: BLOCK_SIZE * 5, life: 220, color: SHAPES3.I.color });
         }
       }
       const shake = isQuad ? 8 : isTSpin ? 6 : clearedRows.length >= 2 ? 3 : 1.5;
@@ -7089,7 +7665,7 @@
           gravity: 8e-4,
           life: 400 + Math.random() * 300,
           size: 3 + Math.random() * 4,
-          color: SHAPES2.T.color
+          color: SHAPES3.T.color
         });
       }
     }
@@ -7139,7 +7715,7 @@
       const mul = clearFx();
       if (mul > 0) {
         add({ type: "flash", x: 0, y: 0, h: VISIBLE_ROWS * BLOCK_SIZE, life: 400, color: "#ffffff" });
-        const colors = Object.values(SHAPES2).map((s) => s.color);
+        const colors = Object.values(SHAPES3).map((s) => s.color);
         const count = Math.floor(80 * mul);
         for (let i = 0; i < count; i++) {
           add({
@@ -7271,7 +7847,7 @@
 
   // js/renderer.js
   var BOARD_OFFSET_Y2 = BUFFER_ROWS - VISIBLE_ROWS;
-  var FIELD_W2 = COLS * BLOCK_SIZE;
+  var FIELD_W2 = COLS2 * BLOCK_SIZE;
   var FIELD_H = VISIBLE_ROWS * BLOCK_SIZE;
   var FRAME = 4;
   var FIELD_TOP = SPAWN_ROWS * BLOCK_SIZE;
@@ -7284,7 +7860,7 @@
     return `rgb(${pa.map((v, i) => Math.round(v + (pb[i] - v) * t)).join(",")})`;
   }
   function drawPreview(ctx, skin, shape, slotTop, slotHeight, dimmed) {
-    const { matrix, color } = SHAPES2[shape];
+    const { matrix, color } = SHAPES3[shape];
     let minX = 9, maxX = 0, minY = 9, maxY = 0;
     matrix.forEach((row, y) => row.forEach((v, x) => {
       if (v) {
@@ -7319,7 +7895,7 @@
       ctx.fillStyle = "rgba(7, 7, 13, 0.86)";
       ctx.fillRect(0, 0, FIELD_W2, FIELD_H);
       ctx.fillStyle = "rgba(255, 255, 255, 0.045)";
-      for (let x = 1; x < COLS; x++) ctx.fillRect(x * BLOCK_SIZE, 0, 1, FIELD_H);
+      for (let x = 1; x < COLS2; x++) ctx.fillRect(x * BLOCK_SIZE, 0, 1, FIELD_H);
       for (let y = 1; y < VISIBLE_ROWS; y++) ctx.fillRect(0, y * BLOCK_SIZE, FIELD_W2, 1);
       let frameColor = "rgb(226,229,238)";
       if (danger) {
@@ -7338,7 +7914,7 @@
     }
     function drawSpawnMarks(shape, danger, time) {
       if (!shape) return;
-      const { matrix } = SHAPES2[shape];
+      const { matrix } = SHAPES3[shape];
       const pos = getSpawnPos(matrix);
       const ctx = boardCtx;
       const pulse = danger ? 0.5 + 0.5 * Math.sin(time / 1e3 * Math.PI * 2) : 0;
@@ -7361,7 +7937,7 @@
       matrix.forEach((row, y) => row.forEach((v, x) => {
         if (!v) return;
         const visRow = y + pos.y - BOARD_OFFSET_Y2;
-        if (visRow >= -SPAWN_ROWS) cell(boardCtx, skin, color || SHAPES2[v]?.color || "#888", x + pos.x, visRow);
+        if (visRow >= -SPAWN_ROWS) cell(boardCtx, skin, color || SHAPES3[v]?.color || "#888", x + pos.x, visRow);
       }));
     }
     function drawGhost(matrix, pos, color, opacity) {
@@ -7403,7 +7979,7 @@
         }
       }
       if (player && player.matrix) {
-        const color = SHAPES2[player.shape].color;
+        const color = SHAPES3[player.shape].color;
         if (state.ghostY !== void 0) drawGhost(player.matrix, { x: player.pos.x, y: state.ghostY }, color, ghostOpacity);
         drawMatrix(skin, player.matrix, player.pos, color);
       }
@@ -7835,7 +8411,7 @@
   }
 
   // js/finesse.js
-  var EMPTY = createMatrix(COLS, BUFFER_ROWS);
+  var EMPTY = createMatrix(COLS2, BUFFER_ROWS);
   var tables = /* @__PURE__ */ new Map();
   function placementKey(matrix, x) {
     let minX = Infinity, maxX = -1, minY = Infinity, maxY = -1;
@@ -7854,7 +8430,7 @@
     return `${rows.join("/")}@${x + minX}`;
   }
   function buildTable(shape) {
-    const start = { shape, matrix: SHAPES2[shape].matrix, rotation: 0, pos: getSpawnPos(SHAPES2[shape].matrix) };
+    const start = { shape, matrix: SHAPES3[shape].matrix, rotation: 0, pos: getSpawnPos(SHAPES3[shape].matrix) };
     const best = /* @__PURE__ */ new Map();
     const seen = /* @__PURE__ */ new Set();
     const queue = [[start, 0]];
@@ -7904,7 +8480,7 @@
   var DANGER_INTERVAL_MS = 1e3;
   function createGame(config) {
     const { modeId, canvases: canvases2, playfield: playfield2, settings: settings2, soundEngine: soundEngine2, music: music2, onGameOver, onPause, onLevelUp } = config;
-    const arena = createMatrix(COLS, BUFFER_ROWS);
+    const arena = createMatrix(COLS2, BUFFER_ROWS);
     const nextQueue = [];
     fillQueue(nextQueue);
     const modeState = createModeState(modeId);
@@ -7970,7 +8546,7 @@
     });
     function spawnPiece() {
       player.shape = getNextPiece(nextQueue);
-      player.matrix = SHAPES2[player.shape].matrix;
+      player.matrix = SHAPES3[player.shape].matrix;
       player.rotation = 0;
       const spawn = getSpawnPos(player.matrix);
       player.pos.x = spawn.x;
@@ -7993,7 +8569,7 @@
     function playerMove(dir, cells = 1) {
       if (!active) return 0;
       let moved = 0;
-      while (moved < cells && moved < COLS) {
+      while (moved < cells && moved < COLS2) {
         player.pos.x += dir;
         if (collide(arena, player)) {
           player.pos.x -= dir;
@@ -8062,7 +8638,7 @@
         const temp = player.shape;
         player.shape = player.held;
         player.held = temp;
-        player.matrix = SHAPES2[player.shape].matrix;
+        player.matrix = SHAPES3[player.shape].matrix;
         player.rotation = 0;
         const spawn = getSpawnPos(player.matrix);
         player.pos.x = spawn.x;
@@ -8422,7 +8998,8 @@
         sceneTag = `${info.sceneName.toUpperCase()} / ${info.weatherName.toUpperCase()}`;
         menu?.setSceneTag(sceneTag);
       },
-      onStrike: (strike) => ambience.strike(strike.distance)
+      onStrike: (strike) => ambience.strike(strike.distance),
+      onCue: (cue) => ambience.cue(cue.kind)
     }
   );
   background.showMenu();

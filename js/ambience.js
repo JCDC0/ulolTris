@@ -14,18 +14,20 @@
  *   through a moving resonance, soft brushes, waves that build, break and recede. They
  *   are built in short slices the first time a scene needs them, so a scene change
  *   never stalls a frame.
- * - Calls (birds, crickets, owl, gulls, bell, traffic) are short sounds scheduled at
- *   random intervals.
- * - Flags (thunder) do nothing on their own. Thunder plays when the picture flashes:
- *   background.js reports each lightning strike and strike() answers with a clap
- *   that arrives after a delay that grows with distance, like the real thing.
+ * - Calls (birds, crickets, owl, gulls, bell, traffic, cabinets) are short sounds
+ *   scheduled at random intervals. Cabinets are other arcade machines, far off.
+ * - Flags (thunder, arcade) do nothing on their own. Thunder plays when the picture
+ *   flashes: background.js reports each lightning strike and strike() answers with a
+ *   clap that arrives after a delay that grows with distance, like the real thing.
+ *   Arcade plays when the Neon Fall scene's block stacker moves: background.js reports
+ *   each move and cue() answers with a square-wave blip, so the sound lands on the picture.
  */
 
 import { rainLoop, wheatLoop, windLoop, surfLoop, bellStrike, thunderClap, RAIN_KINDS } from './ambience-synth.js';
 
 const BEDS = ['rain', 'storm', 'wind', 'gale', 'wheat', 'water', 'surf', 'hum', 'city'];
-const CALLS = ['birds', 'crickets', 'owl', 'gulls', 'bell', 'traffic'];
-const FLAGS = ['thunder'];
+const CALLS = ['birds', 'crickets', 'owl', 'gulls', 'bell', 'traffic', 'cabinets'];
+const FLAGS = ['thunder', 'arcade'];
 
 /** Every layer name a scene may use. */
 export const AMBIENCE_LAYERS = [...BEDS, ...CALLS, ...FLAGS];
@@ -233,9 +235,10 @@ function createSources(ctx, noise) {
     };
 
     /** A short tone with an attack and an exponential decay, cleaned up when it ends. */
-    function tone(dest, t, { type = 'sine', from, to = from, len, peak, attack = 0.005, pan = 0 }) {
+    function tone(dest, t, { type = 'sine', wave = null, from, to = from, len, peak, attack = 0.005, pan = 0 }) {
         const o = ctx.createOscillator();
-        o.type = type;
+        if (wave) o.setPeriodicWave(wave);
+        else o.type = type;
         o.frequency.setValueAtTime(from, t);
         if (to !== from) o.frequency.exponentialRampToValueAtTime(to, t + len);
         const g = ctx.createGain();
@@ -276,7 +279,92 @@ function createSources(ctx, noise) {
         src.onended = () => { f.disconnect(); g.disconnect(); };
     }
 
+    /** A pulse wave with the given duty (0.5 is a square), like the tone channels of an 8-bit machine. */
+    const pulses = new Map();
+    function pulse(duty) {
+        if (!pulses.has(duty)) {
+            const size = 48;
+            const real = new Float32Array(size);
+            const imag = new Float32Array(size);
+            for (let k = 1; k < size; k++) real[k] = (2 / (k * Math.PI)) * Math.sin(k * Math.PI * duty);
+            pulses.set(duty, ctx.createPeriodicWave(real, imag));
+        }
+        return pulses.get(duty);
+    }
+
+    /** Notes [freq, at, len] as chip blips through a lowpass (distance), panned to one side. */
+    function chipRun(dest, t, notes, { duty = 0.25, peak = 0.05, cutoff = 2600, pan = 0 }) {
+        const f = ctx.createBiquadFilter();
+        f.type = 'lowpass';
+        f.frequency.value = cutoff;
+        f.connect(dest);
+        let end = 0;
+        for (const [freq, at, len] of notes) {
+            tone(f, t + at, { wave: pulse(duty), from: freq, len, peak, attack: 0.002, pan });
+            end = Math.max(end, at + len);
+        }
+        setTimeout(() => f.disconnect(), (t - ctx.currentTime + end + 0.5) * 1000);
+    }
+
+    // The stacker's moves: little square-wave blips and thuds, quiet
+    const cues = {
+        move(t, dest) { chipRun(dest, t, [[440, 0, 0.022]], { duty: 0.125, peak: 0.03, cutoff: 5000 }); },
+        rotate(t, dest) { chipRun(dest, t, [[660, 0, 0.03], [990, 0.03, 0.03]], { duty: 0.25, peak: 0.04, cutoff: 5000 }); },
+        drop(t, dest) {
+            tone(dest, t, { wave: pulse(0.5), from: 880, to: 160, len: 0.1, peak: 0.05, attack: 0.002 });
+        },
+        lock(t, dest) {
+            tone(dest, t, { wave: pulse(0.5), from: 150, to: 90, len: 0.07, peak: 0.07, attack: 0.002 });
+            burst(dest, t, 0.04, 'bandpass', 2400, 1, g => {
+                g.linearRampToValueAtTime(0.05, t + 0.002);
+                g.exponentialRampToValueAtTime(0.0001, t + 0.035);
+            });
+        },
+        land(t, dest) {
+            tone(dest, t, { wave: pulse(0.5), from: 110, to: 70, len: 0.1, peak: 0.06, attack: 0.002 });
+        },
+        // Four rows gone: a rising arpeggio and a held top note, with a bass under it
+        tetris(t, dest) {
+            const notes = [523.25, 659.25, 783.99, 1046.5, 1318.5, 1567.98];
+            chipRun(dest, t, [...notes.map((f, i) => [f, i * 0.065, 0.07]), [2093, notes.length * 0.065, 0.55]], { duty: 0.25, peak: 0.06, cutoff: 6000 });
+            chipRun(dest, t, [[261.63, 0, 0.2], [523.25, notes.length * 0.065, 0.45]], { duty: 0.5, peak: 0.035, cutoff: 3000 });
+            tone(dest, t, { type: 'triangle', from: 130.81, len: 0.5, peak: 0.07, attack: 0.004 });
+        },
+    };
+
     const calls = {
+        // Somewhere else in the arcade, other machines: coin, laser, power-up, blips, a jingle, a boom
+        cabinets(t, dest) {
+            const pan = rand(-0.85, 0.85);
+            const far = { duty: pick([0.125, 0.25, 0.5]), peak: rand(0.03, 0.05), cutoff: rand(1800, 3000), pan };
+            const kind = pick(['coin', 'laser', 'power', 'blips', 'jingle', 'boom']);
+            if (kind === 'coin') chipRun(dest, t, [[987.77, 0, 0.07], [1318.51, 0.07, 0.32]], far);
+            else if (kind === 'laser') {
+                const f = ctx.createBiquadFilter();
+                f.type = 'lowpass';
+                f.frequency.value = far.cutoff;
+                f.connect(dest);
+                tone(f, t, { wave: pulse(0.5), from: rand(1600, 2200), to: rand(180, 320), len: rand(0.14, 0.26), peak: far.peak, attack: 0.002, pan });
+                setTimeout(() => f.disconnect(), (t - ctx.currentTime + 1) * 1000);
+            } else if (kind === 'power') {
+                const base = pick([392, 440, 523.25]);
+                chipRun(dest, t, [0, 4, 7, 12, 16, 19].map((s, i) => [base * 2 ** (s / 12), i * 0.055, 0.06]), far);
+            } else if (kind === 'blips') {
+                const n = 2 + Math.floor(Math.random() * 3);
+                chipRun(dest, t, Array.from({ length: n }, (_, i) => [rand(500, 1400), i * rand(0.09, 0.14), 0.05]), far);
+            } else if (kind === 'jingle') {
+                const scale = [0, 2, 4, 7, 9, 12];
+                const base = pick([262, 294, 330]);
+                chipRun(dest, t, Array.from({ length: 7 }, (_, i) => [base * 2 ** (pick(scale) / 12), i * 0.12, 0.1]), far);
+            } else {
+                burst(dest, t, 0.5, 'lowpass', 900, 0.7, (g, f) => {
+                    g.linearRampToValueAtTime(far.peak * 6, t + 0.01);
+                    g.exponentialRampToValueAtTime(0.0001, t + 0.45);
+                    f.frequency.exponentialRampToValueAtTime(180, t + 0.45);
+                });
+            }
+            return rand(4, 11);
+        },
         birds(t, dest) {
             const pan = rand(-0.7, 0.7);
             const base = rand(2600, 4600);
@@ -377,6 +465,10 @@ function createSources(ctx, noise) {
         },
         call(name, t, dest) {
             return calls[name](t, dest);
+        },
+        /** Play one of the stacker's cues ('move', 'rotate', 'drop', 'lock', 'land', 'tetris') at time t. */
+        cue(kind, t, dest) {
+            cues[kind]?.(t, dest);
         },
         /** Start building the bells. Safe to call again; it only runs once. Resolves when all are ready. */
         prepareBells() {
@@ -544,6 +636,16 @@ export function createAmbience(settings) {
             g.connect(layer.gain);
             src.start(ctx.currentTime + SOUND_LAG_MIN_S + distance * SOUND_LAG_S);
             src.onended = () => g.disconnect();
+        },
+
+        /**
+         * The Neon Fall stacker did something. Plays its little arcade sound if the scene has them.
+         * @param {string} kind - 'move', 'rotate', 'drop', 'lock', 'land' or 'tetris'
+         */
+        cue(kind) {
+            const layer = layers.get('arcade');
+            if (!ctx || !layer || layer.level === 0 || targetVolume() === 0) return;
+            sources.cue(kind, ctx.currentTime + 0.03, layer.gain);
         },
 
         dispose() {

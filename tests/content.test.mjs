@@ -99,6 +99,10 @@ check('every Casual scene exists and can be picked in settings',
     CASUAL_SCENES.every(id => SCENES[id] && normalizeSettings({ version: 2, casualScene: id }).casualScene === id),
     `${CASUAL_SCENES.length} scenes`);
 
+// Neon Fall has its own arcade sounds in every weather
+check('neon plays its arcade cues and far-off cabinets in every weather',
+    VARIANTS.every(v => { const mix = ambienceFor(SCENES.neon, v); return mix.arcade === 1 && mix.cabinets > 0; }));
+
 // --- The settings menu is built from SETTINGS_TABS ---
 {
     const defs = SETTINGS_TABS.flatMap(t => t.settings);
