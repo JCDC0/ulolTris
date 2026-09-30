@@ -135,7 +135,7 @@ export default {
     celestial: { sunX: 232, sunHighY: 30, sunLowY: 96, moonX: 90, moonY: 32 },
     fog: [HORIZON - 6, HORIZON + 34],
     rainBand: [HORIZON + 30, H - 2],
-    sounds: { always: { wheat: 1 }, day: { birds: 0.5 }, night: { crickets: 0.8 } },
+    sounds: { always: { wheat: 1, wind: 0.3 }, day: { birds: 0.5 }, night: { crickets: 0.8 } },
     create(env) {
         const sky = env.makeSky();
 

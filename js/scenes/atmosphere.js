@@ -150,8 +150,12 @@ export function ambienceFor(scene, variantId) {
         if (level * hush > 0) out[name] = Math.max(out[name] || 0, level * hush);
     }
     if (wet && scene.precip !== 'snow') out[v.storm ? 'storm' : 'rain'] = v.storm ? 1 : 0.9;
-    if (v.storm) out.thunder = 1;
-    const wind = Math.min(1, (out.wind || 0) + v.wind * 0.35);
+    if (v.storm) {
+        // Heavy gusts with a faint howl blow past between the claps
+        out.thunder = 1;
+        out.gale = 0.4;
+    }
+    const wind = Math.min(1, (out.wind || 0) + v.wind * (v.storm ? 0.2 : 0.5));
     if (wind > 0.05) out.wind = wind;
     if (out.wheat) out.wheat *= 0.55 + 0.45 * Math.min(1, v.wind);
     return out;

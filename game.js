@@ -602,8 +602,11 @@
       if (level * hush > 0) out[name] = Math.max(out[name] || 0, level * hush);
     }
     if (wet && scene.precip !== "snow") out[v.storm ? "storm" : "rain"] = v.storm ? 1 : 0.9;
-    if (v.storm) out.thunder = 1;
-    const wind = Math.min(1, (out.wind || 0) + v.wind * 0.35);
+    if (v.storm) {
+      out.thunder = 1;
+      out.gale = 0.4;
+    }
+    const wind = Math.min(1, (out.wind || 0) + v.wind * (v.storm ? 0.2 : 0.5));
     if (wind > 0.05) out.wind = wind;
     if (out.wheat) out.wheat *= 0.55 + 0.45 * Math.min(1, v.wind);
     return out;
@@ -1261,7 +1264,7 @@
     celestial: { sunX: 232, sunHighY: 30, sunLowY: 96, moonX: 90, moonY: 32 },
     fog: [HORIZON - 6, HORIZON + 34],
     rainBand: [HORIZON + 30, H - 2],
-    sounds: { always: { wheat: 1 }, day: { birds: 0.5 }, night: { crickets: 0.8 } },
+    sounds: { always: { wheat: 1, wind: 0.3 }, day: { birds: 0.5 }, night: { crickets: 0.8 } },
     create(env) {
       const sky = env.makeSky();
       const hills = layer();
@@ -1880,7 +1883,7 @@
     celestial: { sunX: 250, sunHighY: 30, sunLowY: 98, moonX: 250, moonY: 32 },
     fog: [HORIZON2 - 14, HORIZON2 + 40],
     rainBand: [HORIZON2 + 6, H - 6],
-    sounds: { always: { waves: 1 }, day: { gulls: 0.7 }, night: {} },
+    sounds: { always: { surf: 0.7 }, day: { gulls: 0.7 }, night: {} },
     create(env) {
       const sky = env.makeSky();
       const sea = layer();
@@ -2460,7 +2463,7 @@
     celestial: { sunX: 190, sunHighY: 26, sunLowY: 108, moonX: 190, moonY: 30 },
     fog: [96, 156],
     rainBand: [H - 24, H - 3],
-    sounds: { always: { chimes: 0.6 }, day: { birds: 1 }, night: { owl: 0.35, crickets: 0.4 } },
+    sounds: { always: { bell: 1, wind: 0.22 }, day: { birds: 1 }, night: { owl: 0.35, crickets: 0.4 } },
     create(env) {
       const sky = env.makeSky(env.id === "sunny" ? { palette: SPRING_SKY } : {});
       const land = layer();
@@ -4687,9 +4690,10 @@
     const warm = Math.min(n, Math.round(sr * 0.25));
     for (let i = n - warm; i < n; i++) run(shot[i]);
     const p1 = r() * TAU, p2 = r() * TAU;
-    const c1 = 2 + Math.floor(r() * 2), c2 = 5 + Math.floor(r() * 3);
+    const c1 = 2 + Math.floor(r() * 2), c2 = 5 + Math.floor(r() * 3), c3 = 13 + Math.floor(r() * 6);
+    const p3 = r() * TAU;
     for (let i = 0; i < n; i++) {
-      const mod = 1 + breathe * (0.6 * Math.sin(TAU * c1 * i / n + p1 + gustPhase) + 0.4 * Math.sin(TAU * c2 * i / n + p2));
+      const mod = 1 + breathe * (0.55 * Math.sin(TAU * c1 * i / n + p1 + gustPhase) + 0.35 * Math.sin(TAU * c2 * i / n + p2) + 0.25 * Math.sin(TAU * c3 * i / n + p3));
       ch[i] += run(shot[i]) * level * mod;
       if (i % 65536 === 0) yield;
     }
@@ -4737,12 +4741,12 @@
     };
     const loud = () => 0.25 + 0.75 * r() ** 2;
     for (let i = Math.round(ticks * seconds); i > 0; i--) {
-      const len = noiseGrain(g, sr, r, 3e3 + r() * 4500, 2.5 + r() * 2, 2e-4, 12e-4 + r() * 2e-3, loud() * 4);
+      const len = noiseGrain(g, sr, r, 3e3 + r() * 4200, 2.5 + r() * 2, 2e-4, 12e-4 + r() * 2e-3, loud() * 3.1);
       mix(out, when(), g, len, r() * 2 - 1);
       if (++made % 64 === 0) yield;
     }
     for (let i = Math.round(leaves * seconds); i > 0; i--) {
-      const len = noiseGrain(g, sr, r, 1100 + r() * 1500, 1.2 + r(), 6e-4, 4e-3 + r() * 5e-3, loud() * 3.6);
+      const len = noiseGrain(g, sr, r, 1100 + r() * 1500, 1.2 + r(), 6e-4, 4e-3 + r() * 5e-3, loud() * 3.1);
       mix(out, when(), g, len, r() * 2 - 1);
       if (++made % 64 === 0) yield;
     }
@@ -4757,109 +4761,317 @@
     yield;
     return normalize(out, 0.085);
   }
-  function gustAt(p) {
-    const v = 0.5 + 0.32 * Math.sin(TAU * (p + 0.1)) + 0.18 * Math.sin(TAU * (2 * p + 0.43)) + 0.1 * Math.sin(TAU * (5 * p + 0.2));
-    return Math.max(0, Math.min(1, v));
+  function gustCurve(n, sr, r, count, widthMin, widthMax) {
+    const out = new Float32Array(n);
+    for (let k = 0; k < count; k++) {
+      const half = (widthMin + r() * (widthMax - widthMin)) * sr;
+      const from = Math.floor(r() * n - half);
+      const amp = 0.55 + 0.45 * r();
+      for (let d = 0; d < half * 2; d++) {
+        const i = ((from + d) % n + n) % n;
+        out[i] += amp * 0.5 * (1 - Math.cos(Math.PI * d / half));
+      }
+    }
+    for (let i = 0; i < n; i++) out[i] = Math.min(1, out[i]);
+    return out;
   }
-  function* wheatLoop(sr, { seconds = 9, seed = 7 } = {}) {
+  function noiseArray(n, r) {
+    const out = new Float32Array(n);
+    for (let i = 0; i < n; i++) out[i] = r() * 2 - 1;
+    return out;
+  }
+  function unitRms(a) {
+    let sum = 0;
+    for (let i = 0; i < a.length; i++) sum += a[i] * a[i];
+    const k = 1 / (Math.sqrt(sum / a.length) || 1);
+    for (let i = 0; i < a.length; i++) a[i] *= k;
+  }
+  function* windLoop(sr, { seconds = 10, seed = 41, gusty = 0.7, howl = 0 } = {}) {
     const out = stereo(sr, seconds);
     const n = out[0].length;
     const r = rng(seed);
-    const g = new Float32Array(Math.ceil(sr * 0.08));
+    const gust = gustCurve(n, sr, r, Math.max(2, Math.round(seconds / 3)), 1.1, 2.6);
+    const phase = [r() * TAU, r() * TAU, r() * TAU];
+    const cycles = [Math.max(1, Math.round(seconds * 0.5)), Math.max(2, Math.round(seconds * 1.4))];
+    const strength = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const mixed = (1 - gusty) * 0.5 + gusty * gust[i];
+      const flutter = 1 + 0.14 * Math.sin(TAU * cycles[1] * i / n + phase[1]) + 0.08 * Math.sin(TAU * cycles[1] * 2.9 * i / n + phase[2]);
+      strength[i] = (0.16 + 0.84 * mixed) * flutter;
+    }
+    const kRum = 1 - Math.exp(-TAU * 110 / sr);
+    const warm = Math.min(n, Math.round(sr * 0.6));
+    for (let ch = 0; ch < 2; ch++) {
+      const x = noiseArray(n, rng(seed * 13 + ch * 101));
+      const y = out[ch];
+      let low1 = 0, band1 = 0, low2 = 0, band2 = 0, rum1 = 0, rum2 = 0;
+      const step = (i) => {
+        const s = strength[i];
+        const f1 = 2 * Math.sin(Math.PI * (170 + 900 * s ** 1.3) / sr);
+        low1 += f1 * band1;
+        band1 += f1 * (x[i] - low1 - 0.72 * band1);
+        rum1 += (x[i] - rum1) * kRum;
+        rum2 += (rum1 - rum2) * kRum;
+        let v = band1 * 0.85 + rum2 * 3.2 * s;
+        if (howl > 0) {
+          const f2 = 2 * Math.sin(Math.PI * (340 + 560 * s + 30 * Math.sin(TAU * cycles[1] * 3 * i / n + phase[0])) / sr);
+          low2 += f2 * band2;
+          band2 += f2 * (x[i] - low2 - 0.05 * band2);
+          v += band2 * howl * 0.9 * s * s;
+        }
+        return v * s ** 1.15;
+      };
+      for (let i = n - warm; i < n; i++) step(i);
+      for (let i = 0; i < n; i++) {
+        const tilt = 1 + (ch === 0 ? 1 : -1) * 0.22 * Math.sin(TAU * cycles[0] * i / n + phase[0]);
+        y[i] = step(i) * tilt;
+        if (i % 65536 === 0) yield;
+      }
+    }
+    return normalize(out, 0.085);
+  }
+  function* wheatLoop(sr, { seconds = 11, seed = 7 } = {}) {
+    const out = stereo(sr, seconds);
+    const n = out[0].length;
+    const r = rng(seed);
+    const g = new Float32Array(Math.ceil(sr * 0.5));
+    const gust = gustCurve(n, sr, r, Math.max(2, Math.round(seconds / 2.4)), 0.9, 2.2);
     let made = 0;
-    function grain(at, pan, level) {
-      const kind = r();
-      let len;
-      if (kind < 0.68) {
-        const f = 2500 * Math.pow(3.4, r());
-        len = sineGrain(g, sr, f, f * (0.9 + r() * 0.2), 4e-4 + r() * 11e-4, level * (0.15 + 0.85 * r() ** 2) * 0.6);
-      } else if (kind < 0.95) {
-        len = noiseGrain(g, sr, r, 3e3 + r() * 4e3, 2 + r() * 2, 2e-3 + r() * 6e-3, 3e-3 + r() * 6e-3, level * (0.2 + 0.5 * r()) * 0.3);
-      } else {
-        const f = 600 + r() * 1e3;
-        len = sineGrain(g, sr, f, f * 0.92, 3e-3 + r() * 5e-3, level * (0.3 + 0.4 * r()) * 0.4);
-      }
-      mix(out, at, g, len, pan);
+    for (let i = Math.round(200 * seconds); i > 0; i--) {
+      const at = Math.floor(r() * n);
+      const s = gust[at];
+      if (r() > 0.1 + 0.9 * s ** 1.3) continue;
+      const len = noiseGrain(g, sr, r, 1600 + r() * 3e3, 0.8 + r() * 0.7, 0.012 + r() * 0.03, 0.035 + r() * 0.08, (0.3 + 0.7 * r()) * (0.3 + 0.7 * s));
+      mix(out, at, g, len, (r() * 2 - 1) * 0.85);
+      if (++made % 48 === 0) yield;
     }
-    const swells = Math.round(seconds * 1.7);
-    for (let s = 0; s < swells; s++) {
-      const center = (s + r()) / swells;
-      const width = 0.25 + r() * 0.5;
-      const strength = (0.45 + r() * 0.55) * (0.2 + 0.8 * gustAt(center) ** 1.5);
-      const count = Math.round(1500 * width * strength);
-      const drift = 0.5 + r() * 0.9;
-      const offset = (r() - 0.5) * 0.5;
-      for (let i = 0; i < count; i++) {
-        const u = (r() + r()) / 2 - 0.5;
-        const at = Math.floor((center * seconds + u * width) * sr);
-        grain(at, offset + u * 2 * drift + (r() - 0.5) * 0.4, 0.5 + 0.5 * strength);
-        if (++made % 64 === 0) yield;
+    for (let i = Math.round(5 * seconds); i > 0; i--) {
+      const at = Math.floor(r() * n);
+      if (r() > 0.15 + 0.85 * gust[at]) continue;
+      const len = noiseGrain(g, sr, r, 1800 + r() * 1800, 1.2, 2e-3, 0.01 + r() * 0.012, 0.16 * (0.4 + 0.6 * r()));
+      mix(out, at, g, len, (r() * 2 - 1) * 0.85);
+      if (++made % 48 === 0) yield;
+    }
+    yield;
+    return normalize(out, 0.05);
+  }
+  function* surfLoop(sr, { seconds = 30, waves = 3, size = 1, seed = 51 } = {}) {
+    const out = stereo(sr, seconds);
+    const n = out[0].length;
+    const r = rng(seed);
+    const slot = n / waves;
+    const [left, right] = out;
+    const lp = (fc) => 1 - Math.exp(-TAU * fc / sr);
+    for (let w = 0; w < waves; w++) {
+      const crashAt = Math.floor((w + 0.35 + r() * 0.35) * slot);
+      const build = 2.4 + r() * 1.6;
+      const wash = 4 + r() * 2.2;
+      const big = size * (0.75 + 0.45 * r());
+      const p0 = r() < 0.5 ? -0.6 : 0.6;
+      const p1 = -p0 * (0.3 + 0.5 * r());
+      const length = Math.round((build + wash + 0.8) * sr);
+      const start = crashAt - Math.round(build * sr);
+      let a1 = 0, a2 = 0;
+      let h = 0;
+      let c1 = 0, c2 = 0;
+      let t1 = 0;
+      let w1 = 0, w2 = 0, wh = 0;
+      let fz = 0;
+      for (let i = 0; i < length; i++) {
+        const t = (i - Math.round(build * sr)) / sr;
+        const white = r() * 2 - 1;
+        let v = 0;
+        if (t < 0) {
+          const u = Math.max(0, (t + build) / build);
+          const e = 0.6 * u ** 2.3;
+          a1 += (white - a1) * lp(180 + 700 * u);
+          a2 += (a1 - a2) * lp(180 + 700 * u);
+          h += (white - h) * lp(1800);
+          v += a2 * e * 5 + (white - h) * e * 0.12 * u;
+        }
+        if (t >= 0) {
+          const attack = 1 - Math.exp(-t / 0.035);
+          const crash = attack * Math.exp(-t / 0.55);
+          const fc = 1100 + 3100 * Math.exp(-t / 0.7);
+          c1 += (white - c1) * lp(fc);
+          c2 += (c1 - c2) * lp(fc);
+          t1 += (white - t1) * lp(240);
+          v += c2 * crash * 2.4 + t1 * attack * Math.exp(-t / 0.5) * 4.5;
+        }
+        if (t >= 0.05) {
+          const span = Math.max(0, 1 - t / wash);
+          const e = (1 - Math.exp(-t / 0.3)) * span ** 1.7;
+          const fc = 900 + 2600 * span;
+          w1 += (white - w1) * lp(fc);
+          w2 += (w1 - w2) * lp(fc);
+          wh += (w2 - wh) * lp(450);
+          v += (w2 - wh) * e * 1.5;
+          const pops = (420 * span * span + 12) / sr;
+          fz += ((r() < pops ? (r() * 2 - 1) * (0.3 + 0.7 * r()) * (0.3 + span) : 0) - fz) * 0.6;
+          v += fz * 0.7;
+        }
+        const k = Math.max(0, Math.min(1, t / wash));
+        const pan = t < 0 ? p0 : p0 + (p1 - p0) * k;
+        const angle = (pan + 1) * Math.PI / 4;
+        const j = ((start + i) % n + n) % n;
+        left[j] += v * big * Math.cos(angle);
+        right[j] += v * big * Math.sin(angle);
+        if (i % 65536 === 0) yield;
       }
     }
-    for (let i = Math.round(55 * seconds); i > 0; i--) {
-      const p = r();
-      if (r() > 0.3 + 0.7 * gustAt(p)) continue;
-      grain(Math.floor(p * n), r() * 2 - 1, 0.45);
-      if (++made % 64 === 0) yield;
+    const roarPhase = r() * TAU;
+    const kRoar = lp(280);
+    for (const ch of out) {
+      let a = 0, b = 0;
+      for (let i = 0; i < n; i++) {
+        a += (r() * 2 - 1 - a) * kRoar;
+        b += (a - b) * kRoar;
+        ch[i] += b * 0.75 * (1 + 0.35 * Math.sin(TAU * 3 * i / n + roarPhase));
+        if (i % 65536 === 0) yield;
+      }
     }
     return normalize(out, 0.06);
+  }
+  var BELL_PARTIALS = [
+    [0.5, 0.55, 3.6],
+    [1, 1, 4.6],
+    [1.19, 0.6, 3.3],
+    [1.5, 0.45, 2.6],
+    [2, 0.5, 2.3],
+    [2.51, 0.22, 1.4],
+    [3, 0.2, 1.1],
+    [4.15, 0.12, 0.65],
+    [5.43, 0.08, 0.42],
+    [6.8, 0.05, 0.27]
+  ];
+  function* bellStrike(sr, { freq = 146.8, seconds = 11, seed = 5 } = {}) {
+    const out = stereo(sr, seconds);
+    const n = out[0].length;
+    const r = rng(seed);
+    const [left, right] = out;
+    for (const [ratio, level, tau] of BELL_PARTIALS) {
+      for (const twin of [0, 1]) {
+        const f = freq * ratio * (twin ? 1 + 9e-4 + r() * 32e-4 : 1);
+        const w = TAU * f / sr;
+        const decay = Math.exp(-1 / (tau * (0.85 + 0.3 * r()) * sr));
+        const amp = level * (twin ? 0.7 : 1);
+        const c = 2 * decay * Math.cos(w);
+        const d2 = decay * decay;
+        const attack = Math.max(8, Math.round(sr * (ratio < 1.2 ? 0.012 : 4e-3)));
+        const pan = (r() * 2 - 1) * 0.5;
+        const gl = Math.cos((pan + 1) * Math.PI / 4);
+        const gr = Math.sin((pan + 1) * Math.PI / 4);
+        let y1 = amp * decay * Math.sin(w);
+        let y2 = 0;
+        for (let i = 1; i < n; i++) {
+          const v = y1 * (i < attack ? i / attack : 1);
+          left[i] += v * gl;
+          right[i] += v * gr;
+          const y0 = c * y1 - d2 * y2;
+          y2 = y1;
+          y1 = y0;
+          if (i % 131072 === 0) yield;
+        }
+      }
+    }
+    const g = new Float32Array(Math.ceil(sr * 0.1));
+    const len = noiseGrain(g, sr, r, 900, 0.8, 8e-4, 0.01, 0.6);
+    mix(out, 0, g, len, 0);
+    const fade = Math.round(sr * 1.5);
+    let peak = 0;
+    for (let i = 0; i < n; i++) {
+      const k = n - i < fade ? (n - i) / fade : 1;
+      left[i] *= k;
+      right[i] *= k;
+      peak = Math.max(peak, Math.abs(left[i]), Math.abs(right[i]));
+    }
+    const scale = 0.4 / (peak || 1);
+    for (let i = 0; i < n; i++) {
+      left[i] *= scale;
+      right[i] *= scale;
+    }
+    return out;
   }
   function* thunderClap(sr, { distance = 0.4, seed = 1 } = {}) {
     const r = rng(seed);
     const near = 1 - distance;
-    const seconds = 4.5 + r() * 2.5 + distance * 1.5;
+    const seconds = 5.5 + r() * 2.5 + distance * 2;
     const out = stereo(sr, seconds);
     const n = out[0].length;
     const env = new Float32Array(n);
-    const strikeAt = 0.02 + distance * 0.1;
-    const bumps = [{ t: strikeAt, a: 1, rise: 0.015 + distance * 0.12, fall: 0.5 + r() * 0.4 }];
-    for (let k2 = 4 + Math.floor(r() * 5); k2 > 0; k2--) {
-      const t = 0.25 + r() * seconds * 0.6;
-      bumps.push({ t, a: (0.25 + r() * 0.45) * (1 - t / seconds), rise: 0.05 + r() * 0.15, fall: 0.4 + r() * 0.9 });
+    const bumps = [{ t: 0, a: 1, rise: 0.05 + distance * 0.45, fall: 0.9 + r() * 0.5 + distance * 0.7 }];
+    for (let k2 = 3 + Math.floor(r() * 4); k2 > 0; k2--) {
+      const t = 0.5 + r() * seconds * 0.55;
+      bumps.push({ t, a: (0.3 + r() * 0.5) * (1 - t / seconds), rise: 0.15 + r() * 0.4, fall: 0.7 + r() * 1.3 });
     }
     for (const b of bumps) {
       const start = Math.floor(b.t * sr);
       for (let i = start; i < n; i++) {
         const t = (i - start) / sr;
-        const v = t < b.rise ? t / b.rise : Math.exp(-(t - b.rise) / b.fall);
+        const v = t < b.rise ? (t / b.rise) ** 1.5 : Math.exp(-(t - b.rise) / b.fall);
         if (t > b.rise && v < 2e-3) break;
         env[i] += v * b.a;
       }
       yield;
     }
-    const midHz = 500 + near * 1300;
-    const kDeep = Math.exp(-TAU * 30 / sr);
-    const kBody = 1 - Math.exp(-TAU * 250 / sr);
-    const kMid = 1 - Math.exp(-TAU * midHz / sr);
-    const kFlutter = 1 - Math.exp(-TAU * 9 / sr);
+    const lp = (fc) => 1 - Math.exp(-TAU * fc / sr);
+    const kDeep = lp(105 + near * 80);
+    const kBody = lp(300 + near * 250);
+    const kSlow = lp(2.5);
+    const kOut = lp(330 + near * 450);
     for (const ch of out) {
-      let deep = 0, body = 0, mid = 0, flutter = 0;
+      const deep = new Float32Array(n);
+      let a = 0, b = 0, c = 0, d = 0;
       for (let i = 0; i < n; i++) {
         const w = r() * 2 - 1;
-        deep = deep * kDeep + w;
-        body += (w - body) * kBody;
-        mid += (w - mid) * kMid;
-        flutter += (r() * 2 - 1 - flutter) * kFlutter;
-        const roll = Math.max(0.2, 0.8 + flutter * 20);
-        const fade = Math.min(1, (n - i) / (sr * 0.8));
-        ch[i] = (deep * 0.06 + body * 3.2 + mid * (0.5 + near * 0.9)) * env[i] * roll * fade;
-        if (i % 32768 === 0) yield;
+        a += (w - a) * kDeep;
+        b += (a - b) * kDeep;
+        c += (b - c) * kDeep;
+        d += (c - d) * kDeep;
+        deep[i] = d;
+        if (i % 65536 === 0) yield;
+      }
+      unitRms(deep);
+      const body = new Float32Array(n);
+      let e = 0, f = 0;
+      for (let i = 0; i < n; i++) {
+        const w = r() * 2 - 1;
+        e += (w - e) * kBody;
+        f += (e - f) * kBody;
+        body[i] = f;
+      }
+      unitRms(body);
+      let s1 = 0, s2 = 0, o1 = 0, o2 = 0;
+      for (let i = 0; i < n; i++) {
+        s1 += (r() * 2 - 1 - s1) * kSlow;
+        s2 += (s1 - s2) * kSlow;
+        const roll = Math.max(0.25, Math.min(1.7, 0.8 + s2 * 7));
+        const fade = Math.min(1, (n - i) / (sr * 1.2));
+        const x = Math.tanh(2.1 * (deep[i] + body[i] * 0.5) * env[i] * roll * fade);
+        o1 += (x - o1) * kOut;
+        o2 += (o1 - o2) * kOut;
+        ch[i] = o2;
+        if (i % 65536 === 0) yield;
       }
     }
-    const g = new Float32Array(Math.ceil(sr * 0.3));
-    if (near > 0.2) {
-      for (let k2 = 3 + Math.floor(r() * 4); k2 > 0; k2--) {
-        const at2 = Math.floor((strikeAt + r() * 0.22) * sr);
-        const len2 = noiseGrain(g, sr, r, 900 + r() * 2200, 0.7, 5e-4, 6e-3 + r() * 0.03, near * (0.5 + r() * 0.5) * 1.6);
-        mix(out, at2, g, Math.min(len2, n - at2), r() * 0.8 - 0.4);
+    const g = new Float32Array(Math.ceil(sr * 0.6));
+    if (near > 0.25) {
+      for (let k2 = 2 + Math.floor(r() * 2); k2 > 0; k2--) {
+        const at = Math.floor(r() * 0.05 * sr);
+        const len2 = noiseGrain(g, sr, r, 350 + r() * 600, 0.7, 4e-4, 4e-3 + r() * 0.012, near * (0.5 + r() * 0.5) * 2.2);
+        mix(out, at, g, Math.min(len2, n - at), r() * 0.6 - 0.3);
       }
     }
-    const low = 45 + r() * 25;
-    const at = Math.floor(strikeAt * sr);
-    let len = sineGrain(g, sr, low, low * 0.8, 0.05, 1.1);
-    mix(out, at, g, Math.min(len, n - at), 0);
-    len = sineGrain(g, sr, low * 2.3, low * 1.9, 0.045, 0.6);
-    mix(out, at, g, Math.min(len, n - at), 0);
+    const low = 42 + r() * 20;
+    let len = sineGrain(g, sr, low * 1.25, low * 0.8, 0.22 + near * 0.1, 1.2);
+    mix(out, 0, g, Math.min(len, n), 0);
+    len = sineGrain(g, sr, low * 2.4, low * 1.8, 0.12, 0.45);
+    mix(out, 0, g, Math.min(len, n), 0);
+    for (let k2 = 2 + Math.floor(r() * 2); k2 > 0; k2--) {
+      const at = Math.floor((0.5 + r() * seconds * 0.4) * sr);
+      len = sineGrain(g, sr, (low + 6) * 1.1, low * 0.85, 0.3, 0.5 * (1 - at / n));
+      mix(out, at, g, Math.min(len, n - at), r() * 0.8 - 0.4);
+    }
     let peak = 0;
     for (const ch of out) for (let i = 0; i < n; i++) peak = Math.max(peak, Math.abs(ch[i]));
     const k = 0.95 * (1 - 0.3 * distance) / (peak || 1);
@@ -4871,27 +5083,27 @@
       {
         seconds: 6.1,
         seed: 11,
-        breathe: 0.18,
-        ticks: 14,
-        leaves: 8,
-        drips: 1.2,
+        breathe: 0.3,
+        ticks: 26,
+        leaves: 14,
+        drips: 2,
         bands: [
-          { rate: 19800, hp: 1800, lp: 6500, level: 0.44 },
+          { rate: 19800, hp: 1500, lp: 5e3, level: 0.3 },
           { rate: 8400, hp: 350, lp: 1800, level: 1.12 },
-          { rate: 4e3, hp: 100, lp: 500, level: 0.54 }
+          { rate: 4e3, hp: 100, lp: 500, level: 0.6 }
         ]
       },
       {
         seconds: 7.7,
         seed: 12,
-        breathe: 0.2,
-        ticks: 10,
-        leaves: 6,
-        drips: 0.8,
+        breathe: 0.32,
+        ticks: 18,
+        leaves: 11,
+        drips: 1.4,
         bands: [
-          { rate: 17600, hp: 2e3, lp: 6800, level: 0.44 },
+          { rate: 17600, hp: 1600, lp: 5200, level: 0.3 },
           { rate: 9100, hp: 400, lp: 1600, level: 1.11 },
-          { rate: 3500, hp: 90, lp: 450, level: 0.54 }
+          { rate: 3500, hp: 90, lp: 450, level: 0.6 }
         ]
       }
     ],
@@ -4899,29 +5111,29 @@
       {
         seconds: 5.9,
         seed: 21,
-        breathe: 0.4,
+        breathe: 0.5,
         gusts: 0.6,
-        ticks: 34,
-        leaves: 10,
-        drips: 2,
+        ticks: 52,
+        leaves: 18,
+        drips: 3,
         bands: [
-          { rate: 26400, hp: 1600, lp: 7e3, level: 0.59 },
+          { rate: 26400, hp: 1500, lp: 5600, level: 0.4 },
           { rate: 11200, hp: 320, lp: 2e3, level: 1.28 },
-          { rate: 5e3, hp: 70, lp: 450, level: 0.95 }
+          { rate: 5e3, hp: 70, lp: 450, level: 1 }
         ]
       },
       {
         seconds: 7.3,
         seed: 22,
-        breathe: 0.45,
+        breathe: 0.55,
         gusts: 0.8,
-        ticks: 26,
-        leaves: 8,
-        drips: 1.5,
+        ticks: 40,
+        leaves: 14,
+        drips: 2.4,
         bands: [
-          { rate: 24200, hp: 1700, lp: 6800, level: 0.58 },
+          { rate: 24200, hp: 1600, lp: 5400, level: 0.4 },
           { rate: 10500, hp: 340, lp: 1900, level: 1.25 },
-          { rate: 4500, hp: 60, lp: 400, level: 0.98 }
+          { rate: 4500, hp: 60, lp: 400, level: 1.02 }
         ]
       }
     ],
@@ -4956,8 +5168,8 @@
   };
 
   // js/ambience.js
-  var BEDS = ["rain", "storm", "wind", "wheat", "water", "waves", "hum", "city"];
-  var CALLS = ["birds", "crickets", "owl", "gulls", "chimes", "traffic"];
+  var BEDS = ["rain", "storm", "wind", "gale", "wheat", "water", "surf", "hum", "city"];
+  var CALLS = ["birds", "crickets", "owl", "gulls", "bell", "traffic"];
   var FLAGS = ["thunder"];
   var AMBIENCE_LAYERS = [...BEDS, ...CALLS, ...FLAGS];
   var GLIDE_S = 0.9;
@@ -4966,7 +5178,10 @@
   var MASTER_GAIN = 0.5;
   var IDLE_S = 8;
   var CLAPS = [[0.12, 1], [0.12, 2], [0.42, 3], [0.42, 4], [0.75, 5], [0.75, 6]];
-  var SOUND_LAG_S = 2.4;
+  var SOUND_LAG_MIN_S = 0.55;
+  var SOUND_LAG_S = 3;
+  var BELLS = [[146.8, 5], [130.8, 6], [164.8, 7]];
+  var FIRST_CALL_S = { bell: [6, 16] };
   var rand = (min, max) => min + Math.random() * (max - min);
   var pick = (list) => list[Math.floor(Math.random() * list.length)];
   function createNoiseBuffer2(ctx) {
@@ -5059,8 +5274,20 @@
     }
     const rainBuilders = (kind) => RAIN_KINDS[kind].map((o, i) => [`${kind}${i}`, () => rainLoop(ctx.sampleRate, o)]);
     const wheatBuilders = [
-      ["wheat0", () => wheatLoop(ctx.sampleRate, { seconds: 9, seed: 7 })],
-      ["wheat1", () => wheatLoop(ctx.sampleRate, { seconds: 11.3, seed: 8 })]
+      ["wheat0", () => wheatLoop(ctx.sampleRate, { seconds: 10.4, seed: 7 })],
+      ["wheat1", () => wheatLoop(ctx.sampleRate, { seconds: 13.7, seed: 8 })]
+    ];
+    const windBuilders = [
+      ["wind0", () => windLoop(ctx.sampleRate, { seconds: 9.7, seed: 41, gusty: 0.55 })],
+      ["wind1", () => windLoop(ctx.sampleRate, { seconds: 12.9, seed: 42, gusty: 0.65 })]
+    ];
+    const galeBuilders = [
+      ["gale0", () => windLoop(ctx.sampleRate, { seconds: 8.3, seed: 43, gusty: 0.9, howl: 0.8 })],
+      ["gale1", () => windLoop(ctx.sampleRate, { seconds: 11.1, seed: 44, gusty: 0.95, howl: 0.7 })]
+    ];
+    const surfBuilders = [
+      ["surf0", () => surfLoop(ctx.sampleRate, { seconds: 30.5, waves: 3, size: 1, seed: 51 })],
+      ["surf1", () => surfLoop(ctx.sampleRate, { seconds: 38.3, waves: 4, size: 0.7, seed: 52 })]
     ];
     const beds = {
       rain(dest, nodes, isStopped) {
@@ -5071,26 +5298,24 @@
         noisePath(nodes, dest, 0.05, filter("lowpass", 700, 0, nodes));
         return loopBed(dest, nodes, isStopped, rainBuilders("storm"), 0.7);
       },
-      wind(dest, nodes) {
-        const band = filter("bandpass", 380, 1.1, nodes);
-        const g = noisePath(nodes, dest, 0.55, band, filter("lowpass", 900, 0, nodes));
-        lfo(band.frequency, 0.11, 140, nodes);
-        lfo(g.gain, 0.07, 0.3, nodes);
-        lfo(g.gain, 0.23, 0.12, nodes);
+      // A breeze that swells and eases, and a gale with heavy gusts and a faint howl
+      wind(dest, nodes, isStopped) {
+        return loopBed(dest, nodes, isStopped, windBuilders, 0.8);
       },
-      // Stalks touching, ears sliding past each other, in swells as each gust passes
+      gale(dest, nodes, isStopped) {
+        return loopBed(dest, nodes, isStopped, galeBuilders, 0.9);
+      },
+      // Ears and leaves brushing past each other, very quiet, in swells as each gust passes
       wheat(dest, nodes, isStopped) {
-        return loopBed(dest, nodes, isStopped, wheatBuilders, 1.5);
+        return loopBed(dest, nodes, isStopped, wheatBuilders, 0.45);
       },
       water(dest, nodes, isStopped) {
         noisePath(nodes, dest, 0.3, filter("lowpass", 1500, 0, nodes), filter("highpass", 120, 0, nodes));
         return loopBed(dest, nodes, isStopped, rainBuilders("water"), 0.6);
       },
-      waves(dest, nodes) {
-        const low = noisePath(nodes, dest, 0.3, filter("lowpass", 800, 0, nodes));
-        const foam = noisePath(nodes, dest, 0.09, filter("highpass", 2600, 0, nodes));
-        lfo(low.gain, 0.13, 0.22, nodes);
-        lfo(foam.gain, 0.13, 0.08, nodes);
+      // Waves that build, break and wash back down the beach
+      surf(dest, nodes, isStopped) {
+        return loopBed(dest, nodes, isStopped, surfBuilders, 0.6);
       },
       hum(dest, nodes) {
         for (const [freq, level] of [[55, 0.1], [110.6, 0.04], [165.2, 0.015]]) {
@@ -5201,16 +5426,19 @@
         }
         return rand(6, 15);
       },
-      chimes(t, dest) {
-        const scale = [1047, 1175, 1319, 1568, 1760, 2093];
-        const n = 3 + Math.floor(Math.random() * 4);
-        for (let i = 0; i < n; i++) {
-          const start = t + rand(0, 1.6);
-          const freq = pick(scale);
-          tone(dest, start, { from: freq, len: 1.8, peak: 0.09, attack: 2e-3 });
-          tone(dest, start, { from: freq * 2.76, len: 0.5, peak: 0.025, attack: 2e-3 });
-        }
-        return rand(5, 12);
+      // A temple bell struck far off, once in a long while
+      bell(t, dest) {
+        const buffer = bells.length ? pick(bells) : null;
+        if (!buffer) return 3;
+        const src = ctx.createBufferSource();
+        src.buffer = buffer;
+        const g = ctx.createGain();
+        g.gain.value = 0.75;
+        src.connect(g);
+        g.connect(dest);
+        src.start(t);
+        src.onended = () => g.disconnect();
+        return rand(26, 46);
       },
       // A car passing on the highway
       traffic(t, dest) {
@@ -5226,6 +5454,8 @@
     };
     const claps = [];
     let clapsStarted = false;
+    const bells = [];
+    let bellsStarted = null;
     return {
       bed(name, dest) {
         const nodes = [];
@@ -5247,6 +5477,18 @@
       },
       call(name, t, dest) {
         return calls[name](t, dest);
+      },
+      /** Start building the bells. Safe to call again; it only runs once. Resolves when all are ready. */
+      prepareBells() {
+        if (!bellsStarted) {
+          bellsStarted = (async () => {
+            for (const [freq, seed] of BELLS) {
+              const samples = await inSlices(bellStrike(ctx.sampleRate, { freq, seed }));
+              bells.push(toBuffer(samples));
+            }
+          })();
+        }
+        return bellsStarted;
       },
       /** Start building the thunderclaps. Safe to call again; it only runs once. */
       prepareClaps() {
@@ -5283,11 +5525,13 @@
       const g = ctx.createGain();
       g.gain.value = 0;
       g.connect(master);
-      const layer2 = { gain: g, level: 0, idleSince: 0, next: ctx.currentTime + rand(0.3, 2.5) };
+      const [firstMin, firstMax] = FIRST_CALL_S[name] || [0.3, 2.5];
+      const layer2 = { gain: g, level: 0, idleSince: 0, next: ctx.currentTime + rand(firstMin, firstMax) };
       layer2.stop = BEDS.includes(name) ? sources.bed(name, g).stop : () => {
       };
       layers.set(name, layer2);
       if (name === "thunder") sources.prepareClaps();
+      if (name === "bell") sources.prepareBells();
       return layer2;
     }
     function apply() {
@@ -5359,7 +5603,7 @@
         g.gain.value = 1.3 - 0.45 * distance;
         src.connect(g);
         g.connect(layer2.gain);
-        src.start(ctx.currentTime + 0.06 + distance * SOUND_LAG_S);
+        src.start(ctx.currentTime + SOUND_LAG_MIN_S + distance * SOUND_LAG_S);
         src.onended = () => g.disconnect();
       },
       dispose() {

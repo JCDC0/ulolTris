@@ -60,7 +60,7 @@ export default {
     celestial: { sunX: 190, sunHighY: 26, sunLowY: 108, moonX: 190, moonY: 30 },
     fog: [96, 156],
     rainBand: [H - 24, H - 3],
-    sounds: { always: { chimes: 0.6 }, day: { birds: 1 }, night: { owl: 0.35, crickets: 0.4 } },
+    sounds: { always: { bell: 1, wind: 0.22 }, day: { birds: 1 }, night: { owl: 0.35, crickets: 0.4 } },
     create(env) {
         const sky = env.makeSky(env.id === 'sunny' ? { palette: SPRING_SKY } : {});
 

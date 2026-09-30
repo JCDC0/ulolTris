@@ -1,6 +1,6 @@
 /**
- * ambience.js - Background sounds for the pixel art scenes: rain, wind, rustling
- * wheat, water, surf, birds, crickets, thunder and so on.
+ * ambience.js - Background sounds for the pixel art scenes: rain, wind, wheat brushing,
+ * water, surf, birds, crickets, a temple bell, thunder and so on.
  *
  * Everything is synthesized; no audio files are loaded. Each scene (with its weather)
  * lists the layers it wants and how loud (`{ rain: 1, birds: 0.2 }`). When the scene
@@ -8,22 +8,23 @@
  * drops out.
  *
  * Three kinds of layer:
- * - Beds are continuous. Filtered-noise beds (wind, waves, hum, city) are live Web
- *   Audio graphs. Textured beds (rain, storm, water, wheat) are loops built by
- *   ambience-synth.js: a shower of dense tiny impacts with quiet droplets on top, a
- *   rushing roar, stalks touching. They are built in short slices the first time a
- *   scene needs them, so a scene change never stalls a frame.
- * - Calls (birds, crickets, owl, gulls, chimes, traffic) are short sounds scheduled at
+ * - Beds are continuous. Hum and city are live Web Audio graphs of filtered noise.
+ *   Textured beds (rain, storm, water, wheat, wind, gale, surf) are loops built by
+ *   ambience-synth.js: a shower of dense tiny impacts with quiet droplets on top, wind
+ *   through a moving resonance, soft brushes, waves that build, break and recede. They
+ *   are built in short slices the first time a scene needs them, so a scene change
+ *   never stalls a frame.
+ * - Calls (birds, crickets, owl, gulls, bell, traffic) are short sounds scheduled at
  *   random intervals.
  * - Flags (thunder) do nothing on their own. Thunder plays when the picture flashes:
  *   background.js reports each lightning strike and strike() answers with a clap
  *   that arrives after a delay that grows with distance, like the real thing.
  */
 
-import { rainLoop, wheatLoop, thunderClap, RAIN_KINDS } from './ambience-synth.js';
+import { rainLoop, wheatLoop, windLoop, surfLoop, bellStrike, thunderClap, RAIN_KINDS } from './ambience-synth.js';
 
-const BEDS = ['rain', 'storm', 'wind', 'wheat', 'water', 'waves', 'hum', 'city'];
-const CALLS = ['birds', 'crickets', 'owl', 'gulls', 'chimes', 'traffic'];
+const BEDS = ['rain', 'storm', 'wind', 'gale', 'wheat', 'water', 'surf', 'hum', 'city'];
+const CALLS = ['birds', 'crickets', 'owl', 'gulls', 'bell', 'traffic'];
 const FLAGS = ['thunder'];
 
 /** Every layer name a scene may use. */
@@ -37,8 +38,16 @@ const MASTER_GAIN = 0.5;
 const IDLE_S = 8;
 /** Thunderclaps kept ready: near, middle and far, two takes of each. */
 const CLAPS = [[0.12, 1], [0.12, 2], [0.42, 3], [0.42, 4], [0.75, 5], [0.75, 6]];
-/** The sound of thunder reaches you after the flash: seconds of delay at distance 1. */
-const SOUND_LAG_S = 2.4;
+/**
+ * The sound of thunder reaches you after the flash. Even a close strike is heard about half
+ * a second late, and a far one up to three and a half seconds late.
+ */
+const SOUND_LAG_MIN_S = 0.55;
+const SOUND_LAG_S = 3;
+/** Temple bells kept ready (fundamental in Hz, seed). */
+const BELLS = [[146.8, 5], [130.8, 6], [164.8, 7]];
+/** Seconds before a call layer makes its first sound, for calls that should not come at once. */
+const FIRST_CALL_S = { bell: [6, 16] };
 
 const rand = (min, max) => min + Math.random() * (max - min);
 const pick = list => list[Math.floor(Math.random() * list.length)];
@@ -160,8 +169,20 @@ function createSources(ctx, noise) {
     const rainBuilders = kind => RAIN_KINDS[kind].map((o, i) =>
         [`${kind}${i}`, () => rainLoop(ctx.sampleRate, o)]);
     const wheatBuilders = [
-        ['wheat0', () => wheatLoop(ctx.sampleRate, { seconds: 9, seed: 7 })],
-        ['wheat1', () => wheatLoop(ctx.sampleRate, { seconds: 11.3, seed: 8 })],
+        ['wheat0', () => wheatLoop(ctx.sampleRate, { seconds: 10.4, seed: 7 })],
+        ['wheat1', () => wheatLoop(ctx.sampleRate, { seconds: 13.7, seed: 8 })],
+    ];
+    const windBuilders = [
+        ['wind0', () => windLoop(ctx.sampleRate, { seconds: 9.7, seed: 41, gusty: 0.55 })],
+        ['wind1', () => windLoop(ctx.sampleRate, { seconds: 12.9, seed: 42, gusty: 0.65 })],
+    ];
+    const galeBuilders = [
+        ['gale0', () => windLoop(ctx.sampleRate, { seconds: 8.3, seed: 43, gusty: 0.9, howl: 0.8 })],
+        ['gale1', () => windLoop(ctx.sampleRate, { seconds: 11.1, seed: 44, gusty: 0.95, howl: 0.7 })],
+    ];
+    const surfBuilders = [
+        ['surf0', () => surfLoop(ctx.sampleRate, { seconds: 30.5, waves: 3, size: 1, seed: 51 })],
+        ['surf1', () => surfLoop(ctx.sampleRate, { seconds: 38.3, waves: 4, size: 0.7, seed: 52 })],
     ];
 
     const beds = {
@@ -174,26 +195,24 @@ function createSources(ctx, noise) {
             noisePath(nodes, dest, 0.05, filter('lowpass', 700, 0, nodes));
             return loopBed(dest, nodes, isStopped, rainBuilders('storm'), 0.7);
         },
-        wind(dest, nodes) {
-            const band = filter('bandpass', 380, 1.1, nodes);
-            const g = noisePath(nodes, dest, 0.55, band, filter('lowpass', 900, 0, nodes));
-            lfo(band.frequency, 0.11, 140, nodes);
-            lfo(g.gain, 0.07, 0.3, nodes);
-            lfo(g.gain, 0.23, 0.12, nodes);
+        // A breeze that swells and eases, and a gale with heavy gusts and a faint howl
+        wind(dest, nodes, isStopped) {
+            return loopBed(dest, nodes, isStopped, windBuilders, 0.8);
         },
-        // Stalks touching, ears sliding past each other, in swells as each gust passes
+        gale(dest, nodes, isStopped) {
+            return loopBed(dest, nodes, isStopped, galeBuilders, 0.9);
+        },
+        // Ears and leaves brushing past each other, very quiet, in swells as each gust passes
         wheat(dest, nodes, isStopped) {
-            return loopBed(dest, nodes, isStopped, wheatBuilders, 1.5);
+            return loopBed(dest, nodes, isStopped, wheatBuilders, 0.45);
         },
         water(dest, nodes, isStopped) {
             noisePath(nodes, dest, 0.3, filter('lowpass', 1500, 0, nodes), filter('highpass', 120, 0, nodes));
             return loopBed(dest, nodes, isStopped, rainBuilders('water'), 0.6);
         },
-        waves(dest, nodes) {
-            const low = noisePath(nodes, dest, 0.3, filter('lowpass', 800, 0, nodes));
-            const foam = noisePath(nodes, dest, 0.09, filter('highpass', 2600, 0, nodes));
-            lfo(low.gain, 0.13, 0.22, nodes);
-            lfo(foam.gain, 0.13, 0.08, nodes);
+        // Waves that build, break and wash back down the beach
+        surf(dest, nodes, isStopped) {
+            return loopBed(dest, nodes, isStopped, surfBuilders, 0.6);
         },
         hum(dest, nodes) {
             for (const [freq, level] of [[55, 0.1], [110.6, 0.04], [165.2, 0.015]]) {
@@ -306,16 +325,19 @@ function createSources(ctx, noise) {
             }
             return rand(6, 15);
         },
-        chimes(t, dest) {
-            const scale = [1047, 1175, 1319, 1568, 1760, 2093];
-            const n = 3 + Math.floor(Math.random() * 4);
-            for (let i = 0; i < n; i++) {
-                const start = t + rand(0, 1.6);
-                const freq = pick(scale);
-                tone(dest, start, { from: freq, len: 1.8, peak: 0.09, attack: 0.002 });
-                tone(dest, start, { from: freq * 2.76, len: 0.5, peak: 0.025, attack: 0.002 });
-            }
-            return rand(5, 12);
+        // A temple bell struck far off, once in a long while
+        bell(t, dest) {
+            const buffer = bells.length ? pick(bells) : null;
+            if (!buffer) return 3;
+            const src = ctx.createBufferSource();
+            src.buffer = buffer;
+            const g = ctx.createGain();
+            g.gain.value = 0.75;
+            src.connect(g);
+            g.connect(dest);
+            src.start(t);
+            src.onended = () => g.disconnect();
+            return rand(26, 46);
         },
         // A car passing on the highway
         traffic(t, dest) {
@@ -330,10 +352,12 @@ function createSources(ctx, noise) {
         },
     };
 
-    // --- Thunderclaps, built one at a time in the background ---
+    // --- Thunderclaps and bells, built one at a time in the background ---
 
     const claps = [];
     let clapsStarted = false;
+    const bells = [];
+    let bellsStarted = null;
 
     return {
         bed(name, dest) {
@@ -353,6 +377,18 @@ function createSources(ctx, noise) {
         },
         call(name, t, dest) {
             return calls[name](t, dest);
+        },
+        /** Start building the bells. Safe to call again; it only runs once. Resolves when all are ready. */
+        prepareBells() {
+            if (!bellsStarted) {
+                bellsStarted = (async () => {
+                    for (const [freq, seed] of BELLS) {
+                        const samples = await inSlices(bellStrike(ctx.sampleRate, { freq, seed }));
+                        bells.push(toBuffer(samples));
+                    }
+                })();
+            }
+            return bellsStarted;
         },
         /** Start building the thunderclaps. Safe to call again; it only runs once. */
         prepareClaps() {
@@ -386,6 +422,8 @@ export async function renderAmbienceOffline(levels, seconds, sampleRate = 44100)
     master.gain.value = MASTER_GAIN;
     master.connect(ctx.destination);
     const pending = [];
+    if (levels.bell) pending.push(sources.prepareBells());
+    await Promise.all(pending.splice(0));
     for (const [name, level] of Object.entries(levels)) {
         const g = ctx.createGain();
         g.gain.value = level;
@@ -420,10 +458,12 @@ export function createAmbience(settings) {
         const g = ctx.createGain();
         g.gain.value = 0;
         g.connect(master);
-        const layer = { gain: g, level: 0, idleSince: 0, next: ctx.currentTime + rand(0.3, 2.5) };
+        const [firstMin, firstMax] = FIRST_CALL_S[name] || [0.3, 2.5];
+        const layer = { gain: g, level: 0, idleSince: 0, next: ctx.currentTime + rand(firstMin, firstMax) };
         layer.stop = BEDS.includes(name) ? sources.bed(name, g).stop : () => {};
         layers.set(name, layer);
         if (name === 'thunder') sources.prepareClaps();
+        if (name === 'bell') sources.prepareBells();
         return layer;
     }
 
@@ -502,7 +542,7 @@ export function createAmbience(settings) {
             g.gain.value = 1.3 - 0.45 * distance;
             src.connect(g);
             g.connect(layer.gain);
-            src.start(ctx.currentTime + 0.06 + distance * SOUND_LAG_S);
+            src.start(ctx.currentTime + SOUND_LAG_MIN_S + distance * SOUND_LAG_S);
             src.onended = () => g.disconnect();
         },
 
