@@ -9,9 +9,9 @@
  *
  * Three kinds of layer:
  * - Beds are continuous. Filtered-noise beds (wind, waves, hum, city) are live Web
- *   Audio graphs. Textured beds (rain, storm, wheat, water) are loops of thousands of
- *   single grains built by ambience-synth.js: drops on stone and leaves, stalks
- *   touching, bubbles in a stream. They are built in short slices the first time a
+ *   Audio graphs. Textured beds (rain, storm, water, wheat) are loops built by
+ *   ambience-synth.js: a shower of dense tiny impacts with quiet droplets on top, a
+ *   rushing roar, stalks touching. They are built in short slices the first time a
  *   scene needs them, so a scene change never stalls a frame.
  * - Calls (birds, crickets, owl, gulls, chimes, traffic) are short sounds scheduled at
  *   random intervals.
@@ -51,7 +51,7 @@ function createNoiseBuffer(ctx) {
 }
 
 /**
- * Run a builder generator in slices of a few milliseconds so the page stays smooth.
+ * Run a builder generator in slices of about 3 ms so the page stays smooth.
  * @returns {Promise<Float32Array[]>} what the generator returned
  */
 function inSlices(gen) {
@@ -59,7 +59,7 @@ function inSlices(gen) {
         function step() {
             const start = performance.now();
             let result;
-            do { result = gen.next(); } while (!result.done && performance.now() - start < 6);
+            do { result = gen.next(); } while (!result.done && performance.now() - start < 3);
             if (result.done) resolve(result.value);
             else setTimeout(step, 0);
         }

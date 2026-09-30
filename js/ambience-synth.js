@@ -3,10 +3,13 @@
  * single drops, wheat made of stalks touching, and thunder.
  *
  * Filtered noise alone sounds like static, so these are built the way the real
- * sounds are: from thousands of tiny separate events ("grains") mixed into a loop.
- * - Rain: soft drops (a short rising chirp, like a drop on a leaf or a puddle), hard
- *   drops (a sharp tick with a low pat, like a drop on stone) and now and then a
- *   heavy drip into standing water, over a quiet wash of distant rain.
+ * sounds are: from thousands of tiny separate events mixed into a loop.
+ * - Rain is a shower with droplets on top. The shower is a dense field of tiny
+ *   impacts (thousands a second, some much louder than others) through a few
+ *   frequency bands, breathing slowly as gusts pass, different in each ear. The
+ *   droplets are quiet unpitched ticks: drops on stone, on leaves, and now and then
+ *   a drip with a little ring. There are no pitched "bloops": a drop that rises in
+ *   pitch sounds like a bubble, and a few of them sound like jelly.
  * - Wheat: dry ticks where stalks touch, papery brushes where ears slide past each
  *   other, and hollow knocks from stems. Grains come in swells that cross from left
  *   to right as each gust passes, with near silence between gusts.
@@ -90,29 +93,39 @@ function noiseGrain(buf, sr, r, freq, q, attackS, decayS, amp) {
 }
 
 /**
- * Quiet band of noise under the grains, different in each ear. The filters are run
- * once around the loop before writing, so the loop point is seamless.
+ * Add a band of dense impacts to one channel. Each impact is a single sample of random
+ * size and sign, and the filters turn the impacts into the hiss and patter of a shower.
+ * Sizes are kept close together: a few much bigger impacts come out as pops. The filters run once around the loop before writing, so
+ * the loop point is seamless.
+ * @param {Float32Array} ch - channel to add to
+ * @param {Object} band - { rate: impacts per second, hp, lp: corner frequencies in Hz, level }
+ * @param {number} breathe - how much gusts swell and ease the band (0 to 1)
+ * @param {number} gustPhase - where in the loop the gust swells start, shared by both ears
  */
-function addWash(out, sr, r, level, lowHz, highHz, swell) {
-    const n = out[0].length;
-    const kLow = 1 - Math.exp((-TAU * highHz) / sr);
-    const kHigh = 1 - Math.exp((-TAU * lowHz) / sr);
-    const phase = r() * TAU;
-    for (const ch of out) {
-        const noise = new Float32Array(n);
-        for (let i = 0; i < n; i++) noise[i] = r() * 2 - 1;
-        let lp = 0, hp = 0;
-        const warm = Math.min(n, Math.round(sr * 0.2));
-        for (let i = n - warm; i < n; i++) {
-            lp += (noise[i] - lp) * kLow;
-            hp += (lp - hp) * kHigh;
-        }
-        for (let i = 0; i < n; i++) {
-            lp += (noise[i] - lp) * kLow;
-            hp += (lp - hp) * kHigh;
-            const slow = 1 + swell * Math.sin((TAU * 2 * i) / n + phase);
-            ch[i] += (lp - hp) * level * slow;
-        }
+function* addBand(ch, sr, r, { rate, hp, lp, level }, breathe, gustPhase) {
+    const n = ch.length;
+    const shot = new Float32Array(n);
+    for (let i = Math.round((rate * n) / sr); i > 0; i--) shot[Math.floor(r() * n)] += (r() * 2 - 1) * (0.6 + 0.8 * r() ** 2);
+    const kLp = 1 - Math.exp((-TAU * lp) / sr);
+    const kHp = 1 - Math.exp((-TAU * hp) / sr);
+    let l1 = 0, l2 = 0, a = 0, b = 0;
+    // Two-pole lowpass, then two one-pole highpass stages
+    const run = x => {
+        l1 += (x - l1) * kLp;
+        l2 += (l1 - l2) * kLp;
+        a += (l2 - a) * kHp;
+        const v = l2 - a;
+        b += (v - b) * kHp;
+        return v - b;
+    };
+    const warm = Math.min(n, Math.round(sr * 0.25));
+    for (let i = n - warm; i < n; i++) run(shot[i]);
+    const p1 = r() * TAU, p2 = r() * TAU;
+    const c1 = 2 + Math.floor(r() * 2), c2 = 5 + Math.floor(r() * 3);
+    for (let i = 0; i < n; i++) {
+        const mod = 1 + breathe * (0.6 * Math.sin((TAU * c1 * i) / n + p1 + gustPhase) + 0.4 * Math.sin((TAU * c2 * i) / n + p2));
+        ch[i] += run(shot[i]) * level * mod;
+        if (i % 65536 === 0) yield;
     }
 }
 
@@ -133,63 +146,72 @@ function normalize(out, targetRms) {
 }
 
 /**
- * A loop of rain. Rates are drops per second.
+ * A loop of rain (or of running water): a shower with droplets on top.
  * @param {number} sr - sample rate
- * @param {Object} [o] - { seconds, soft, hard, drips, wash, gusts, seed }
- *   `gusts` (0 to 1) bunches the hard drops into waves, as wind drives the rain.
+ * @param {Object} [o]
+ *   seconds: loop length
+ *   bands: [{ rate, hp, lp, level }] the shower, see addBand
+ *   breathe: how much the shower swells and eases (0 to 1)
+ *   ticks, leaves, drips: droplets per second: sharp ticks on stone, soft patters on
+ *     leaves, and drips with a little ring. All are quiet next to the shower.
+ *   gusts: 0 to 1, bunches the droplets into the same swells as the shower
+ *   seed
  * @returns {Generator<void, Float32Array[]>} yields while working, returns [left, right]
  */
-export function* rainLoop(sr, { seconds = 6.5, soft = 55, hard = 35, drips = 2.5, wash = 0.05, gusts = 0, seed = 1 } = {}) {
+export function* rainLoop(sr, { seconds = 6.5, bands = [], breathe = 0.2, ticks = 16, leaves = 8, drips = 1, gusts = 0, seed = 1 } = {}) {
     const out = stereo(sr, seconds);
     const n = out[0].length;
     const r = rng(seed);
-    const g = new Float32Array(Math.ceil(sr * 0.3));
-    const loud = () => 0.12 + 0.88 * r() ** 3;
-    let made = 0;
-
-    for (let i = Math.round(soft * seconds); i > 0; i--) {
-        const f = 1200 * Math.pow(3.2, r());
-        const len = sineGrain(g, sr, f, f * (1.15 + r() * 0.45), 0.004 + r() * 0.01, loud() * 0.8);
-        mix(out, Math.floor(r() * n), g, len, r() * 2 - 1);
-        if (++made % 48 === 0) yield;
-    }
-
     const gustPhase = r() * TAU;
-    for (let i = Math.round(hard * seconds); i > 0; i--) {
+
+    for (const ch of out) {
+        for (const band of bands) {
+            yield* addBand(ch, sr, r, band, breathe, gustPhase);
+        }
+    }
+    // Scale the shower to an RMS of 1, so droplet sizes below are in units of the shower
+    let sum = 0;
+    for (const ch of out) for (let i = 0; i < n; i++) sum += ch[i] * ch[i];
+    const k = 1 / (Math.sqrt(sum / (n * out.length)) || 1);
+    for (const ch of out) for (let i = 0; i < n; i++) ch[i] *= k;
+
+    const g = new Float32Array(Math.ceil(sr * 0.1));
+    let made = 0;
+    /** A time in the loop, more likely where the gust curve is high when gusts > 0. */
+    const when = () => {
         let at = Math.floor(r() * n);
         if (gusts > 0) {
-            // Keep a drop more often where the gust curve is high
             for (let tries = 0; tries < 4; tries++) {
                 const wave = 0.5 + 0.5 * Math.sin((TAU * 2 * at) / n + gustPhase);
                 if (r() < 1 - gusts + gusts * wave) break;
                 at = Math.floor(r() * n);
             }
         }
-        const pan = r() * 2 - 1;
-        const amp = loud();
-        let len = noiseGrain(g, sr, r, 1800 * Math.pow(3.6, r()), 3 + r() * 3, 0.0002, 0.0015 + r() * 0.0025, amp);
-        mix(out, at, g, len, pan);
-        if (r() < 0.5) {
-            const f = 180 + r() * 300;
-            len = sineGrain(g, sr, f, f * 0.8, 0.008 + r() * 0.008, amp * 0.55);
-            mix(out, at, g, len, pan);
-        }
-        if (++made % 48 === 0) yield;
-    }
+        return at;
+    };
+    const loud = () => 0.25 + 0.75 * r() ** 2;
 
+    for (let i = Math.round(ticks * seconds); i > 0; i--) {
+        // A drop on something hard: a sharp tick, brighter and shorter the harder the surface
+        const len = noiseGrain(g, sr, r, 3000 + r() * 4500, 2.5 + r() * 2, 0.0002, 0.0012 + r() * 0.002, loud() * 4);
+        mix(out, when(), g, len, r() * 2 - 1);
+        if (++made % 64 === 0) yield;
+    }
+    for (let i = Math.round(leaves * seconds); i > 0; i--) {
+        // A drop on a leaf: duller and a touch longer, a soft pat
+        const len = noiseGrain(g, sr, r, 1100 + r() * 1500, 1.2 + r(), 0.0006, 0.004 + r() * 0.005, loud() * 3.6);
+        mix(out, when(), g, len, r() * 2 - 1);
+        if (++made % 64 === 0) yield;
+    }
     for (let i = Math.round(drips * seconds); i > 0; i--) {
-        const at = Math.floor(r() * n);
+        // A drip off a roof or a leaf tip: a tick with a short, narrow ring that does not change pitch
+        const at = when();
         const pan = r() * 1.6 - 0.8;
-        const amp = 0.55 + r() * 0.45;
-        let len = noiseGrain(g, sr, r, 3200, 2, 0.0002, 0.001, amp * 0.5);
+        let len = noiseGrain(g, sr, r, 4200, 2, 0.0002, 0.001, 3);
         mix(out, at, g, len, pan);
-        const f = 420 + r() * 480;
-        len = sineGrain(g, sr, f, f * (1.5 + r() * 0.7), 0.025 + r() * 0.02, amp);
-        mix(out, at + Math.round(sr * (0.008 + r() * 0.006)), g, len, pan);
+        len = noiseGrain(g, sr, r, 2400 + r() * 1800, 14, 0.0004, 0.006 + r() * 0.006, 3.5);
+        mix(out, at, g, len, pan);
     }
-    yield;
-
-    addWash(out, sr, r, wash, 500, 3200, 0.25);
     yield;
     return normalize(out, 0.085);
 }
@@ -343,19 +365,64 @@ export function thunder(sr, opts) {
     return runSync(thunderClap(sr, opts));
 }
 
-/** Settings for the kinds of rain. The storm is mostly hard drops, driven in gusts. */
+/**
+ * Settings for the kinds of rain. Bands run from a hiss on top to a patter in the middle
+ * to a far-off roar underneath. The storm is denser and louder, swells and eases more,
+ * and has more droplets. Running water is a low, steady roar with a few splashes.
+ */
 export const RAIN_KINDS = {
     rain: [
-        { seconds: 6.1, soft: 55, hard: 35, drips: 2.5, wash: 0.05, seed: 11 },
-        { seconds: 7.7, soft: 40, hard: 25, drips: 1.5, wash: 0.04, seed: 12 },
+        {
+            seconds: 6.1, seed: 11, breathe: 0.18, ticks: 14, leaves: 8, drips: 1.2,
+            bands: [
+                { rate: 19800, hp: 1800, lp: 6500, level: 0.44 },
+                { rate: 8400, hp: 350, lp: 1800, level: 1.12 },
+                { rate: 4000, hp: 100, lp: 500, level: 0.54 },
+            ],
+        },
+        {
+            seconds: 7.7, seed: 12, breathe: 0.2, ticks: 10, leaves: 6, drips: 0.8,
+            bands: [
+                { rate: 17600, hp: 2000, lp: 6800, level: 0.44 },
+                { rate: 9100, hp: 400, lp: 1600, level: 1.11 },
+                { rate: 3500, hp: 90, lp: 450, level: 0.54 },
+            ],
+        },
     ],
     storm: [
-        { seconds: 5.9, soft: 60, hard: 190, drips: 3, wash: 0.11, gusts: 0.6, seed: 21 },
-        { seconds: 7.3, soft: 40, hard: 140, drips: 2, wash: 0.09, gusts: 0.8, seed: 22 },
+        {
+            seconds: 5.9, seed: 21, breathe: 0.4, gusts: 0.6, ticks: 34, leaves: 10, drips: 2,
+            bands: [
+                { rate: 26400, hp: 1600, lp: 7000, level: 0.59 },
+                { rate: 11200, hp: 320, lp: 2000, level: 1.28 },
+                { rate: 5000, hp: 70, lp: 450, level: 0.95 },
+            ],
+        },
+        {
+            seconds: 7.3, seed: 22, breathe: 0.45, gusts: 0.8, ticks: 26, leaves: 8, drips: 1.5,
+            bands: [
+                { rate: 24200, hp: 1700, lp: 6800, level: 0.58 },
+                { rate: 10500, hp: 340, lp: 1900, level: 1.25 },
+                { rate: 4500, hp: 60, lp: 400, level: 0.98 },
+            ],
+        },
     ],
-    // Running water: many small bubbles and few hard hits, with a wide wash
     water: [
-        { seconds: 6.7, soft: 190, hard: 25, drips: 1, wash: 0.13, seed: 31 },
-        { seconds: 8.3, soft: 150, hard: 20, drips: 0.5, wash: 0.11, seed: 32 },
+        {
+            seconds: 6.7, seed: 31, breathe: 0.08, ticks: 5, leaves: 0, drips: 0,
+            bands: [
+                { rate: 19800, hp: 500, lp: 5200, level: 0.51 },
+                { rate: 9100, hp: 160, lp: 1400, level: 1.06 },
+                { rate: 4000, hp: 60, lp: 320, level: 0.76 },
+            ],
+        },
+        {
+            seconds: 8.3, seed: 32, breathe: 0.1, ticks: 4, leaves: 0, drips: 0,
+            bands: [
+                { rate: 17600, hp: 600, lp: 5000, level: 0.51 },
+                { rate: 8400, hp: 180, lp: 1300, level: 1.01 },
+                { rate: 3500, hp: 60, lp: 300, level: 0.76 },
+            ],
+        },
     ],
 };

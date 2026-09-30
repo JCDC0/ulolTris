@@ -40,20 +40,62 @@ const reference = texture([white]);
 check('white noise reference is flat (kurtosis near 3, no loudness variation)', reference.kurtosis < 3.5 && reference.variation < 0.1,
     `kurtosis ${reference.kurtosis.toFixed(1)}, variation ${reference.variation.toFixed(2)}`);
 
-// Rain, storm and running water are made of single drops and bubbles, so they are peaky
+/** How much of a signal's energy is below 300 Hz and above 6 kHz (crude one-pole splits). */
+function balance([left]) {
+    const kLow = 1 - Math.exp((-2 * Math.PI * 300) / SR);
+    const kHigh = 1 - Math.exp((-2 * Math.PI * 6000) / SR);
+    let low = 0, lowE = 0, high = 0, highE = 0, all = 0;
+    for (let i = 0; i < left.length; i++) {
+        low += (left[i] - low) * kLow;
+        high += (left[i] - high) * kHigh;
+        lowE += low * low;
+        highE += (left[i] - high) ** 2;
+        all += left[i] ** 2;
+    }
+    return { low: lowE / all, high: highE / all };
+}
+
+// Rain, storm and running water are a shower with droplets on top. The shower is dense and
+// smooth (no pops), it breathes, it is warm (not a wall of hiss and not a rumble), and it
+// stays steady in level and does not clip.
 for (const [kind, list] of Object.entries(RAIN_KINDS)) {
     list.forEach((options, i) => {
         const out = runSync(rainLoop(SR, { ...options, seconds: 3 }));
         const t = texture(out);
-        check(`${kind} loop ${i + 1}: separate drops, not noise`, t.finite && t.kurtosis > 5 && t.variation > 0.3,
+        const b = balance(out);
+        const breathes = kind === 'storm' ? 0.1 : kind === 'rain' ? 0.06 : 0.04;
+        check(`${kind} loop ${i + 1}: a steady shower that moves, not flat noise`, t.finite && t.kurtosis > 3.3 && t.kurtosis < 7 && t.variation > breathes,
             `kurtosis ${t.kurtosis.toFixed(1)}, variation ${t.variation.toFixed(2)}`);
+        const lowest = kind === 'water' ? 0.14 : 0.08;
+        check(`${kind} loop ${i + 1}: warm, neither all hiss nor all rumble`, b.low < lowest && b.high < 0.45,
+            `below 300 Hz ${(b.low * 100).toFixed(0)} %, above 6 kHz ${(b.high * 100).toFixed(0)} %`);
         check(`${kind} loop ${i + 1}: level is steady and does not clip`, Math.abs(t.rms - 0.085) < 0.01 && t.peak < 1,
             `rms ${t.rms.toFixed(3)}, peak ${t.peak.toFixed(2)}`);
     });
 }
 const storm = texture(runSync(rainLoop(SR, { ...RAIN_KINDS.storm[0], seconds: 3 })));
 const light = texture(runSync(rainLoop(SR, { ...RAIN_KINDS.rain[0], seconds: 3 })));
-check('a storm has more hard drops than light rain (denser, so less peaky)', storm.kurtosis < light.kurtosis);
+check('a storm swells and eases more than light rain', storm.variation > light.variation * 1.3,
+    `${storm.variation.toFixed(2)} against ${light.variation.toFixed(2)}`);
+
+// The droplets are there but subtle: they add a few per cent of the energy, in short taps
+// that stand several times above the shower, and they do not pitch up into bloops
+{
+    const options = RAIN_KINDS.rain[0];
+    const shower = runSync(rainLoop(SR, { ...options, seconds: 3, ticks: 0, leaves: 0, drips: 0 }))[0];
+    const full = runSync(rainLoop(SR, { ...options, seconds: 3 }))[0];
+    let e = 0, eShower = 0, peak = 0;
+    for (let i = 0; i < full.length; i++) {
+        const d = full[i] - shower[i];
+        e += d * d;
+        eShower += shower[i] ** 2;
+        peak = Math.max(peak, Math.abs(d));
+    }
+    const share = e / eShower;
+    const showerRms = Math.sqrt(eShower / full.length);
+    check('droplets are audible but subtle (2 to 10 % of the shower energy)', share > 0.02 && share < 0.1, `${(share * 100).toFixed(1)} %`);
+    check('droplets are short taps that stand well above the shower', peak > showerRms * 3, `peak ${(peak / showerRms).toFixed(1)}x the shower level`);
+}
 
 // Wheat: stalks touching, in swells
 for (const seed of [7, 8]) {
