@@ -1,6 +1,6 @@
 {
   "name": "uloltris",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Tetr.io-inspired block stacking game",
   "scripts": {
     "build": "npx esbuild js/main.js --bundle --outfile=game.js --format=iife",

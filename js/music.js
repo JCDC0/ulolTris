@@ -4,14 +4,16 @@
  * Plays the song data in tracks.js with Web Audio synth voices. Scheduling uses a
  * lookahead timer: every TICK_MS it queues whole bars that start within LOOKAHEAD_S,
  * timed on the AudioContext clock so tempo stays exact even when frames drop.
- * Each playing track has its own gain node, so switching tracks is a crossfade.
+ * Switching tracks is a handoff, not a fade: the new track starts exactly on the old
+ * track's next beat at full level, and the old one is released over HANDOFF_S from
+ * that same beat. There is never a dip in volume between the two.
  */
 
 import { TRACKS } from './tracks.js';
 
 const TICK_MS = 25;
 const LOOKAHEAD_S = 0.2;
-const CROSSFADE_S = 1.5;
+const HANDOFF_S = 0.12;
 const TRACK_GAIN = 0.3;
 
 function midiToFreq(midi) {
@@ -219,7 +221,7 @@ function createVoices(ctx, noise) {
 
 /**
  * A track's output: voices and a tempo-synced delay feed a compressor, then the
- * track gain (used for crossfades). The compressor keeps dense bars from clipping.
+ * track gain (used for the handoff between tracks). The compressor keeps dense bars from clipping.
  * @returns {{ gain: GainNode, bus: { dry: AudioNode, send: AudioNode }, nodes: AudioNode[] }}
  */
 function createBus(ctx, track, destination) {
@@ -300,7 +302,7 @@ export function createMusicEngine(settingsRef) {
     let voices = null;
     let timer = null;
 
-    const players = [];     // { name, track, gain, bus, nodes, bar, nextBarTime, stopping }
+    const players = [];     // { name, track, gain, bus, nodes, bar, nextBarTime, barStart, barLen, stopAt }
     let wanted = null;      // track name that should be playing
     let paused = false;
     let tempoScale = 1;
@@ -333,10 +335,19 @@ export function createMusicEngine(settingsRef) {
 
     // --- Scheduling ---
 
-    function createPlayer(name) {
+    function createPlayer(name, startAt) {
         const track = TRACKS[name];
         const { gain, bus, nodes } = createBus(ctx, track, duckGain);
-        return { name, track, gain, bus, nodes, bar: 0, nextBarTime: ctx.currentTime + 0.1, stopping: false };
+        // Full level from the first note: each voice has its own attack, so nothing clicks.
+        gain.gain.value = TRACK_GAIN;
+        return { name, track, gain, bus, nodes, bar: 0, nextBarTime: startAt, barStart: null, barLen: 0, stopAt: null };
+    }
+
+    /** The next beat of a playing track, at least 60 ms away so it can still be scheduled. */
+    function nextBeat(p, now) {
+        if (p.barStart === null) return now + 0.1;
+        const beat = p.barLen / 4;
+        return p.barStart + Math.ceil((now + 0.06 - p.barStart) / beat) * beat;
     }
 
     function tick() {
@@ -347,43 +358,48 @@ export function createMusicEngine(settingsRef) {
         if (Math.abs(out.gain.value - vol) > 0.001) out.gain.setTargetAtTime(vol, now, 0.05);
 
         for (const p of players) {
-            if (p.stopping || suppressed) continue;
-            while (p.nextBarTime < now + LOOKAHEAD_S) {
+            if (suppressed) continue;
+            // A track that is handing off keeps playing up to its last beat.
+            const until = p.stopAt === null ? now + LOOKAHEAD_S : Math.min(now + LOOKAHEAD_S, p.stopAt);
+            while (p.nextBarTime < until) {
                 if (p.nextBarTime < now - 0.05) p.nextBarTime = now + 0.02;
-                p.nextBarTime += scheduleBar(voices, p.track, p.bus, p.track.bars[p.bar], p.nextBarTime, tempoScale);
+                p.barStart = p.nextBarTime;
+                p.barLen = scheduleBar(voices, p.track, p.bus, p.track.bars[p.bar], p.nextBarTime, tempoScale);
+                p.nextBarTime += p.barLen;
                 p.bar = nextBar(p.track, p.bar);
             }
         }
 
         // Pause the clock while suppressed so the song resumes in time afterwards.
-        if (suppressed) for (const p of players) p.nextBarTime = now + 0.1;
+        if (suppressed) for (const p of players) if (p.stopAt === null) p.nextBarTime = now + 0.1;
     }
 
-    function fadeTo(p, value, seconds) {
+    /** Release a track from time `at`, then free its nodes. */
+    function release(p, at) {
         const now = ctx.currentTime;
+        p.stopAt = at;
         p.gain.gain.cancelScheduledValues(now);
-        p.gain.gain.setValueAtTime(Math.max(p.gain.gain.value, 0.0001), now);
-        p.gain.gain.exponentialRampToValueAtTime(Math.max(value, 0.0001), now + seconds);
+        p.gain.gain.setValueAtTime(TRACK_GAIN, at);
+        p.gain.gain.linearRampToValueAtTime(0, at + HANDOFF_S);
+        setTimeout(() => {
+            p.gain.disconnect();
+            p.nodes.forEach(n => n.disconnect());
+            players.splice(players.indexOf(p), 1);
+        }, (at - now + HANDOFF_S) * 1000 + 500);
     }
 
     function applyTrack() {
         if (!ctx) return;
-        for (const p of players) {
-            if (p.name !== wanted && !p.stopping) {
-                p.stopping = true;
-                fadeTo(p, 0.0001, CROSSFADE_S);
-                setTimeout(() => {
-                    p.gain.disconnect();
-                    p.nodes.forEach(n => n.disconnect());
-                    players.splice(players.indexOf(p), 1);
-                }, CROSSFADE_S * 1000 + 3000);
-            }
+        const now = ctx.currentTime;
+        const live = players.find(p => p.stopAt === null);
+        if (live && live.name === wanted) return;
+
+        let startAt = now + 0.1;
+        if (live) {
+            startAt = wanted && !isSuppressed() ? nextBeat(live, now) : now + 0.05;
+            release(live, startAt);
         }
-        if (wanted && !players.some(p => p.name === wanted && !p.stopping)) {
-            const p = createPlayer(wanted);
-            players.push(p);
-            fadeTo(p, TRACK_GAIN, players.length > 1 ? CROSSFADE_S : 0.3);
-        }
+        if (wanted) players.push(createPlayer(wanted, startAt));
     }
 
     return {

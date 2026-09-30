@@ -2450,33 +2450,39 @@
           break;
         case "clear4": {
           const delay = ctx.createDelay();
-          delay.delayTime.value = 0.1;
+          delay.delayTime.value = 0.11;
           const feedback = ctx.createGain();
-          feedback.gain.value = 0.4;
+          feedback.gain.value = 0.3;
+          const wet = ctx.createGain();
+          wet.gain.value = 0.3;
           delay.connect(feedback);
           feedback.connect(delay);
-          delay.connect(masterGain);
-          [523, 659, 784, 1046].forEach((freq) => {
-            const osc = ctx.createOscillator();
-            const g = ctx.createGain();
-            osc.type = "square";
-            osc.frequency.value = freq;
-            g.gain.setValueAtTime(0, t);
-            g.gain.linearRampToValueAtTime(0.15, t + 0.05);
-            g.gain.exponentialRampToValueAtTime(0.01, t + 0.3);
-            osc.connect(g);
-            g.connect(masterGain);
-            g.connect(delay);
-            osc.start(t);
-            osc.stop(t + 0.3);
-            osc.onended = () => {
-              g.disconnect();
-            };
-          });
+          delay.connect(wet);
+          wet.connect(masterGain);
+          const ring = (freq, at, len, peak) => {
+            for (const [ratio, level, decay] of [[1, 1, 1], [2, 0.3, 0.6], [3.01, 0.16, 0.35], [5.4, 0.07, 0.2]]) {
+              const osc = ctx.createOscillator();
+              const g = ctx.createGain();
+              osc.frequency.value = freq * ratio;
+              g.gain.setValueAtTime(0, at);
+              g.gain.linearRampToValueAtTime(peak * level, at + 3e-3);
+              g.gain.exponentialRampToValueAtTime(1e-4, at + len * decay);
+              osc.connect(g);
+              g.connect(masterGain);
+              g.connect(delay);
+              osc.start(at);
+              osc.stop(at + len * decay + 0.02);
+              osc.onended = () => g.disconnect();
+            }
+          };
+          [1047, 1319, 1568].forEach((freq, i) => ring(freq, t + i * 0.045, 0.25, 0.2));
+          ring(2093, t + 0.135, 1, 0.3);
+          ring(3136, t + 0.135, 0.7, 0.1);
           setTimeout(() => {
             delay.disconnect();
             feedback.disconnect();
-          }, 1500);
+            wet.disconnect();
+          }, 2500);
           break;
         }
         case "tspin": {
@@ -3355,7 +3361,7 @@
   // js/music.js
   var TICK_MS = 25;
   var LOOKAHEAD_S = 0.2;
-  var CROSSFADE_S = 1.5;
+  var HANDOFF_S = 0.12;
   var TRACK_GAIN = 0.3;
   function midiToFreq(midi) {
     return 440 * Math.pow(2, (midi - 69) / 12);
@@ -3607,10 +3613,16 @@
       if (settingsRef.musicMuted) return 0;
       return (settingsRef.masterVolume ?? 100) / 100 * ((settingsRef.musicVolume ?? 100) / 100);
     }
-    function createPlayer(name) {
+    function createPlayer(name, startAt) {
       const track = TRACKS[name];
       const { gain, bus, nodes } = createBus(ctx, track, duckGain);
-      return { name, track, gain, bus, nodes, bar: 0, nextBarTime: ctx.currentTime + 0.1, stopping: false };
+      gain.gain.value = TRACK_GAIN;
+      return { name, track, gain, bus, nodes, bar: 0, nextBarTime: startAt, barStart: null, barLen: 0, stopAt: null };
+    }
+    function nextBeat(p, now) {
+      if (p.barStart === null) return now + 0.1;
+      const beat = p.barLen / 4;
+      return p.barStart + Math.ceil((now + 0.06 - p.barStart) / beat) * beat;
     }
     function tick() {
       const now = ctx.currentTime;
@@ -3618,39 +3630,43 @@
       const vol = suppressed ? 0 : targetVolume();
       if (Math.abs(out.gain.value - vol) > 1e-3) out.gain.setTargetAtTime(vol, now, 0.05);
       for (const p of players) {
-        if (p.stopping || suppressed) continue;
-        while (p.nextBarTime < now + LOOKAHEAD_S) {
+        if (suppressed) continue;
+        const until = p.stopAt === null ? now + LOOKAHEAD_S : Math.min(now + LOOKAHEAD_S, p.stopAt);
+        while (p.nextBarTime < until) {
           if (p.nextBarTime < now - 0.05) p.nextBarTime = now + 0.02;
-          p.nextBarTime += scheduleBar(voices, p.track, p.bus, p.track.bars[p.bar], p.nextBarTime, tempoScale);
+          p.barStart = p.nextBarTime;
+          p.barLen = scheduleBar(voices, p.track, p.bus, p.track.bars[p.bar], p.nextBarTime, tempoScale);
+          p.nextBarTime += p.barLen;
           p.bar = nextBar(p.track, p.bar);
         }
       }
-      if (suppressed) for (const p of players) p.nextBarTime = now + 0.1;
+      if (suppressed) {
+        for (const p of players) if (p.stopAt === null) p.nextBarTime = now + 0.1;
+      }
     }
-    function fadeTo(p, value, seconds) {
+    function release(p, at) {
       const now = ctx.currentTime;
+      p.stopAt = at;
       p.gain.gain.cancelScheduledValues(now);
-      p.gain.gain.setValueAtTime(Math.max(p.gain.gain.value, 1e-4), now);
-      p.gain.gain.exponentialRampToValueAtTime(Math.max(value, 1e-4), now + seconds);
+      p.gain.gain.setValueAtTime(TRACK_GAIN, at);
+      p.gain.gain.linearRampToValueAtTime(0, at + HANDOFF_S);
+      setTimeout(() => {
+        p.gain.disconnect();
+        p.nodes.forEach((n) => n.disconnect());
+        players.splice(players.indexOf(p), 1);
+      }, (at - now + HANDOFF_S) * 1e3 + 500);
     }
     function applyTrack() {
       if (!ctx) return;
-      for (const p of players) {
-        if (p.name !== wanted && !p.stopping) {
-          p.stopping = true;
-          fadeTo(p, 1e-4, CROSSFADE_S);
-          setTimeout(() => {
-            p.gain.disconnect();
-            p.nodes.forEach((n) => n.disconnect());
-            players.splice(players.indexOf(p), 1);
-          }, CROSSFADE_S * 1e3 + 3e3);
-        }
+      const now = ctx.currentTime;
+      const live = players.find((p) => p.stopAt === null);
+      if (live && live.name === wanted) return;
+      let startAt = now + 0.1;
+      if (live) {
+        startAt = wanted && !isSuppressed() ? nextBeat(live, now) : now + 0.05;
+        release(live, startAt);
       }
-      if (wanted && !players.some((p) => p.name === wanted && !p.stopping)) {
-        const p = createPlayer(wanted);
-        players.push(p);
-        fadeTo(p, TRACK_GAIN, players.length > 1 ? CROSSFADE_S : 0.3);
-      }
+      if (wanted) players.push(createPlayer(wanted, startAt));
     }
     return {
       /** Create the AudioContext. Call from a user gesture (click or key). */
@@ -4170,7 +4186,7 @@
       name: "40 LINES",
       subtitle: "SPRINT",
       description: "Clear 40 lines as fast as possible.",
-      track: "competitive",
+      track: "calm",
       icon: "\u23F1"
     },
     [MODE_BLITZ]: {
@@ -4366,13 +4382,6 @@
         if (!timer) return 0;
         if (modeId === MODE_BLITZ) return BLITZ_MS - timer.getRemaining();
         return timer.getElapsed();
-      },
-      /**
-       * Whether Casual has reached the intense track (level 10+). Sprint and Blitz keep
-       * one track for the whole run, so a switch mid-game never breaks their pace.
-       */
-      isHeated() {
-        return modeId === MODE_CLASSIC && stats.level >= 10;
       },
       /** Get results for the game-over screen */
       getResults() {
@@ -6216,9 +6225,8 @@
         music2.setTrack(null);
         return;
       }
-      const heated = choice === "auto" && modeState.isHeated();
-      music2.setTrack(heated ? "intense" : choice === "auto" ? MODE_INFO[modeId].track : choice);
-      const levelBoost = modeId === "classic" && !heated ? (modeState.stats.level - 1) * 0.012 : 0;
+      music2.setTrack(choice === "auto" ? MODE_INFO[modeId].track : choice);
+      const levelBoost = modeId === "classic" ? (modeState.stats.level - 1) * 0.012 : 0;
       music2.setTempoScale(1 + Math.min(levelBoost, 0.12));
     }
     function update(time = 0) {

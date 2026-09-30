@@ -20,7 +20,7 @@ You can also open `index.html` directly after `npm run build`, because the bundl
 
 `npm test` bundles each test with esbuild for Node and stubs `document`, `window`, and `performance` where needed, so it needs no browser:
 - `handling.test.mjs` drives `js/input.js` frame by frame at 60 Hz: DAS, ARR, DCD, SDF, the two toggles, settings migration.
-- `modes.test.mjs`: when each mode's music turns intense, lines sent and APM, game style delays.
+- `modes.test.mjs`: the track each mode plays, lines sent and APM, game style delays.
 - `content.test.mjs`: the attack table, song data (known voices, events inside their bars, note range, the Korobeiniki motif in every track, keys and tempos), and scenes (each has a name and known ambience layers; every Casual scene can be picked in settings).
 - `finesse.test.mjs`: every piece spawns just above the field, and the finesse minimums match the standard chart.
 
@@ -44,7 +44,7 @@ Every module uses a factory (`createX(...)` returning an object of closures), no
 - **Pure logic** (no DOM): `piece.js` (shapes, SRS kicks, 7-bag, spawn position), `board.js` (collide, merge, line clear, ghost), `scoring.js` (T-spin detection, combo, back-to-back, perfect clear, attack, sound and color mapping), `finesse.js` (fewest inputs per placement).
 - **Modes** (`modes.js`, `timer.js`): 40 Lines (`sprint`), Blitz (2 minutes), Casual (`classic` in code: endless, level-based gravity). To add a mode, add an ID, a `MODE_INFO` entry, and handling in `createModeState`. The menu reads `MODE_INFO`.
 - **Presentation**: `renderer.js` (board, hold, next canvases), `skins.js` (block skins, cached sprites), `particles.js` (particles and screen shake on the board canvas), `bounce.js` (spring on the playfield element), `hud.js` (DOM around the board: clear feed, stats, number under the board, progress meter, finesse), `menu.js` (all menu screens in `#menu-container`), `background.js` plus `scenes/` (pixel art backgrounds).
-- **Audio**: `sound.js` synthesizes all effects with Web Audio (no files), including the `danger` alarm and the `attack` whoosh. Sound packs (`PACKS` in `sound.js`: `arcade` in a Jstris style, `bubbly` in a Puyo Puyo Tetris style, both original synthesis) replace individual events; events a pack leaves out use the default. `music.js` plays the procedural soundtrack from `tracks.js`. `music-player.js` plays user-dropped files through two crossfading `Audio` elements; while it plays, the soundtrack goes silent (`setSuppressor`). `ambience.js` synthesizes the scene sounds (see "Scene sounds").
+- **Audio**: `sound.js` synthesizes all effects with Web Audio (no files), including the `danger` alarm and the `attack` whoosh. The default Tetris clear (`clear4`) is a bell "bling": three grace notes into a ringing high note, each a stack of decaying sine partials. Sound packs (`PACKS` in `sound.js`: `arcade` in a Jstris style, `bubbly` in a Puyo Puyo Tetris style, both original synthesis) replace individual events; events a pack leaves out use the default. `music.js` plays the procedural soundtrack from `tracks.js`. `music-player.js` plays user-dropped files through two crossfading `Audio` elements; while it plays, the soundtrack goes silent (`setSuppressor`). `ambience.js` synthesizes the scene sounds (see "Scene sounds").
 - The menu opens the settings panel by dispatching a `uloltris-open-settings` DOM event.
 
 ### Board geometry
@@ -105,13 +105,13 @@ Three original arrangements of Korobeiniki (the public-domain folk song behind t
 
 | Track | Key, tempo | Used for | Character |
 |---|---|---|---|
-| calm | C minor, 88 BPM, swung | Menu, Casual | Reharmonized with 7th and 9th chords (Am9, Fmaj7, E7sus4, Dm9, Cmaj7, Bm7b5); bell melody, FM electric piano, lo-fi drums. The second pass adds runs and climbs an octave; the last pass adds a harmony line. |
-| competitive | D minor, 150 BPM | 40 Lines | Octave-pumping bass, 16th arpeggios, four-on-the-floor drums, square/saw lead; the second pass goes up an octave with a harmony. |
-| intense | E minor, 176 BPM | Blitz, and Casual from level 10 | Chugging 16th bass, stabs, syncopated kick; the bridge is in double time. |
+| calm | C minor, 88 BPM, swung | Menu, Casual, 40 Lines | Reharmonized with 7th and 9th chords (Am9, Fmaj7, E7sus4, Dm9, Cmaj7, Bm7b5); bell melody, FM electric piano, lo-fi drums. The second pass adds runs and climbs an octave; the last pass adds a harmony line. |
+| competitive | D minor, 150 BPM | Only when picked in the `soundtrack` setting | Octave-pumping bass, 16th arpeggios, four-on-the-floor drums, square/saw lead; the second pass goes up an octave with a harmony. |
+| intense | E minor, 176 BPM | Blitz | Chugging 16th bass, stabs, syncopated kick; the bridge is in double time. |
 
-`game.js` picks the track every frame (`updateMusic`): the mode's `MODE_INFO.track`, or `intense` when `modeState.isHeated()`, which only Casual does (level 10+). 40 Lines and Blitz keep one track for the whole run, so the pace never changes mid-game. Casual's calm track also speeds up 1.2 % per level. The `soundtrack` setting can force one track or turn it off. The menu plays calm. Pausing muffles and lowers the music.
+`game.js` picks the track every frame (`updateMusic`): the mode's `MODE_INFO.track`. Every mode keeps one track for the whole run. Since the menu, Casual and 40 Lines all play calm, the song carries on unbroken from the menu into those games and back. Casual's calm track speeds up 1.2 % per level, up to 12 %. The `soundtrack` setting can force one track or turn it off. The menu plays calm. Pausing muffles and lowers the music.
 
-`music.js` schedules whole bars 0.2 s ahead on the AudioContext clock, so tempo holds when frames drop. Each track has its own gain, compressor and tempo-synced delay; switching tracks crossfades over 1.5 s. Browsers block audio until a user gesture, so `main.js` calls `music.unlock()` on the first click or key. Levels were checked by rendering stems offline: full mix peaks near -8 dBFS at full volume, and the melody sits level with the backing.
+`music.js` schedules whole bars 0.2 s ahead on the AudioContext clock, so tempo holds when frames drop. Each track has its own gain, compressor and tempo-synced delay. Switching tracks is a handoff, not a fade: the new track starts at full level exactly on the old track's next beat, and the old one is released over 0.12 s from that beat (`applyTrack`, `nextBeat`, `release`). The earlier 1.5 s exponential crossfade dropped to near silence in the middle, which sounded like a fade out followed by a fade in. Browsers block audio until a user gesture, so `main.js` calls `music.unlock()` on the first click or key. Levels were checked by rendering stems offline: full mix peaks near -8 dBFS at full volume, and the melody sits level with the backing.
 
 To change a song, edit the bar builders in `tracks.js`. Events are `{ s, l, v, n, g }` on a 16-step bar; `npm test` checks their shape.
 
@@ -153,8 +153,10 @@ Music, warning, and Battle style, done on 2026-09-23 (version 1.2.0): see "Game 
 
 Visual update, done on 2026-09-25 (version 1.3.0): TETR.IO-style layout (hold and next attached to the board, stats bottom left, clear feed on the left, number under the board, progress meter), spawn above the field with lock out and X marks, stats display setting with PPS, APM, KPS, APP, KPP, VS and finesse, block skins, sound packs, independent effect levels with board bounce, pixel art backgrounds (six Casual scenes, city for 40 Lines, storm for Blitz), Barlow Condensed and Silkscreen fonts, 40 Lines and Blitz on fixed tracks. Checked in a browser: the test bot played 120-piece games in both styles with no page errors, frames stayed at 6 ms with backgrounds on, and every scene, skin and stats mode was screenshotted and looked at.
 
+Scenes, scene sounds and music, done on 2026-09-30 (versions 1.4.0 and 1.4.1): wheat, castle and bamboo scenes redrawn; three new Casual scenes (sakura, aurora, falls); synthesized scene sounds with a toggle and volume; gapless track handoff; Casual and 40 Lines on calm, Blitz on intense, no mid-run switch; bell "bling" for the default Tetris clear. Checked in a browser: every scene was rendered and looked at, each builds in under 35 ms and draws in about 1 ms or less, and ambience levels were measured offline (scene mixes sit 5 to 20 dB under the soundtrack's RMS). Nothing here was listened to by a person.
+
 Next steps, in order:
-1. Listen and tune the soundtrack and the two new sound packs by ear. They were balanced by measurement, not by listening.
+1. Listen and tune the soundtrack, the two sound packs, the scene sounds and the new Tetris "bling" by ear. They were balanced by measurement, not by listening.
 2. Incoming garbage: a training opponent or garbage timer that sends lines back, with a red incoming-garbage meter beside the board (Tetris 99 and Puyo Puyo Tetris both show one). Attack is already calculated, and the progress meter between the board and the next queue is where an incoming meter would go.
 3. Fonts load from Google Fonts. Offline, the page falls back to system fonts. Self-host the two fonts (both under the SIL Open Font License) if the game should look the same offline.
 4. A quick-retry key (TETR.IO uses R) wired to the menu's restart.

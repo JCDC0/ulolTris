@@ -35,7 +35,7 @@ export const MODE_INFO = {
         name: '40 LINES',
         subtitle: 'SPRINT',
         description: 'Clear 40 lines as fast as possible.',
-        track: 'competitive',
+        track: 'calm',
         icon: '\u23F1',
     },
     [MODE_BLITZ]: {
@@ -269,14 +269,6 @@ export function createModeState(modeId) {
             if (!timer) return 0;
             if (modeId === MODE_BLITZ) return BLITZ_MS - timer.getRemaining();
             return timer.getElapsed();
-        },
-
-        /**
-         * Whether Casual has reached the intense track (level 10+). Sprint and Blitz keep
-         * one track for the whole run, so a switch mid-game never breaks their pace.
-         */
-        isHeated() {
-            return modeId === MODE_CLASSIC && stats.level >= 10;
         },
 
         /** Get results for the game-over screen */
