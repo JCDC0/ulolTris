@@ -1,5 +1,8 @@
 import { calculateAttack } from '../js/scoring.js';
 import { TRACKS } from '../js/tracks.js';
+import { SCENES, CASUAL_SCENES } from '../js/background.js';
+import { AMBIENCE_LAYERS } from '../js/ambience.js';
+import { normalizeSettings } from '../js/settings.js';
 
 let failures = 0;
 function check(name, cond, detail) {
@@ -51,6 +54,16 @@ const loopSeconds = t => (t.bars.length - t.loopStart) * 16 * (60 / t.bpm / 4);
 check('tempos rise calm < competitive < intense',
     TRACKS.calm.bpm < TRACKS.competitive.bpm && TRACKS.competitive.bpm < TRACKS.intense.bpm,
     Object.entries(TRACKS).map(([n, t]) => `${n} ${t.bpm} BPM, loop ${loopSeconds(t).toFixed(0)}s`).join(', '));
+
+// --- Scenes and their background sounds ---
+for (const [id, scene] of Object.entries(SCENES)) {
+    const layers = Object.entries(scene.ambience || {});
+    const bad = layers.find(([name, level]) => !AMBIENCE_LAYERS.includes(name) || !(level > 0 && level <= 1));
+    check(`${id}: has a name and known ambience layers`, scene.id === id && !!scene.name && layers.length > 0 && !bad, bad && bad.join(' '));
+}
+check('every Casual scene exists and can be picked in settings',
+    CASUAL_SCENES.every(id => SCENES[id] && normalizeSettings({ version: 2, casualScene: id }).casualScene === id),
+    `${CASUAL_SCENES.length} scenes`);
 
 console.log(failures ? `\n${failures} FAILED` : '\nAll content checks passed');
 process.exit(failures ? 1 : 0);

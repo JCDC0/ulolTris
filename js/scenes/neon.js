@@ -38,6 +38,7 @@ function drawPiece(ctx, shape, x, y, cell, color, alpha) {
 export default {
     id: 'neon',
     name: 'Neon Fall',
+    ambience: { hum: 0.6 },
     create() {
         const base = layer();
         ditherGradient(base.ctx, 0, 0, W, HORIZON, ['#05030d', '#0b0620', '#170a34', '#2a0d47', '#46125a']);

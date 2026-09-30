@@ -35,6 +35,7 @@ function skyline(ctx, seed, count, minH, maxH, body, windowColors, litChance, wi
 export default {
     id: 'city',
     name: 'Midnight Circuit',
+    ambience: { city: 1, traffic: 1, hum: 0.25 },
     create() {
         const base = layer();
         const b = base.ctx;

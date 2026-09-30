@@ -10,6 +10,7 @@ const HORIZON = 106;
 export default {
     id: 'ocean',
     name: 'Open Sea',
+    ambience: { waves: 1, gulls: 0.7, wind: 0.3 },
     create() {
         const sky = layer();
         ditherGradient(sky.ctx, 0, 0, W, HORIZON, ['#2b69be', '#4585d4', '#65a2e2', '#8cc0ee', '#bddff7', '#e6f4fc']);

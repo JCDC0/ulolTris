@@ -33,6 +33,8 @@ export const DEFAULT_SETTINGS = {
     musicMuted: false,
     crossfadeDuration: 2,
     soundtrack: 'auto',        // 'auto', 'calm', 'competitive', 'intense', 'off'
+    ambience: true,            // background sounds that match the scene (rain, birds, wind)
+    ambienceVolume: 60,
 
     // Visual
     screenShake: 'medium',     // 'off', 'low', 'medium', 'high'
@@ -62,6 +64,7 @@ const CONSTRAINTS = {
     masterVolume:     { min: 0, max: 100, step: 1 },
     sfxVolume:        { min: 0, max: 100, step: 1 },
     musicVolume:      { min: 0, max: 100, step: 1 },
+    ambienceVolume:   { min: 0, max: 100, step: 1 },
     crossfadeDuration:{ min: 0, max: 5,   step: 0.5 },
     ghostOpacity:     { min: 0, max: 100, step: 5 },
     nextPreviewCount: { min: 1, max: 6,   step: 1 },
@@ -76,7 +79,7 @@ const ENUMS = {
     clearEffects: ['off', 'low', 'medium', 'high'],
     statsDisplay: ['off', 'time', 'speed', 'efficiency', 'versus'],
     background: ['on', 'dim', 'off'],
-    casualScene: ['cycle', 'bamboo', 'wheat', 'village', 'castle', 'ocean', 'neon'],
+    casualScene: ['cycle', 'bamboo', 'wheat', 'sakura', 'village', 'falls', 'castle', 'ocean', 'aurora', 'neon'],
     soundtrack: ['auto', 'calm', 'competitive', 'intense', 'off'],
     gameStyle: ['modern', 'battle'],
     blockSkin: ['ulol', 'classic', 'glossy', 'flat', 'neon'],
@@ -112,6 +115,7 @@ export function normalizeSettings(raw) {
     // Boolean settings
     if (typeof source.sfxMuted === 'boolean') result.sfxMuted = source.sfxMuted;
     if (typeof source.musicMuted === 'boolean') result.musicMuted = source.musicMuted;
+    if (typeof source.ambience === 'boolean') result.ambience = source.ambience;
     if (typeof source.showActionText === 'boolean') result.showActionText = source.showActionText;
     if (typeof source.cancelDasOnDirectionChange === 'boolean') result.cancelDasOnDirectionChange = source.cancelDasOnDirectionChange;
     if (typeof source.preferSoftDrop === 'boolean') result.preferSoftDrop = source.preferSoftDrop;

@@ -73,6 +73,7 @@ function bolt(ctx, seed, groundY) {
 export default {
     id: 'storm',
     name: 'Thunder Peak',
+    ambience: { storm: 1, thunder: 1, wind: 0.7 },
     create() {
         const sky = layer();
         ditherGradient(sky.ctx, 0, 0, W, H, ['#06080e', '#0b0f19', '#121827', '#1a2234', '#232d42']);

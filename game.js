@@ -25,6 +25,9 @@
     crossfadeDuration: 2,
     soundtrack: "auto",
     // 'auto', 'calm', 'competitive', 'intense', 'off'
+    ambience: true,
+    // background sounds that match the scene (rain, birds, wind)
+    ambienceVolume: 60,
     // Visual
     screenShake: "medium",
     // 'off', 'low', 'medium', 'high'
@@ -63,6 +66,7 @@
     masterVolume: { min: 0, max: 100, step: 1 },
     sfxVolume: { min: 0, max: 100, step: 1 },
     musicVolume: { min: 0, max: 100, step: 1 },
+    ambienceVolume: { min: 0, max: 100, step: 1 },
     crossfadeDuration: { min: 0, max: 5, step: 0.5 },
     ghostOpacity: { min: 0, max: 100, step: 5 },
     nextPreviewCount: { min: 1, max: 6, step: 1 },
@@ -75,7 +79,7 @@
     clearEffects: ["off", "low", "medium", "high"],
     statsDisplay: ["off", "time", "speed", "efficiency", "versus"],
     background: ["on", "dim", "off"],
-    casualScene: ["cycle", "bamboo", "wheat", "village", "castle", "ocean", "neon"],
+    casualScene: ["cycle", "bamboo", "wheat", "sakura", "village", "falls", "castle", "ocean", "aurora", "neon"],
     soundtrack: ["auto", "calm", "competitive", "intense", "off"],
     gameStyle: ["modern", "battle"],
     blockSkin: ["ulol", "classic", "glossy", "flat", "neon"],
@@ -100,6 +104,7 @@
     }
     if (typeof source.sfxMuted === "boolean") result.sfxMuted = source.sfxMuted;
     if (typeof source.musicMuted === "boolean") result.musicMuted = source.musicMuted;
+    if (typeof source.ambience === "boolean") result.ambience = source.ambience;
     if (typeof source.showActionText === "boolean") result.showActionText = source.showActionText;
     if (typeof source.cancelDasOnDirectionChange === "boolean") result.cancelDasOnDirectionChange = source.cancelDasOnDirectionChange;
     if (typeof source.preferSoftDrop === "boolean") result.preferSoftDrop = source.preferSoftDrop;
@@ -462,13 +467,18 @@
   }
 
   // js/scenes/bamboo.js
-  function stalk(ctx, r, x, w, colors) {
+  var VANISH = { x: 160, y: 96 };
+  function pathHalf(y) {
+    const k = Math.max(0, (y - VANISH.y) / (H - VANISH.y));
+    return 4 + k * k * 58 + k * 14;
+  }
+  function stalk(ctx, r, x, w, bottom, colors) {
     const top = -2;
-    rect(ctx, x, top, w, H, colors.body);
-    if (w >= 3) rect(ctx, x, top, 1, H, colors.light);
-    if (w >= 6) rect(ctx, x + w - 1, top, 1, H, colors.dark);
+    rect(ctx, x, top, w, bottom - top, colors.body);
+    if (w >= 3) rect(ctx, x, top, 1, bottom - top, colors.light);
+    if (w >= 6) rect(ctx, x + w - 1, top, 1, bottom - top, colors.dark);
     let y = 6 + r() * 14;
-    while (y < H) {
+    while (y < bottom) {
       rect(ctx, x - 1, y, w + 2, 1, colors.node);
       if (w >= 5) rect(ctx, x, y + 1, w, 1, colors.light);
       y += 14 + r() * 10;
@@ -488,17 +498,19 @@
       }
     }
   }
-  function forestLayer(seed, count, widths, colors, leafColors, leafScale) {
+  function forestLayer(seed, count, widths, floor, colors, leafColors, leafScale) {
     const { canvas, ctx } = layer();
     const r = rng(seed);
     for (let i = 0; i < count; i++) {
       const x = Math.round((i + r() * 0.8) * (W / count));
       const w = widths[0] + Math.floor(r() * (widths[1] - widths[0] + 1));
-      stalk(ctx, r, x, w, colors);
-      let y = 10 + r() * 30;
-      while (y < H - 30) {
-        leafCluster(ctx, r, x + (r() < 0.5 ? 0 : w), y, leafColors[0], leafColors[1], 2 + Math.floor(r() * 3), leafScale);
-        y += 22 + r() * 30;
+      const bottom = Math.round(floor[0] + r() * (floor[1] - floor[0]));
+      const leaves = [];
+      for (let y = 10 + r() * 30; y < bottom - 24; y += 22 + r() * 30) leaves.push([y, r() < 0.5 ? 0 : w]);
+      if (Math.abs(x + w / 2 - VANISH.x) < pathHalf(bottom) + w + 3) continue;
+      stalk(ctx, r, x, w, bottom, colors);
+      for (const [y, side] of leaves) {
+        leafCluster(ctx, r, x + side, y, leafColors[0], leafColors[1], 2 + Math.floor(r() * 3), leafScale);
       }
     }
     return canvas;
@@ -508,16 +520,66 @@
     hazeBand(ctx, y0, y1, color, alpha, density);
     return canvas;
   }
+  function lantern(ctx, x, base) {
+    const stone = "#4e5a52", dark = "#2c3630", lit = "#7c8a7c";
+    rect(ctx, x - 4, base - 2, 9, 2, dark);
+    rect(ctx, x - 1, base - 9, 3, 7, stone);
+    px(ctx, x - 1, base - 9, lit);
+    rect(ctx, x - 3, base - 11, 7, 2, stone);
+    rect(ctx, x - 3, base - 16, 7, 5, dark);
+    rect(ctx, x - 5, base - 18, 11, 2, stone);
+    rect(ctx, x - 5, base - 18, 11, 1, lit);
+    rect(ctx, x - 3, base - 20, 7, 2, stone);
+    rect(ctx, x - 1, base - 22, 3, 2, stone);
+    return { x, y: base - 14 };
+  }
   var bamboo_default = {
     id: "bamboo",
-    name: "Bamboo Rain",
+    name: "Bamboo Path",
+    ambience: { rain: 1, wind: 0.2, birds: 0.15 },
     create() {
       const sky = layer();
       ditherGradient(sky.ctx, 0, 0, W, H, ["#132226", "#1b302f", "#26413a", "#355848", "#4a7058"]);
+      glow(sky.ctx, VANISH.x, VANISH.y - 16, 46, "#8fc0a0", 0.5);
+      glow(sky.ctx, VANISH.x, VANISH.y - 10, 24, "#cfe8d2", 0.6);
+      const floor = layer();
+      const f = floor.ctx;
+      ditherGradient(f, 0, VANISH.y, W, H - VANISH.y, ["#3a5f4b", "#2c4a39", "#1d3327", "#13231a", "#0c170f"]);
+      const path = layer();
+      ditherGradient(path.ctx, 0, VANISH.y, W, H - VANISH.y, ["#b9d2b6", "#8da78c", "#6b806a", "#55634f", "#454f3e"]);
+      const fr = rng(5);
+      for (let y = VANISH.y; y < H; y++) {
+        const half = pathHalf(y);
+        const bend = Math.sin((y - VANISH.y) * 0.045) * 5;
+        const left = Math.round(VANISH.x + bend - half);
+        const width = Math.round(half * 2);
+        f.drawImage(path.canvas, left, y, width, 1, left, y, width, 1);
+        px(f, left - 1, y, "#22382a");
+        px(f, left + width, y, "#22382a");
+        const depth = (y - VANISH.y) / (H - VANISH.y);
+        if (Math.floor(Math.pow(depth, 0.55) * 22) !== Math.floor(Math.pow((y + 1 - VANISH.y) / (H - VANISH.y), 0.55) * 22)) {
+          rect(f, left + 1, y, width - 2, 1, "#4a5a47");
+        }
+        for (let x = left; x < left + width; x++) if (fr() < 0.05) px(f, x, y, fr() < 0.5 ? "#7d957c" : "#435040");
+      }
+      for (let i = 0; i < 420; i++) {
+        const y = VANISH.y + 3 + Math.floor(fr() * (H - VANISH.y - 3));
+        const x = Math.floor(fr() * W);
+        if (Math.abs(x - VANISH.x) < pathHalf(y) + 6) continue;
+        px(f, x, y, fr() < 0.4 ? "#4f7a4e" : "#1a2f20");
+      }
+      const puddles = [[150, 128, 7], [172, 146, 10], [138, 166, 13], [181, 172, 9]];
+      for (const [cx, cy, rx] of puddles) {
+        for (let dy = -2; dy <= 2; dy++) {
+          const half = Math.round(rx * Math.sqrt(1 - dy * dy / 6.5));
+          rect(f, cx - half, cy + dy, half * 2, 1, dy < 0 ? "#a9c9b4" : "#7ea58f");
+        }
+      }
       const far = forestLayer(
         11,
-        26,
+        30,
         [2, 2],
+        [VANISH.y + 1, VANISH.y + 10],
         { body: "#557d63", light: "#63907a", dark: "#4a6f57", node: "#46694f" },
         ["#5f8a6c", "#79a283"],
         1
@@ -525,8 +587,9 @@
       const mistFar = mistLayer(60, 170, "#96bea8", 0.35, 1);
       const mid = forestLayer(
         23,
-        14,
+        18,
         [3, 4],
+        [VANISH.y + 14, VANISH.y + 44],
         { body: "#2f5a37", light: "#4b7f4d", dark: "#244a2b", node: "#1f3f25" },
         ["#3d7440", "#63a058"],
         1.5
@@ -534,18 +597,20 @@
       const mistNear = mistLayer(120, 200, "#78a08c", 0.28, 0.9);
       const near = forestLayer(
         37,
-        5,
+        7,
         [7, 9],
+        [H + 4, H + 4],
         { body: "#14291a", light: "#23422a", dark: "#0d1d11", node: "#0a170d" },
         ["#18351e", "#2a5230"],
         2.2
       );
-      const ground = layer();
-      rect(ground.ctx, 0, H - 8, W, 8, "#0c170f");
-      const gr = rng(5);
+      const front = layer();
+      const light = lantern(front.ctx, 108, 158);
+      const gr = rng(6);
       for (let x = 0; x < W; x += 2) {
-        const h = 1 + Math.floor(gr() * 4);
-        rect(ground.ctx, x, H - 8 - h, 1, h, gr() < 0.5 ? "#16301c" : "#1f3d24");
+        if (Math.abs(x - VANISH.x) < pathHalf(H) - 6) continue;
+        const h = 2 + Math.floor(gr() * 6);
+        rect(front.ctx, x, H - h, 1, h, gr() < 0.5 ? "#16301c" : "#1f3d24");
       }
       const r = rng(99);
       const drops = Array.from({ length: 190 }, () => ({
@@ -559,9 +624,21 @@
       return {
         draw(ctx, t) {
           ctx.drawImage(sky.canvas, 0, 0);
+          ctx.drawImage(floor.canvas, 0, 0);
           ctx.drawImage(far, 0, 0);
           ctx.drawImage(mistFar, Math.round(Math.sin(t * 0.05) * 6), 0);
           ctx.drawImage(mid, 0, 0);
+          const slot = Math.floor(t * 6);
+          for (let i = 0; i < 16; i++) {
+            const sr = rng(slot - i % 3 + i * 131);
+            const y = VANISH.y + 8 + Math.floor(sr() * (H - VANISH.y - 8));
+            const x = Math.round(VANISH.x + (sr() - 0.5) * 2 * (pathHalf(y) - 3));
+            const age = i % 3;
+            const color = age === 0 ? "rgba(225, 245, 240, 0.8)" : "rgba(200, 230, 225, 0.4)";
+            if (age === 0) px(ctx, x, y - 1, color);
+            rect(ctx, x - 1 - age, y, 1, 1, color);
+            rect(ctx, x + 1 + age, y, 1, 1, color);
+          }
           for (const l of leaves) {
             const y = wrap(l.y + t * l.speed, H + 10) - 5;
             const x = wrap(l.x + Math.sin(t * 0.8 + l.phase) * 10 - t * 2, W);
@@ -569,20 +646,16 @@
             px(ctx, x + (Math.sin(t * 3 + l.phase) > 0 ? 2 : -1), y + 1, "#5e9150");
           }
           ctx.drawImage(mistNear, Math.round(Math.sin(t * 0.08 + 1) * 10), 0);
+          ctx.drawImage(front.canvas, 0, 0);
+          const flick = Math.sin(t * 9) * Math.sin(t * 5.3) > 0.2;
+          rect(ctx, light.x - 2, light.y - 1, 5, 3, flick ? "#ffd27a" : "#f4b85a");
+          px(ctx, light.x, light.y, "#fff2c0");
           ctx.drawImage(near, 0, 0);
-          ctx.drawImage(ground.canvas, 0, 0);
           for (const d of drops) {
             const y = wrap(d.y + t * d.speed, H + 10) - 5;
             const x = wrap(d.x - y * 0.25 - t * 4, W + 60) - 30;
             ctx.fillStyle = d.color;
             for (let k = 0; k < d.len; k++) ctx.fillRect(Math.round(x + k * 0.25), Math.round(y - k), 1, 1);
-          }
-          const sr = rng(Math.floor(t * 12));
-          for (let i = 0; i < 10; i++) {
-            const sx = Math.floor(sr() * W);
-            px(ctx, sx - 1, H - 9, "rgba(200, 230, 235, 0.6)");
-            px(ctx, sx + 1, H - 9, "rgba(200, 230, 235, 0.6)");
-            px(ctx, sx, H - 10, "rgba(200, 230, 235, 0.4)");
           }
         }
       };
@@ -590,54 +663,138 @@
   };
 
   // js/scenes/wheat.js
-  var HORIZON = 118;
+  var HORIZON = 112;
+  var LEANS = 4;
+  var FAR = { kernel: "#d39a44", light: "#e8b85e", shade: "#ad7834", awn: "#e2b563", stem: "#a8793a" };
+  var MID = { kernel: "#c98d3a", light: "#e6b65a", shade: "#93622a", awn: "#d9a851", stem: "#8f6a2c" };
+  var NEAR = { kernel: "#e9b44c", light: "#ffe9a0", shade: "#a36a26", awn: "#f3d384", stem: "#b98a36", leaf: "#9c8a34" };
+  var SIZES = [
+    { kw: 1, kh: 1, pairs: 3, awn: 1, stem: 6, colors: FAR, bend: 2 },
+    { kw: 1, kh: 2, pairs: 3, awn: 2, stem: 11, colors: FAR, bend: 3 },
+    { kw: 2, kh: 2, pairs: 4, awn: 3, stem: 18, colors: MID, bend: 5 },
+    { kw: 2, kh: 3, pairs: 6, awn: 5, stem: 27, colors: NEAR, bend: 8, leaves: true }
+  ];
+  function stalkSprite(size, lean) {
+    const { kw, kh, pairs, awn, stem, colors, bend } = size;
+    const earH = pairs * kh + kh + Math.ceil(kh / 2);
+    const h = awn + earH + stem;
+    const pad = bend + awn + kw + 2;
+    const w = pad * 2 + 1;
+    const grid = layer(w, h);
+    const g = grid.ctx;
+    const cx = pad;
+    const earTop = awn;
+    rect(g, cx, earTop + kh, 1, h - earTop - kh, colors.stem);
+    if (size.leaves) {
+      for (const [dir, from, len] of [[-1, 0.45, 9], [1, 0.62, 7]]) {
+        const ly = Math.round(earTop + earH + stem * from);
+        for (let k = 1; k <= len; k++) {
+          const droop = Math.round((k - len * 0.45) ** 2 * 0.09 - 2);
+          px(g, cx + dir * k, ly + droop, k > len - 2 ? colors.shade : colors.leaf);
+        }
+      }
+    }
+    const kernel = (x, y, side, bristle) => {
+      rect(g, x, y, kw, kh, colors.kernel);
+      px(g, side < 0 ? x : x + kw - 1, y, colors.light);
+      if (kh > 1) rect(g, x, y + kh - 1, kw, 1, colors.shade);
+      if (!bristle) return;
+      const tipX = side < 0 ? x : x + kw - 1;
+      for (let j = 1; j <= awn; j++) px(g, tipX + side * Math.round(j * 0.45), y - j, colors.awn);
+    };
+    rect(g, cx, earTop, 1, kh, colors.light);
+    for (let j = 1; j <= awn; j++) px(g, cx, earTop - j, colors.awn);
+    for (let i = 0; i < pairs; i++) {
+      const y = earTop + kh + i * kh;
+      kernel(cx - kw, y, -1, i < 2);
+      kernel(cx + 1, y + Math.ceil(kh / 2), 1, i < 2);
+    }
+    const out = layer(w, h);
+    const amount = lean / LEANS * bend;
+    for (let y = 0; y < h; y++) {
+      const up = (h - y) / h;
+      out.ctx.drawImage(grid.canvas, 0, y, w, 1, Math.round(amount * up * up), y, w, 1);
+    }
+    return { canvas: out.canvas, ox: cx };
+  }
+  function windmill(ctx, x, y) {
+    for (let i = 0; i < 11; i++) rect(ctx, x - 2 - Math.floor(i / 5), y - 11 + i, 5 + Math.floor(i / 5) * 2, 1, "#4a2440");
+    rect(ctx, x - 1, y - 13, 3, 2, "#4a2440");
+    px(ctx, x, y - 5, "#f7c374");
+  }
   var wheat_default = {
     id: "wheat",
     name: "Golden Field",
+    ambience: { wheat: 1, wind: 0.35, birds: 0.5 },
     create() {
       const sky = layer();
       ditherGradient(sky.ctx, 0, 0, W, HORIZON + 4, ["#2a1b40", "#4e2a5a", "#8c3b5f", "#cc5d5b", "#ec935d", "#f7c374"]);
-      glow(sky.ctx, 232, 100, 34, "#fbd98f", 0.55);
-      disc(sky.ctx, 232, 100, 15, "#ffe9ad");
-      disc(sky.ctx, 232, 100, 12, "#fff3cc");
+      glow(sky.ctx, 232, 96, 34, "#fbd98f", 0.55);
+      disc(sky.ctx, 232, 96, 15, "#ffe9ad");
+      disc(sky.ctx, 232, 96, 12, "#fff3cc");
       const clouds = layer(W * 2, 90);
       const cr = rng(7);
       for (let i = 0; i < 9; i++) {
         cloud(clouds.ctx, cr() * W * 2, 18 + cr() * 50, 6 + cr() * 7, "#f8bf9c", "#c97c80", 100 + i);
       }
       const hills = layer();
-      ridge(hills.ctx, HORIZON - 2, 5, "#7a3c5a", 3, { freq: 0.018 });
-      ridge(hills.ctx, HORIZON + 4, 3, "#5a2e4c", 8, { freq: 0.03 });
+      ridge(hills.ctx, HORIZON - 4, 6, "#7a3c5a", 3, { freq: 0.018 });
+      ridge(hills.ctx, HORIZON + 1, 3, "#5a2e4c", 8, { freq: 0.03 });
       const tr = rng(12);
-      for (let i = 0; i < 14; i++) {
+      for (let i = 0; i < 12; i++) {
         const x = tr() * W;
-        const y = HORIZON - 1 + tr() * 3;
-        rect(hills.ctx, x, y - 3, 3, 3, "#4a2440");
-        rect(hills.ctx, x + 1, y - 5, 1, 2, "#4a2440");
+        const y = HORIZON - 1 + tr() * 2;
+        disc(hills.ctx, x, y - 3, 2, "#4a2440");
+        rect(hills.ctx, x, y - 1, 1, 2, "#4a2440");
       }
+      const MILL = { x: 58, y: HORIZON - 2 };
+      windmill(hills.ctx, MILL.x, MILL.y);
       const field = layer();
-      ditherGradient(field.ctx, 0, HORIZON + 2, W, H - HORIZON - 2, ["#9c6530", "#b67a36", "#cd913d", "#bf853a", "#a86f30"]);
-      const rows = [];
-      for (let i = 0; i < 16; i++) {
-        const depth = i / 15;
-        rows.push({
-          y: HORIZON + 6 + Math.pow(depth, 1.35) * (H - HORIZON - 2),
-          spacing: depth < 0.3 ? 2 : depth < 0.7 ? 3 : 4,
-          head: 1 + Math.round(depth * 4),
-          stem: 2 + Math.round(depth * 10),
-          amp: 0.4 + depth * 2.2,
-          offset: i * 1.7
-        });
+      ditherGradient(field.ctx, 0, HORIZON + 1, W, H - HORIZON - 1, ["#c98a3e", "#d39a40", "#b87c34", "#8a5a28", "#5e3a20"]);
+      const fr = rng(44);
+      for (let y = HORIZON + 2; y < HORIZON + 26; y++) {
+        const depth = (y - HORIZON) / 26;
+        for (let x = 0; x < W; x++) {
+          const v = fr();
+          if (v < 0.22) px(field.ctx, x, y, "#f0c46c");
+          else if (v < 0.4) rect(field.ctx, x, y, 1, 1 + Math.round(depth * 2), "#a8722e");
+        }
       }
-      const r = rng(31);
-      const birds = Array.from({ length: 4 }, (_, i) => ({ x: r() * W, y: 26 + r() * 40, speed: 9 + r() * 6, phase: i }));
-      const motes = Array.from({ length: 24 }, () => ({ x: r() * W, y: HORIZON + r() * 60, s: 2 + r() * 3, p: r() * 6 }));
+      const sprites = SIZES.map((size) => {
+        const byLean = [];
+        for (let lean = -LEANS; lean <= LEANS; lean++) byLean.push(stalkSprite(size, lean));
+        return byLean;
+      });
+      const sr = rng(31);
+      const rows = [
+        { size: 0, y: HORIZON + 22, gap: 3 },
+        { size: 0, y: HORIZON + 27, gap: 3 },
+        { size: 1, y: HORIZON + 35, gap: 4 },
+        { size: 1, y: HORIZON + 42, gap: 5 },
+        { size: 2, y: HORIZON + 54, gap: 7 },
+        { size: 2, y: HORIZON + 64, gap: 8 },
+        { size: 3, y: H + 8, gap: 15 },
+        { size: 3, y: H + 18, gap: 13 }
+      ].map((row, i) => {
+        const stalks = [];
+        for (let x = -4; x < W + 4; x += row.gap) {
+          stalks.push({ x: Math.round(x + sr() * row.gap), dy: Math.round(sr() * (2 + row.size * 2)), phase: sr() * 1.2 });
+        }
+        return { ...row, stalks, offset: i * 1.3 };
+      });
+      const birds = Array.from({ length: 4 }, (_, i) => ({ x: sr() * W, y: 26 + sr() * 40, speed: 9 + sr() * 6, phase: i }));
+      const motes = Array.from({ length: 24 }, () => ({ x: sr() * W, y: HORIZON + sr() * 60, s: 2 + sr() * 3, p: sr() * 6 }));
+      const ripples = Array.from({ length: 40 }, () => ({ x: sr() * W, y: HORIZON + 3 + Math.floor(sr() * 20), len: 3 + sr() * 8, p: sr() * 6 }));
       return {
         draw(ctx, t) {
           ctx.drawImage(sky.canvas, 0, 0);
-          ctx.drawImage(clouds.canvas, -Math.round(wrap(t * 2, W)), 0);
-          ctx.drawImage(clouds.canvas, W * 2 - Math.round(wrap(t * 2, W)), 0);
+          ctx.drawImage(clouds.canvas, -Math.round(wrap(t * 2, W * 2)), 0);
+          ctx.drawImage(clouds.canvas, W * 2 - Math.round(wrap(t * 2, W * 2)), 0);
           ctx.drawImage(hills.canvas, 0, 0);
+          for (let k = 0; k < 4; k++) {
+            const a = t * 0.6 + k * Math.PI / 2;
+            for (let d = 1; d <= 8; d++) px(ctx, MILL.x + Math.cos(a) * d, MILL.y - 12 + Math.sin(a) * d, "#3a1c38");
+          }
           for (const b of birds) {
             const x = wrap(b.x - t * b.speed, W + 20) - 10;
             const y = Math.round(b.y + Math.sin(t * 0.7 + b.phase) * 3);
@@ -649,14 +806,18 @@
             px(ctx, x + 2, y + (up ? -1 : 1), "#3a1c38");
           }
           ctx.drawImage(field.canvas, 0, 0);
+          for (const r of ripples) {
+            const x = wrap(r.x + t * 14, W + 20) - 10;
+            if (Math.sin(t * 0.9 + r.p) > 0.1) rect(ctx, x, r.y, r.len, 1, "#f6d684");
+          }
+          const gust = 0.55 + 0.45 * Math.sin(t * 0.35);
           for (const row of rows) {
-            const gust = Math.sin(t * 0.35) * 0.5 + 0.5;
-            for (let x = (row.offset | 0) % row.spacing; x < W; x += row.spacing) {
-              const sway = Math.round(Math.sin(t * 1.6 - x * 0.045 + row.offset) * row.amp * (0.6 + gust * 0.6));
-              const top = Math.round(row.y - row.stem);
-              rect(ctx, x + Math.round(sway / 2), top + row.head, 1, row.stem - row.head, "#9a6a2c");
-              rect(ctx, x + sway, top, row.head > 3 ? 2 : 1, row.head, "#efc15a");
-              px(ctx, x + sway, top - 1, "#ffe39a");
+            const set = sprites[row.size];
+            for (const s of row.stalks) {
+              const wave = Math.sin(t * 1.5 - s.x * 0.035 + row.offset + s.phase);
+              const lean = Math.round((0.35 + wave * 0.65) * gust * LEANS);
+              const sprite = set[Math.max(-LEANS, Math.min(LEANS, lean)) + LEANS];
+              ctx.drawImage(sprite.canvas, s.x - sprite.ox, row.y + s.dy - sprite.canvas.height);
             }
           }
           for (const m of motes) {
@@ -678,9 +839,9 @@
     }
     rect(ctx, x, base, 1, 2, color);
   }
-  function house(ctx, x, w, h, wall, wallDark, roof, roofDark, r, windows, chimneys) {
+  function house(ctx, x, w, h, wall2, wallDark, roof, roofDark, r, windows, chimneys) {
     const top = GROUND - h;
-    rect(ctx, x, top, w, h, wall);
+    rect(ctx, x, top, w, h, wall2);
     rect(ctx, x + w - 2, top, 2, h, wallDark);
     for (let y = top + 3; y < GROUND; y += 4) rect(ctx, x, y, w - 2, 1, wallDark);
     const roofH = Math.round(w * 0.45);
@@ -706,6 +867,7 @@
   var village_default = {
     id: "village",
     name: "Night Village",
+    ambience: { crickets: 1, owl: 0.4, wind: 0.2 },
     create() {
       const base = layer();
       const b = base.ctx;
@@ -735,9 +897,9 @@
       while (x < W - 20) {
         const w = 22 + Math.floor(r() * 12);
         const h = 15 + Math.floor(r() * 10);
-        const [wall, wallDark] = walls[Math.floor(r() * walls.length)];
+        const [wall2, wallDark] = walls[Math.floor(r() * walls.length)];
         const [roof, roofDark] = roofs[Math.floor(r() * roofs.length)];
-        house(b, x, w, h, wall, wallDark, roof, roofDark, r, windows, chimneys);
+        house(b, x, w, h, wall2, wallDark, roof, roofDark, r, windows, chimneys);
         x += w + 10 + Math.floor(r() * 16);
       }
       const lamps = [52, 150, 262].map((lx) => ({ x: lx, y: GROUND - 14 }));
@@ -791,94 +953,298 @@
   };
 
   // js/scenes/castle.js
-  var STONE = "#5e5c7c";
-  var STONE_DARK = "#48466a";
-  var STONE_LIGHT = "#77759a";
+  var SUN = { x: 58, y: 106 };
+  var SHORE = 146;
+  var STONE = "#5b5878";
+  var STONE_LIT = "#b98680";
+  var STONE_HI = "#f0b088";
+  var STONE_DARK = "#3d3a5c";
+  var STONE_DEEP = "#2b2947";
   var ROOF = "#7c2b4c";
-  var ROOF_DARK = "#5e1f3a";
-  function stoneBlock(ctx, x, y, w, h) {
-    rect(ctx, x, y, w, h, STONE);
-    rect(ctx, x, y, 1, h, STONE_LIGHT);
-    rect(ctx, x + w - 1, y, 1, h, STONE_DARK);
-    for (let row = y + 3, n = 0; row < y + h; row += 3, n++) {
-      rect(ctx, x, row, w, 1, STONE_DARK);
-      for (let bx = x + (n % 2 ? 2 : 4); bx < x + w - 1; bx += 5) px(ctx, bx, row - 1, STONE_DARK);
+  var ROOF_LIT = "#b0495a";
+  var ROOF_DARK = "#4f1a36";
+  var WINDOW = "#ffcf6b";
+  var ROCK = "#3a3054";
+  var ROCK_LIT = "#7a566c";
+  var ROCK_DARK = "#251d3c";
+  function cragTop(x) {
+    let y;
+    if (x < 126) return H;
+    if (x < 152) {
+      const k = (x - 126) / 26;
+      y = SHORE + 2 - k * k * (3 - 2 * k) * 34;
+    } else if (x <= 276) {
+      y = 114 + Math.sin(x * 0.11) * 1.5;
+    } else {
+      y = 114 + (x - 276) * 0.62;
     }
+    return Math.round(y);
+  }
+  function wall(ctx, x, top, w, ground) {
+    for (let cx = x; cx < x + w; cx++) {
+      const base = ground(cx);
+      const edge = cx - x;
+      const color = edge === 0 ? STONE_HI : edge < Math.max(2, w * 0.22) ? STONE_LIT : edge >= w - 2 ? STONE_DARK : STONE;
+      rect(ctx, cx, top, 1, base - top + 1, color);
+    }
+    for (let row = top + 3, n = 0; row < H; row += 4, n++) {
+      for (let cx = x + 1; cx < x + w - 1; cx++) {
+        if (row >= ground(cx)) continue;
+        if ((cx + n * 3) % 6 === 0) px(ctx, cx, row - 1, STONE_DARK);
+        if ((cx * 7 + n * 5) % 11 < 7) px(ctx, cx, row, STONE_DARK);
+      }
+    }
+  }
+  function roundTower(ctx, x, top, w, ground, roof, flags) {
+    for (let cx = x; cx < x + w; cx++) {
+      const k = (cx - x) / (w - 1);
+      const color = k < 0.12 ? STONE_HI : k < 0.38 ? STONE_LIT : k < 0.7 ? STONE : k < 0.9 ? STONE_DARK : STONE_DEEP;
+      rect(ctx, cx, top, 1, ground(cx) - top + 1, color);
+    }
+    for (let row = top + 4, n = 0; row < H; row += 4, n++) {
+      for (let cx = x + 1; cx < x + w - 1; cx++) {
+        if (row < ground(cx) && (cx + n * 2) % 3 !== 0) px(ctx, cx, row, STONE_DARK);
+      }
+    }
+    rect(ctx, x - 1, top, w + 2, 2, STONE);
+    rect(ctx, x - 1, top, 2, 2, STONE_HI);
+    rect(ctx, x + w - 1, top, 2, 2, STONE_DARK);
+    if (roof) {
+      const roofH = Math.round(w * 1.25);
+      for (let i = 0; i < roofH; i++) {
+        const half = (i + 1) / roofH * (w / 2 + 2);
+        const left = Math.round(x + w / 2 - half);
+        const width = Math.round(half * 2);
+        rect(ctx, left, top - roofH + i, width, 1, ROOF);
+        rect(ctx, left, top - roofH + i, Math.max(1, Math.round(width * 0.3)), 1, ROOF_LIT);
+        rect(ctx, left + Math.round(width * 0.72), top - roofH + i, width - Math.round(width * 0.72), 1, ROOF_DARK);
+      }
+      flags.push({ x: x + Math.floor(w / 2), y: top - roofH - 7 });
+    } else {
+      crenels(ctx, x - 1, top, w + 2);
+    }
+    const mid = x + Math.floor(w / 2);
+    for (let wy = top + 7; wy < ground(mid) - 8; wy += 11) slit(ctx, mid, wy);
   }
   function crenels(ctx, x, y, w) {
-    for (let cx = x; cx < x + w; cx += 3) rect(ctx, cx, y - 2, 2, 2, STONE);
-  }
-  function tower(ctx, x, top, w, base, flags) {
-    stoneBlock(ctx, x, top, w, base - top);
-    const roofH = Math.round(w * 1.3);
-    for (let i = 0; i < roofH; i++) {
-      const half = Math.round(i / roofH * (w / 2 + 2));
-      rect(ctx, x + w / 2 - half, top - roofH + i, half * 2, 1, i % 4 === 0 ? ROOF_DARK : ROOF);
+    for (let cx = x; cx < x + w; cx += 4) {
+      rect(ctx, cx, y - 3, 2, 3, cx - x < w * 0.25 ? STONE_LIT : STONE);
+      px(ctx, cx, y - 3, STONE_HI);
     }
-    rect(ctx, x + Math.round(w / 2) - 1, top + 6, 2, 3, "#ffcf6b");
-    rect(ctx, x + Math.round(w / 2) - 1, top + 16, 2, 3, "#ffcf6b");
-    flags.push({ x: x + Math.round(w / 2), y: top - roofH - 6 });
   }
+  function slit(ctx, x, y) {
+    rect(ctx, x, y, 1, 3, WINDOW);
+    px(ctx, x - 1, y + 1, "#c98a5a");
+    px(ctx, x + 1, y + 1, "#c98a5a");
+  }
+  function arch(ctx, x, y, w, h, color) {
+    rect(ctx, x, y + w / 2, w, h - w / 2, color);
+    for (let i = 0; i < w / 2; i++) {
+      const half = Math.round(Math.sqrt((w / 2) ** 2 - (w / 2 - i - 0.5) ** 2));
+      rect(ctx, x + w / 2 - half, y + i, half * 2, 1, color);
+    }
+  }
+  function pine2(ctx, x, base, h, body, lit) {
+    for (let i = 0; i < h; i++) {
+      const half = Math.floor(i / h * (h * 0.36)) + (i % 3 === 0 ? 0 : 1);
+      rect(ctx, x - half, base - h + i, half * 2 + 1, 1, body);
+      if (lit && half > 0) px(ctx, x - half, base - h + i, lit);
+    }
+    rect(ctx, x, base, 1, 2, body);
+  }
+  function cottage(ctx, x, base, w) {
+    rect(ctx, x, base - 5, w, 5, "#4a3d5e");
+    rect(ctx, x, base - 5, 1, 5, "#8a6a74");
+    for (let i = 0; i < 4; i++) rect(ctx, x - 1 + i, base - 6 - (3 - i), w + 2 - i * 2, 1, i === 3 ? ROOF_DARK : ROOF);
+    px(ctx, x + 2, base - 3, WINDOW);
+    if (w > 6) px(ctx, x + w - 3, base - 3, WINDOW);
+  }
+  var ROAD = [
+    [132, 149, 2],
+    [150, 150, 3],
+    [176, 151, 4],
+    [214, 150, 4],
+    [252, 146, 4],
+    [278, 139, 3],
+    [286, 131, 3],
+    [272, 125, 2],
+    [250, 121, 2],
+    [232, 118, 2],
+    [221, 116, 2]
+  ];
   var castle_default = {
     id: "castle",
     name: "Dusk Castle",
+    ambience: { crickets: 0.7, wind: 0.35, owl: 0.6, water: 0.12 },
     create() {
       const sky = layer();
-      ditherGradient(sky.ctx, 0, 0, W, 150, ["#181231", "#321c4d", "#582757", "#923963", "#c95c5e", "#e8895b"]);
-      glow(sky.ctx, 74, 122, 30, "#f5a36d", 0.5);
-      disc(sky.ctx, 74, 122, 14, "#f7c08a");
+      ditherGradient(sky.ctx, 0, 0, W, SHORE + 2, ["#181231", "#321c4d", "#582757", "#923963", "#c95c5e", "#e8895b", "#f2a766"]);
+      glow(sky.ctx, SUN.x, SUN.y, 34, "#f5a36d", 0.55);
+      disc(sky.ctx, SUN.x, SUN.y, 13, "#f7c08a");
+      disc(sky.ctx, SUN.x, SUN.y, 10, "#ffdfa8");
       const clouds = layer(W * 2, 100);
       const cr = rng(17);
-      for (let i = 0; i < 8; i++) cloud(clouds.ctx, cr() * W * 2, 16 + cr() * 60, 4 + cr() * 5, "#b35f7c", "#7c3d68", 300 + i);
+      for (let i = 0; i < 8; i++) cloud(clouds.ctx, cr() * W * 2, 16 + cr() * 60, 4 + cr() * 5, "#c4687c", "#7c3d68", 300 + i);
+      const far = layer();
+      ridge(far.ctx, 122, 16, "#6a3a66", 41, { freq: 0.014, jag: 5 });
+      ridge(far.ctx, 134, 9, "#4f2d5c", 42, { freq: 0.022, jag: 3 });
+      rect(far.ctx, 0, SHORE, W, H - SHORE, "#000000");
+      far.ctx.clearRect(0, SHORE, W, H - SHORE);
+      hazeBand(far.ctx, 120, 152, "#e8895b", 0.35, 0.8);
       const land = layer();
       const l = land.ctx;
-      ridge(l, 128, 14, "#3a2150", 41, { freq: 0.016, jag: 5 });
-      ridge(l, 150, 6, "#2a1a42", 42, { freq: 0.02 });
-      l.fillStyle = "#20163a";
-      for (let x = 0; x < W; x++) {
-        const d = (x - 205) / 95;
-        const y = Math.round(128 + d * d * 40);
-        l.fillRect(x, Math.min(y, H), 1, H);
+      const r = rng(51);
+      const jitter = [];
+      for (let x = 0; x < W; x++) jitter.push(x % 3 === 0 ? Math.round((r() - 0.5) * 2) : jitter[x - 1]);
+      const ground = (x) => cragTop(x) + (x >= 126 ? jitter[Math.max(0, Math.min(W - 1, x))] : 0);
+      for (let x = 126; x < W; x++) {
+        const top = ground(x);
+        rect(l, x, top, 1, H - top, x < 150 ? ROCK_LIT : x > 268 ? ROCK_DARK : ROCK);
+        for (let y = top + 3; y < H; y += 5) {
+          const shift = Math.round(Math.sin(x * 0.2 + y) * 1.5);
+          px(l, x, y + shift, x < 150 ? ROCK : ROCK_DARK);
+        }
+        if (x < 150 && x % 2 === 0) px(l, x, top + 1, "#c08672");
+        if (x >= 150) rect(l, x, top, 1, 2, x % 5 === 0 ? "#57506e" : "#443c5e");
+      }
+      for (let i = 0; i < 9; i++) {
+        const x = 128 + Math.floor(r() * 20);
+        const y = ground(x) + 4 + Math.floor(r() * 18);
+        rect(l, x, y, 1, 3 + Math.floor(r() * 5), ROCK);
       }
       const flags = [];
-      const baseY = 132;
-      stoneBlock(l, 168, 108, 76, baseY - 108);
-      crenels(l, 168, 108, 76);
-      rect(l, 198, 116, 16, 16, "#1a1226");
-      for (let i = 0; i < 8; i++) rect(l, 198 + i, 116 - Math.round(Math.sqrt(64 - (i - 8) ** 2) / 2), 16 - i * 2, 1, "#1a1226");
-      tower(l, 160, 90, 12, baseY, flags);
-      tower(l, 240, 90, 12, baseY, flags);
-      tower(l, 199, 74, 14, 108, flags);
-      crenels(l, 160, 90, 12);
-      crenels(l, 240, 90, 12);
-      for (const wx of [176, 186, 222, 232]) rect(l, wx, 116, 2, 3, "#ffcf6b");
-      const tr = rng(51);
-      for (let i = 0; i < 12; i++) {
-        const x = i < 6 ? tr() * 90 : W - tr() * 60;
-        const h = 14 + tr() * 22;
-        for (let k = 0; k < h; k++) {
-          const half = Math.round(k / h * h * 0.33);
-          rect(l, x - half, H - h - 4 + k, half * 2 + 1, 1, "#120d1f");
+      wall(l, 268, 104, 30, ground);
+      crenels(l, 268, 104, 30);
+      roundTower(l, 294, 98, 9, ground, true, flags);
+      roundTower(l, 232, 60, 9, ground, true, flags);
+      wall(l, 186, 72, 34, ground);
+      crenels(l, 186, 72, 34);
+      for (const [wx, wy] of [[193, 80], [203, 80], [213, 80], [198, 92], [208, 92]]) {
+        arch(l, wx, wy, 2, 4, WINDOW);
+      }
+      for (let i = 0; i < 10; i++) {
+        const left = 203 - i * 1.6;
+        const width = 2 + i * 3.2;
+        rect(l, left, 59 + i, width, 1, ROOF);
+        rect(l, left, 59 + i, Math.max(1, width * 0.3), 1, ROOF_LIT);
+        rect(l, left + width * 0.75, 59 + i, width * 0.25 + 1, 1, ROOF_DARK);
+      }
+      flags.push({ x: 203, y: 51 });
+      roundTower(l, 172, 78, 8, ground, true, flags);
+      wall(l, 152, 98, 116, ground);
+      crenels(l, 152, 98, 116);
+      for (const bx of [170, 188, 240, 256]) {
+        rect(l, bx, 104, 2, ground(bx) - 104, STONE_LIT);
+        rect(l, bx + 2, 104, 1, ground(bx) - 104, STONE_DARK);
+      }
+      for (const wx of [162, 180, 196, 246, 262]) slit(l, wx, 104);
+      roundTower(l, 146, 86, 11, ground, true, flags);
+      roundTower(l, 262, 84, 11, ground, false, flags);
+      wall(l, 208, 92, 22, ground);
+      crenels(l, 208, 92, 22);
+      roundTower(l, 204, 88, 6, ground, false, flags);
+      roundTower(l, 228, 88, 6, ground, false, flags);
+      arch(l, 214, 103, 10, 13, "#140e22");
+      arch(l, 215, 105, 8, 11, "#e0904a");
+      for (let gx = 216; gx < 223; gx += 2) rect(l, gx, 105, 1, 11, "#2a1c2c");
+      rect(l, 215, 109, 8, 1, "#2a1c2c");
+      const torches = [[211, 106], [226, 106]];
+      for (let i = 0; i < 40; i++) {
+        const x = 150 + Math.floor(r() * 146);
+        const y = ground(x) - Math.floor(r() * 7);
+        px(l, x, y, r() < 0.5 ? "#35405a" : "#2b3550");
+      }
+      glow(l, 219, 117, 7, "#c9784a", 0.45);
+      const hillY = (x) => Math.round(152 + Math.sin(x * 0.021 + 1) * 5 + Math.sin(x * 0.07) * 2 - Math.max(0, x - 120) * 0.035);
+      for (let x = 118; x < W; x++) {
+        const y = hillY(x);
+        rect(l, x, y, 1, H - y, "#241a3a");
+        px(l, x, y, "#3b2f52");
+      }
+      for (let x = 262; x < 292; x++) rect(l, x, 140 - Math.round((x - 262) * 0.05), 1, 3, x % 4 === 0 ? STONE_DARK : "#4a4668");
+      arch(l, 270, 143, 6, 7, "#140e22");
+      arch(l, 280, 143, 6, 7, "#140e22");
+      for (let i = 0; i < ROAD.length - 1; i++) {
+        const [x0, y0, w0] = ROAD[i];
+        const [x1, y1, w1] = ROAD[i + 1];
+        const steps = Math.ceil(Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0)));
+        for (let s = 0; s <= steps; s++) {
+          const k = s / steps;
+          const x = x0 + (x1 - x0) * k;
+          const y = y0 + (y1 - y0) * k;
+          const w = Math.round(w0 + (w1 - w0) * k);
+          rect(l, x, y, 2, w, "#6e5a70");
+          px(l, x, y, "#94788a");
         }
       }
-      rect(l, 0, H - 5, W, 5, "#120d1f");
-      const sr = rng(3);
-      const stars = Array.from({ length: 22 }, () => ({ x: Math.floor(sr() * W), y: Math.floor(sr() * 50), p: sr() * 10 }));
-      const bats = Array.from({ length: 5 }, (_, i) => ({ cx: 205 + (sr() - 0.5) * 60, cy: 70 + sr() * 20, rx: 30 + sr() * 30, p: i * 1.3 }));
+      for (let i = 0; i < 26; i++) {
+        const x = 130 + Math.floor(r() * 186);
+        const top = ground(x);
+        const base = top + 8 + Math.floor(r() * 22);
+        if (base > hillY(x) - 1 || x > 200 && x < 236) continue;
+        pine2(l, x, base, 6 + Math.floor(r() * 5), "#1d1833", "#54405c");
+      }
+      cottage(l, 121, 150, 8);
+      cottage(l, 134, 152, 7);
+      cottage(l, 108, 149, 6);
+      rect(l, 96, 148, 26, H - 148, "#241a3a");
+      for (let x = 96; x < 122; x++) px(l, x, 148 + Math.round(Math.sin(x * 0.4)), "#3b2f52");
+      const scene = layer();
+      scene.ctx.drawImage(sky.canvas, 0, 0);
+      scene.ctx.drawImage(far.canvas, 0, 0);
+      scene.ctx.drawImage(land.canvas, 0, 0);
+      const lake = layer();
+      for (let y = SHORE; y < H; y++) {
+        const src = Math.max(0, SHORE - (y - SHORE) * 2 - 1);
+        const shift = Math.round(Math.sin(y * 1.7) * 1.2);
+        lake.ctx.drawImage(scene.canvas, 0, src, W, 1, shift, y, W, 1);
+      }
+      lake.ctx.fillStyle = "rgba(24, 16, 52, 0.5)";
+      lake.ctx.fillRect(0, SHORE, W, H - SHORE);
+      rect(lake.ctx, 0, SHORE, W, 1, "#2a1c44");
+      const near = layer();
+      const n = near.ctx;
+      const bankY = (x) => Math.round(172 - Math.sin(x * 0.012 + 0.4) * 5 - Math.max(0, x - 150) * 0.1 + Math.sin(x * 0.09) * 1.5);
+      for (let x = 0; x < W; x++) rect(n, x, bankY(x), 1, H, "#120d1f");
+      for (let i = 0; i < 9; i++) {
+        const x = i < 4 ? 4 + r() * 50 : W - 4 - r() * 70;
+        pine2(n, Math.round(x), bankY(Math.round(x)) + 1, 20 + Math.floor(r() * 26), "#120d1f", null);
+      }
+      for (let x = 0; x < W; x += 2) if (r() < 0.5) rect(n, x, bankY(x) - 1 - Math.floor(r() * 2), 1, 2, "#120d1f");
+      const stars = Array.from({ length: 26 }, () => ({ x: Math.floor(r() * W), y: Math.floor(r() * 52), p: r() * 10 }));
+      const bats = Array.from({ length: 5 }, (_, i) => ({ cx: 215 + (r() - 0.5) * 60, cy: 52 + r() * 18, rx: 30 + r() * 30, p: i * 1.3 }));
+      const glints = Array.from({ length: 30 }, () => ({ x: r(), y: SHORE + 2 + Math.floor(r() * 24), p: r() * 6, len: 2 + Math.floor(r() * 5) }));
       return {
         draw(ctx, t) {
           ctx.drawImage(sky.canvas, 0, 0);
           for (const s of stars) if (Math.sin(t + s.p) > 0) px(ctx, s.x, s.y, "#f0d8f0");
-          const cx = Math.round(wrap(t * 3, W));
+          const cx = Math.round(wrap(t * 3, W * 2));
           ctx.drawImage(clouds.canvas, -cx, 0);
           ctx.drawImage(clouds.canvas, W * 2 - cx, 0);
+          ctx.drawImage(far.canvas, 0, 0);
+          ctx.drawImage(lake.canvas, 0, 0);
+          for (const g of glints) {
+            if (Math.sin(t * 1.4 + g.p) < 0.1) continue;
+            const spread = 6 + (g.y - SHORE) * 1.1;
+            const x = SUN.x + (g.x - 0.5) * spread * 2 + Math.sin(t * 0.5 + g.p) * 2;
+            rect(ctx, x, g.y, g.len, 1, g.y < SHORE + 10 ? "#ffd9a0" : "#e8895b");
+          }
           ctx.drawImage(land.canvas, 0, 0);
+          for (const [tx, ty] of torches) {
+            const flick = Math.sin(t * 11 + tx) > 0;
+            px(ctx, tx, ty, flick ? "#ffe9a0" : "#ffb84a");
+            px(ctx, tx, ty - 1, flick ? "#ffb84a" : "#e8703a");
+          }
           for (const f of flags) {
             rect(ctx, f.x, f.y, 1, 7, "#2a2030");
-            for (let c = 0; c < 7; c++) {
+            for (let c = 0; c < 6; c++) {
               const dy = Math.round(Math.sin(t * 6 - c * 0.9) * 0.9);
               rect(ctx, f.x + 1 + c, f.y + dy, 1, 3, c % 2 ? "#ec4a5c" : "#d93a4e");
             }
+          }
+          for (let k = 0; k < 5; k++) {
+            const age = wrap(t * 0.35 + k / 5, 1);
+            px(ctx, 124 + Math.sin(age * 6 + k) * 2 + age * 5, 141 - age * 14, age < 0.6 ? "#8a7a96" : "#6a5a7e");
           }
           for (const b of bats) {
             const x = Math.round(b.cx + Math.cos(t * 0.5 + b.p) * b.rx);
@@ -890,6 +1256,7 @@
             px(ctx, x - 2, y + (up ? -2 : 1), "#140f22");
             px(ctx, x + 3, y + (up ? -2 : 1), "#140f22");
           }
+          ctx.drawImage(near.canvas, 0, 0);
         }
       };
     }
@@ -900,6 +1267,7 @@
   var ocean_default = {
     id: "ocean",
     name: "Open Sea",
+    ambience: { waves: 1, gulls: 0.7, wind: 0.3 },
     create() {
       const sky = layer();
       ditherGradient(sky.ctx, 0, 0, W, HORIZON2, ["#2b69be", "#4585d4", "#65a2e2", "#8cc0ee", "#bddff7", "#e6f4fc"]);
@@ -1041,6 +1409,7 @@
   var neon_default = {
     id: "neon",
     name: "Neon Fall",
+    ambience: { hum: 0.6 },
     create() {
       const base = layer();
       ditherGradient(base.ctx, 0, 0, W, HORIZON3, ["#05030d", "#0b0620", "#170a34", "#2a0d47", "#46125a"]);
@@ -1096,7 +1465,7 @@
   };
 
   // js/scenes/city.js
-  var ROAD = 150;
+  var ROAD2 = 150;
   function skyline(ctx, seed, count, minH, maxH, body, windowColors, litChance, winStep) {
     const r = rng(seed);
     const lit = [];
@@ -1104,10 +1473,10 @@
     while (x < W) {
       const w = 12 + Math.floor(r() * 22);
       const h = minH + Math.floor(r() * (maxH - minH));
-      const top = ROAD - h;
+      const top = ROAD2 - h;
       rect(ctx, x, top, w, h, body);
       if (r() < 0.3) rect(ctx, x + Math.floor(w / 2), top - 6, 1, 6, body);
-      for (let wy = top + 3; wy < ROAD - 3; wy += winStep) {
+      for (let wy = top + 3; wy < ROAD2 - 3; wy += winStep) {
         for (let wx = x + 2; wx < x + w - 2; wx += winStep) {
           if (r() < litChance) {
             const c = windowColors[Math.floor(r() * windowColors.length)];
@@ -1124,10 +1493,11 @@
   var city_default = {
     id: "city",
     name: "Midnight Circuit",
+    ambience: { city: 1, traffic: 1, hum: 0.25 },
     create() {
       const base = layer();
       const b = base.ctx;
-      ditherGradient(b, 0, 0, W, ROAD, ["#04030c", "#08071e", "#120c32", "#1f1348", "#3a1a5e", "#5a2266"]);
+      ditherGradient(b, 0, 0, W, ROAD2, ["#04030c", "#08071e", "#120c32", "#1f1348", "#3a1a5e", "#5a2266"]);
       glow(b, 262, 32, 24, "#2c2466", 0.8);
       disc(b, 262, 32, 13, "#ece8ff");
       disc(b, 266, 29, 11, "#d6d0f4");
@@ -1139,13 +1509,13 @@
       while (x < W) {
         const w = 16 + Math.floor(nr() * 20);
         const h = 18 + Math.floor(nr() * 40);
-        rect(b, x, ROAD - h, w, h, "#0b0920");
-        if (nr() < 0.6) signs.push({ x: x + 2 + Math.floor(nr() * (w - 6)), y: ROAD - h + 4, h: 6 + Math.floor(nr() * 10), c: nr() < 0.5 ? "#ff4fa8" : "#4ff0ff", p: nr() * 10 });
+        rect(b, x, ROAD2 - h, w, h, "#0b0920");
+        if (nr() < 0.6) signs.push({ x: x + 2 + Math.floor(nr() * (w - 6)), y: ROAD2 - h + 4, h: 6 + Math.floor(nr() * 10), c: nr() < 0.5 ? "#ff4fa8" : "#4ff0ff", p: nr() * 10 });
         x += w + 6 + Math.floor(nr() * 14);
       }
-      rect(b, 0, ROAD, W, H - ROAD, "#0e0c1c");
-      rect(b, 0, ROAD, W, 2, "#3a3560");
-      rect(b, 0, ROAD + 14, W, 1, "#2a2548");
+      rect(b, 0, ROAD2, W, H - ROAD2, "#0e0c1c");
+      rect(b, 0, ROAD2, W, 2, "#3a3560");
+      rect(b, 0, ROAD2 + 14, W, 1, "#2a2548");
       rect(b, 0, H - 8, W, 8, "#08070f");
       for (let px0 = 10; px0 < W; px0 += 40) rect(b, px0, H - 8, 4, 8, "#1a1830");
       const antennas = [];
@@ -1158,7 +1528,7 @@
           right,
           x: r() * W,
           speed: (90 + r() * 90) * (right ? 1 : -1),
-          y: right ? ROAD + 5 + Math.floor(r() * 3) : ROAD + 10 + Math.floor(r() * 3),
+          y: right ? ROAD2 + 5 + Math.floor(r() * 3) : ROAD2 + 10 + Math.floor(r() * 3),
           len: 6 + Math.floor(r() * 10)
         };
       });
@@ -1181,7 +1551,7 @@
           }
           for (let i = 0; i < 12; i++) {
             const lx = wrap(i * 30 - t * 160, W + 30) - 15;
-            rect(ctx, lx, ROAD + 9, 10, 1, "#4a4478");
+            rect(ctx, lx, ROAD2 + 9, 10, 1, "#4a4478");
           }
           for (const c of cars) {
             const x2 = wrap(c.x + t * c.speed, W + 60) - 30;
@@ -1251,19 +1621,20 @@
       x = nx;
       y = ny;
     }
-    for (const [x0, y0, x1, y1, branch] of paths) {
+    for (const [x0, y0, x1, y1, branch2] of paths) {
       const steps = Math.ceil(Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0)));
       for (let i = 0; i <= steps; i++) {
         const px0 = x0 + (x1 - x0) * (i / steps);
         const py0 = y0 + (y1 - y0) * (i / steps);
-        if (!branch) px(ctx, px0 - 1, py0, "#7fa8ff");
-        px(ctx, px0, py0, branch ? "#b8d0ff" : "#ffffff");
+        if (!branch2) px(ctx, px0 - 1, py0, "#7fa8ff");
+        px(ctx, px0, py0, branch2 ? "#b8d0ff" : "#ffffff");
       }
     }
   }
   var storm_default = {
     id: "storm",
     name: "Thunder Peak",
+    ambience: { storm: 1, thunder: 1, wind: 0.7 },
     create() {
       const sky = layer();
       ditherGradient(sky.ctx, 0, 0, W, H, ["#06080e", "#0b0f19", "#121827", "#1a2234", "#232d42"]);
@@ -1322,9 +1693,416 @@
     }
   };
 
+  // js/scenes/sakura.js
+  var PINK = ["#f7b9cf", "#ee8fb2", "#d96a97", "#fde0ea"];
+  function blossom(ctx, r, x, y, size) {
+    const puffs = Array.from({ length: 5 + Math.floor(size / 2) }, () => [
+      x + (r() - 0.5) * size * 2.4,
+      y + (r() - 0.5) * size * 1.1,
+      size * (0.45 + r() * 0.5)
+    ]);
+    for (const [cx, cy, pr] of puffs) disc(ctx, cx, cy + 2, Math.round(pr), PINK[2]);
+    for (const [cx, cy, pr] of puffs) disc(ctx, cx, cy, Math.round(pr), PINK[1]);
+    for (const [cx, cy, pr] of puffs) disc(ctx, cx - 1, cy - 1, Math.max(1, Math.round(pr * 0.65)), PINK[0]);
+    for (let i = 0; i < size * 3; i++) px(ctx, x + (r() - 0.5) * size * 2.6, y + (r() - 0.6) * size * 1.4, PINK[3]);
+  }
+  function branch(ctx, r, x, y, angle, length, width, color) {
+    const points = [];
+    for (let i = 0; i < length; i++) {
+      angle += (r() - 0.5) * 0.35;
+      x += Math.cos(angle);
+      y += Math.sin(angle);
+      const w = Math.max(1, Math.round(width * (1 - i / length)));
+      rect(ctx, x, y, w, w, color);
+      if (i % 6 === 0) points.push([x, y]);
+    }
+    return points;
+  }
+  function torii(ctx, x, base) {
+    const red = "#d8433c", dark = "#8e2630", lit = "#f0735a", cap = "#3a2a34";
+    for (const lx of [x - 9, x + 6]) {
+      rect(ctx, lx, base - 22, 3, 22, red);
+      rect(ctx, lx, base - 22, 1, 22, lit);
+      rect(ctx, lx + 2, base - 22, 1, 22, dark);
+      rect(ctx, lx - 1, base - 2, 5, 2, cap);
+    }
+    rect(ctx, x - 11, base - 18, 22, 2, red);
+    rect(ctx, x - 11, base - 17, 22, 1, dark);
+    rect(ctx, x - 14, base - 25, 28, 3, red);
+    rect(ctx, x - 14, base - 25, 28, 1, lit);
+    rect(ctx, x - 15, base - 27, 30, 2, cap);
+    rect(ctx, x - 16, base - 28, 2, 1, cap);
+    rect(ctx, x + 14, base - 28, 2, 1, cap);
+    rect(ctx, x - 1, base - 22, 2, 4, dark);
+  }
+  var sakura_default = {
+    id: "sakura",
+    name: "Blossom Shrine",
+    ambience: { birds: 1, wind: 0.3, chimes: 0.6 },
+    create() {
+      const sky = layer();
+      ditherGradient(sky.ctx, 0, 0, W, 150, ["#6fa8dc", "#8fbfe6", "#b5d6ee", "#dbe6f2", "#f6dfe2", "#fbcfd4"]);
+      const clouds = layer(W * 2, 80);
+      const cr = rng(71);
+      for (let i = 0; i < 7; i++) cloud(clouds.ctx, cr() * W * 2, 14 + cr() * 44, 5 + cr() * 6, "#ffffff", "#f3cfd9", 900 + i);
+      const land = layer();
+      const l = land.ctx;
+      const r = rng(83);
+      for (let y = 0; y < 62; y++) {
+        const half = 6 + y * 1.25 + Math.sin(y * 0.5) * 1.5;
+        rect(l, 92 - half, 58 + y, half * 2, 1, "#8ea3c8");
+        if (y < 9) rect(l, 92 - half, 58 + y, half * 2, 1, "#f4f6fb");
+        else if (y < 22) {
+          for (let x = -half; x < half; x++) {
+            if (9 + Math.abs(Math.sin(x * 0.9)) * 12 > y) px(l, 92 + x, 58 + y, "#f4f6fb");
+          }
+        }
+      }
+      hazeBand(l, 96, 132, "#f6dfe2", 0.7, 0.9);
+      ridge(l, 126, 7, "#8aa88e", 21, { freq: 0.02 });
+      for (let i = 0; i < 26; i++) disc(l, r() * W, 122 + r() * 8, 2 + Math.floor(r() * 2), r() < 0.6 ? "#eea4bf" : "#f7c4d6");
+      ridge(l, 142, 8, "#5f8f68", 22, { freq: 0.016 });
+      for (let i = 0; i < 18; i++) {
+        const x = r() * W, y = 136 + r() * 8;
+        rect(l, x, y, 1, 4, "#4a3a3a");
+        disc(l, x, y - 1, 3, "#e98bb0");
+        disc(l, x - 1, y - 2, 2, "#f7bfd3");
+      }
+      const hillY = (x) => Math.round(150 - Math.exp(-(((x - 120) / 70) ** 2)) * 22 + Math.sin(x * 0.05) * 1.5);
+      for (let x = 0; x < W; x++) {
+        const y = hillY(x);
+        rect(l, x, y, 1, H - y, "#3f7a4c");
+        rect(l, x, y, 1, 2, "#6cab62");
+        if (r() < 0.3) px(l, x, y + 3 + r() * 20, "#57955a");
+        if (r() < 0.12) px(l, x, y + 2 + r() * 24, "#f7bfd3");
+      }
+      for (let i = 0; i < 17; i++) {
+        const y = 129 + i * 3;
+        const half = 5 + i * 1.3;
+        rect(l, 120 - half, y, half * 2, 3, i % 2 ? "#b9b4ae" : "#cfcac2");
+        rect(l, 120 - half, y + 2, half * 2, 1, "#8d8890");
+      }
+      torii(l, 120, 130);
+      for (const lx of [98, 142]) {
+        rect(l, lx, 138, 3, 7, "#9a96a0");
+        rect(l, lx - 1, 135, 5, 3, "#7c7884");
+        px(l, lx + 1, 136, "#ffd27a");
+        rect(l, lx - 2, 133, 7, 2, "#9a96a0");
+      }
+      const tree = layer();
+      const tc = tree.ctx;
+      const tr = rng(19);
+      for (let y = 60; y < H; y++) {
+        const w = 9 + Math.max(0, y - 150) * 0.5 + Math.sin(y * 0.2) * 1.2;
+        const x = 268 + Math.sin(y * 0.035) * 9;
+        rect(tc, x, y, w, 1, "#4a2f33");
+        rect(tc, x, y, 2, 1, "#7a5350");
+        rect(tc, x + w - 2, y, 2, 1, "#2e1c24");
+        if (y % 7 === 0) rect(tc, x + 2, y, w * 0.4, 1, "#2e1c24");
+      }
+      const tips = [];
+      for (const [bx, by, ang, len, wd] of [
+        [270, 92, -2.75, 120, 5],
+        [272, 74, -2.2, 80, 4],
+        [276, 66, -1.2, 48, 4],
+        [274, 108, -2.95, 84, 3],
+        [278, 84, -0.45, 46, 3],
+        [270, 120, 3, 50, 2]
+      ]) tips.push(...branch(tc, tr, bx, by, ang, len, wd, "#4a2f33"));
+      for (const [x, y] of tips) blossom(tc, tr, x, y, 5 + Math.floor(tr() * 5));
+      blossom(tc, tr, 290, 58, 12);
+      blossom(tc, tr, 250, 46, 10);
+      const petals = Array.from({ length: 46 }, () => ({
+        x: r() * W,
+        y: r() * H,
+        fall: 7 + r() * 9,
+        drift: 8 + r() * 10,
+        p: r() * 6,
+        c: PINK[Math.floor(r() * 4)]
+      }));
+      const birds = Array.from({ length: 3 }, (_, i) => ({ x: r() * W, y: 24 + r() * 30, speed: 10 + r() * 6, p: i * 2 }));
+      return {
+        draw(ctx, t) {
+          ctx.drawImage(sky.canvas, 0, 0);
+          const cx = Math.round(wrap(t * 2, W * 2));
+          ctx.drawImage(clouds.canvas, -cx, 0);
+          ctx.drawImage(clouds.canvas, W * 2 - cx, 0);
+          for (const b of birds) {
+            const x = wrap(b.x + t * b.speed, W + 20) - 10;
+            const y = Math.round(b.y + Math.sin(t * 0.8 + b.p) * 3);
+            const up = Math.floor(t * 5 + b.p) % 2 === 0;
+            px(ctx, x, y, "#4a5a78");
+            px(ctx, x - 1, y + (up ? -1 : 1), "#4a5a78");
+            px(ctx, x + 1, y + (up ? -1 : 1), "#4a5a78");
+          }
+          ctx.drawImage(land.canvas, 0, 0);
+          ctx.drawImage(tree.canvas, 0, 0);
+          for (const p of petals) {
+            const y = wrap(p.y + t * p.fall, H + 8) - 4;
+            const x = wrap(p.x - t * p.drift + Math.sin(t * 1.3 + p.p) * 7, W + 8) - 4;
+            const flip = Math.sin(t * 4 + p.p) > 0;
+            rect(ctx, x, y, flip ? 2 : 1, flip ? 1 : 2, p.c);
+          }
+        }
+      };
+    }
+  };
+
+  // js/scenes/aurora.js
+  var SHORE2 = 128;
+  var CURTAINS = [
+    { y: 34, amp: 11, len: 34, speed: 0.22, freq: 0.021, core: [126, 255, 196], edge: [60, 190, 170] },
+    { y: 22, amp: 8, len: 26, speed: -0.16, freq: 0.034, core: [150, 140, 255], edge: [90, 80, 200] }
+  ];
+  function snowPine(ctx, x, base, h, body, snow) {
+    for (let i = 0; i < h; i++) {
+      const tier = i % 5;
+      const half = Math.floor(i / h * (h * 0.36)) + (tier < 2 ? 0 : 1);
+      rect(ctx, x - half, base - h + i, half * 2 + 1, 1, body);
+      if (tier === 0 && half > 0) rect(ctx, x - half, base - h + i, half + 1, 1, snow);
+    }
+    rect(ctx, x, base, 1, 2, body);
+  }
+  var aurora_default = {
+    id: "aurora",
+    name: "Northern Lights",
+    ambience: { wind: 0.9, owl: 0.35 },
+    create() {
+      const sky = layer();
+      ditherGradient(sky.ctx, 0, 0, W, SHORE2, ["#050814", "#081226", "#0c1d38", "#12304a", "#1b4a58"]);
+      const r = rng(404);
+      for (let i = 0; i < 70; i++) px(sky.ctx, r() * W, r() * 90, r() < 0.3 ? "#ffffff" : "#9fb4d8");
+      const land = layer();
+      const l = land.ctx;
+      for (const [base, amp, color, seed, freq, jag] of [[112, 14, "#223452", 61, 0.017, 6], [120, 9, "#16233c", 62, 0.026, 4]]) {
+        const range = layer();
+        ridge(range.ctx, base, amp, color, seed, { freq, jag });
+        const data = range.ctx.getImageData(0, 0, W, SHORE2).data;
+        for (let x = 0; x < W; x++) {
+          let y = 0;
+          while (y < SHORE2 && data[(y * W + x) * 4 + 3] === 0) y++;
+          const depth = 3 + Math.round(Math.sin(x * 0.3) + Math.sin(x * 0.11) * 2);
+          for (let k = 0; k < depth; k++) px(range.ctx, x, y + k, k === 0 ? "#e6f0ff" : "#aac0e0");
+        }
+        l.drawImage(range.canvas, 0, 0);
+      }
+      l.clearRect(0, SHORE2, W, H - SHORE2);
+      const lake = layer();
+      ditherGradient(lake.ctx, 0, SHORE2, W, H - SHORE2, ["#1b4a58", "#173a52", "#122c46", "#0d2038"]);
+      const near = layer();
+      const n = near.ctx;
+      const shoreY = (x) => Math.round(164 - Math.exp(-(((x - 236) / 60) ** 2)) * 20 + Math.sin(x * 0.04) * 3);
+      for (let x = 0; x < W; x++) {
+        const y = shoreY(x);
+        rect(n, x, y, 1, H - y, "#b8cbe6");
+        rect(n, x, y, 1, 2, "#eef4ff");
+        if (r() < 0.25) px(n, x, y + 3 + r() * 14, "#8ea6cc");
+      }
+      const cabinBase = shoreY(232) + 2;
+      rect(n, 220, cabinBase - 12, 26, 12, "#3a2630");
+      for (let y = cabinBase - 11; y < cabinBase; y += 3) rect(n, 220, y, 26, 1, "#24161e");
+      for (let i = 0; i < 9; i++) rect(n, 217 + (8 - i) * 1.7, cabinBase - 21 + i, 32 - (8 - i) * 3.4, 1, i > 6 ? "#8ea6cc" : "#eef4ff");
+      rect(n, 238, cabinBase - 25, 4, 7, "#2a1c24");
+      rect(n, 237, cabinBase - 26, 6, 1, "#eef4ff");
+      rect(n, 225, cabinBase - 8, 5, 5, "#ffcf6b");
+      rect(n, 227, cabinBase - 8, 1, 5, "#8a5a30");
+      rect(n, 236, cabinBase - 8, 5, 8, "#1c1218");
+      glow(n, 227, cabinBase + 4, 8, "#e8b870", 0.35);
+      for (let i = 0; i < 14; i++) {
+        const x = Math.round(i < 5 ? 6 + r() * 60 : 170 + r() * 146);
+        if (x > 212 && x < 254) continue;
+        snowPine(n, x, shoreY(x) + 1, 14 + Math.floor(r() * 22), "#0e1a2c", "#dbe8fb");
+      }
+      const flakes = Array.from({ length: 60 }, () => ({ x: r() * W, y: r() * H, s: 8 + r() * 10, p: r() * 6 }));
+      function curtain(ctx, c, t, mirror) {
+        for (let x = 0; x < W; x += 2) {
+          const wave = Math.sin(x * c.freq + t * c.speed) * c.amp + Math.sin(x * c.freq * 2.7 - t * c.speed * 1.7) * c.amp * 0.4;
+          const bright = 0.45 + 0.55 * Math.sin(x * 0.045 + t * c.speed * 3 + c.y);
+          if (bright < 0.12) continue;
+          const len = c.len * (0.6 + 0.4 * Math.sin(x * 0.07 - t * 0.31));
+          const top = c.y + wave;
+          if (mirror) {
+            const y = SHORE2 + 2 + (SHORE2 - top - len) * 0.28;
+            ctx.fillStyle = `rgba(${c.core}, ${0.16 * bright})`;
+            ctx.fillRect(x, Math.round(y), 2, Math.round(len * 0.3));
+            continue;
+          }
+          ctx.fillStyle = `rgba(${c.edge}, ${0.2 * bright})`;
+          ctx.fillRect(x, Math.round(top), 2, Math.round(len));
+          ctx.fillStyle = `rgba(${c.core}, ${0.4 * bright})`;
+          ctx.fillRect(x, Math.round(top + len * 0.55), 2, Math.round(len * 0.45));
+          ctx.fillStyle = `rgba(${c.core}, ${0.5 * bright})`;
+          ctx.fillRect(x, Math.round(top + len - 3), 2, 3);
+        }
+      }
+      return {
+        draw(ctx, t) {
+          ctx.drawImage(sky.canvas, 0, 0);
+          for (const c of CURTAINS) curtain(ctx, c, t, false);
+          ctx.drawImage(land.canvas, 0, 0);
+          ctx.drawImage(lake.canvas, 0, 0);
+          for (const c of CURTAINS) curtain(ctx, c, t, true);
+          ctx.drawImage(near.canvas, 0, 0);
+          for (let k = 0; k < 6; k++) {
+            const age = wrap(t * 0.3 + k / 6, 1);
+            rect(
+              ctx,
+              240 + Math.sin(age * 5 + k) * 2 - age * 8,
+              cabinBase - 27 - age * 22,
+              age > 0.5 ? 2 : 1,
+              1,
+              age < 0.5 ? "#9aa8c0" : "#5a6a88"
+            );
+          }
+          for (const f of flakes) {
+            const y = wrap(f.y + t * f.s, H);
+            const x = wrap(f.x + Math.sin(t * 0.7 + f.p) * 8 - t * 5, W);
+            px(ctx, x, y, "#eef4ff");
+          }
+        }
+      };
+    }
+  };
+
+  // js/scenes/falls.js
+  var FALL = { x: 128, w: 30, top: 46, bottom: 138 };
+  var POOL = 138;
+  function fern(ctx, x, y, len, dir, color, tip) {
+    for (let k = 0; k < len; k++) {
+      const fx = x + dir * k;
+      const fy = y - Math.sin(k / len * Math.PI) * len * 0.45 + k * 0.35;
+      px(ctx, fx, fy, k > len - 3 ? tip : color);
+      if (k % 2 === 0 && k > 1) {
+        const leaf = Math.max(1, Math.round((1 - k / len) * 4));
+        rect(ctx, fx, fy + 1, 1, leaf, color);
+        rect(ctx, fx, fy - leaf, 1, leaf, color);
+      }
+    }
+  }
+  var falls_default = {
+    id: "falls",
+    name: "Misty Falls",
+    ambience: { water: 1, birds: 0.6, wind: 0.15 },
+    create() {
+      const sky = layer();
+      ditherGradient(sky.ctx, 0, 0, W, 100, ["#3f8fc4", "#62aad4", "#8fc6e0", "#c2e2e8", "#e8f3e4"]);
+      const clouds = layer(W * 2, 60);
+      const cr = rng(52);
+      for (let i = 0; i < 6; i++) cloud(clouds.ctx, cr() * W * 2, 12 + cr() * 30, 5 + cr() * 6, "#ffffff", "#cfe3ee", 1200 + i);
+      const land = layer();
+      const l = land.ctx;
+      const r = rng(77);
+      const inFall = (x) => x > FALL.x - 4 && x < FALL.x + FALL.w + 4;
+      const cliffTop = (x) => Math.round(46 + Math.sin(x * 0.03) * 5 + Math.sin(x * 0.11 + 1) * 2 + (inFall(x) ? 3 : 0) + Math.max(0, x - 250) * 0.5);
+      const joints = [0];
+      while (joints[joints.length - 1] < W) joints.push(joints[joints.length - 1] + 9 + Math.floor(r() * 22));
+      const tones = ["#625c70", "#524d62", "#454054", "#3a3648"];
+      let block = 0;
+      for (let x = 0; x < W; x++) {
+        if (x >= joints[block + 1]) block++;
+        const top = cliffTop(x);
+        const warp = Math.round(Math.sin(x * 0.05 + block) * 2 + block % 3);
+        for (let y = top; y < POOL; y++) {
+          const band = Math.floor((y + warp) / 11);
+          const edge = (y + warp) % 11;
+          const tone = (band * 3 + block * 5) % 3 + (x === joints[block] ? 1 : 0);
+          px(l, x, y, edge === 0 ? "#2c2a3a" : edge === 1 ? "#7a748a" : tones[tone]);
+        }
+        rect(l, x, top - 2, 1, 5, "#2f7a3f");
+      }
+      for (let i = 0; i < 60; i++) {
+        const x = Math.floor(r() * W);
+        const y = cliffTop(x) + 6 + Math.floor(r() * 80);
+        if (y < POOL - 2 && !inFall(x)) rect(l, x, y, 2 + Math.floor(r() * 6), 1 + Math.floor(r() * 2), r() < 0.5 ? "#4f9a4c" : "#3a7f42");
+      }
+      for (let i = 0; i < 80; i++) {
+        const x = r() * W;
+        if (inFall(x)) continue;
+        const y = cliffTop(Math.floor(x));
+        disc(l, x, y - 3 - r() * 5, 3 + Math.floor(r() * 4), r() < 0.5 ? "#2f7a3f" : "#3f9448");
+        px(l, x - 1, y - 7 - r() * 4, "#7cc464");
+      }
+      for (let i = 0; i < 46; i++) {
+        const x = Math.floor(r() * W);
+        if (x > FALL.x - 6 && x < FALL.x + FALL.w + 6) continue;
+        const y = cliffTop(x) + 4 + Math.floor(r() * 50);
+        rect(l, x, y, 1, 4 + Math.floor(r() * 16), r() < 0.5 ? "#3f8a44" : "#2f6a3a");
+      }
+      rect(l, FALL.x - 3, FALL.top, FALL.w + 6, POOL - FALL.top, "#2a2c40");
+      const spray = layer();
+      glow(spray.ctx, FALL.x + FALL.w / 2, POOL - 6, 34, "#e6f8f6", 0.75);
+      const pool = layer();
+      ditherGradient(pool.ctx, 0, POOL, W, H - POOL, ["#7fd0c8", "#4fb0b4", "#2f8c9c", "#1f6a80", "#16506a"]);
+      const front = layer();
+      const f = front.ctx;
+      for (const [bx, by, br] of [[24, 176, 22], [70, 186, 16], [292, 178, 26], [246, 188, 14]]) {
+        disc(f, bx, by, br, "#23222e");
+        disc(f, bx - 3, by - 3, br - 4, "#33313f");
+        for (let k = 0; k < br; k++) px(f, bx - br * 0.7 + r() * br * 1.2, by - br + 2 + r() * 5, "#4f9a4c");
+      }
+      for (let i = 0; i < 16; i++) {
+        const x = i < 8 ? r() * 90 : W - r() * 80;
+        fern(f, x, H - 6 - r() * 22, 12 + r() * 12, r() < 0.5 ? -1 : 1, "#1f5a2e", "#5fb050");
+      }
+      const span = FALL.bottom - FALL.top;
+      const streaks = Array.from({ length: 70 }, () => ({
+        x: FALL.x + r() * FALL.w,
+        p: r() * 100,
+        speed: 60 + r() * 50,
+        len: 5 + r() * 12,
+        bright: r() < 0.35
+      }));
+      const mist = Array.from({ length: 34 }, () => ({ a: r() * 6.28, d: r(), p: r() * 6, s: 0.2 + r() * 0.4 }));
+      const ripples = Array.from({ length: 26 }, () => ({ x: r() * W, y: POOL + 4 + Math.floor(r() * 30), len: 3 + r() * 9, p: r() * 6 }));
+      const birds = Array.from({ length: 3 }, (_, i) => ({ x: r() * W, y: 14 + r() * 20, speed: 9 + r() * 6, p: i * 2 }));
+      return {
+        draw(ctx, t) {
+          ctx.drawImage(sky.canvas, 0, 0);
+          const cx = Math.round(wrap(t * 2, W * 2));
+          ctx.drawImage(clouds.canvas, -cx, 0);
+          ctx.drawImage(clouds.canvas, W * 2 - cx, 0);
+          for (const b of birds) {
+            const x = wrap(b.x + t * b.speed, W + 20) - 10;
+            const y = Math.round(b.y + Math.sin(t * 0.8 + b.p) * 3);
+            const up = Math.floor(t * 5 + b.p) % 2 === 0;
+            px(ctx, x, y, "#2a3a4a");
+            px(ctx, x - 1, y + (up ? -1 : 1), "#2a3a4a");
+            px(ctx, x + 1, y + (up ? -1 : 1), "#2a3a4a");
+          }
+          ctx.drawImage(land.canvas, 0, 0);
+          ctx.drawImage(pool.canvas, 0, 0);
+          ctx.fillStyle = "rgba(190, 232, 240, 0.78)";
+          ctx.fillRect(FALL.x, FALL.top, FALL.w, span);
+          rect(ctx, FALL.x, FALL.top - 2, FALL.w, 3, "#e8fbff");
+          for (const s of streaks) {
+            const y = FALL.top + wrap(s.p + t * s.speed, span);
+            rect(ctx, s.x, y, 1, Math.min(s.len, FALL.bottom - y), s.bright ? "#ffffff" : "#8fc8dc");
+          }
+          for (const rp of ripples) {
+            const x = wrap(rp.x + Math.sin(t * 0.4 + rp.p) * 6, W);
+            if (Math.sin(t * 1.3 + rp.p) > 0) rect(ctx, x, rp.y, rp.len, 1, "#b8ece6");
+          }
+          ctx.drawImage(spray.canvas, 0, 0);
+          const base = FALL.x + FALL.w / 2;
+          for (const m of mist) {
+            const age = wrap(t * m.s + m.p, 1);
+            const x = base + Math.cos(m.a) * (FALL.w * 0.5 + age * 26) * (0.4 + m.d);
+            const y = POOL + 2 - age * 20 * m.d - Math.abs(Math.sin(m.a)) * 3;
+            ctx.fillStyle = `rgba(240, 252, 255, ${(1 - age) * 0.75})`;
+            ctx.fillRect(Math.round(x), Math.round(y), age > 0.4 ? 3 : 2, age > 0.4 ? 2 : 1);
+          }
+          for (let x = FALL.x - 6; x < FALL.x + FALL.w + 6; x += 2) {
+            if (Math.sin(t * 7 + x * 1.7) > -0.2) rect(ctx, x, POOL - 1 + Math.round(Math.sin(t * 5 + x)), 2, 2, "#ffffff");
+          }
+          ctx.drawImage(front.canvas, 0, 0);
+        }
+      };
+    }
+  };
+
   // js/background.js
-  var SCENES = { bamboo: bamboo_default, wheat: wheat_default, village: village_default, castle: castle_default, ocean: ocean_default, neon: neon_default, city: city_default, storm: storm_default };
-  var CASUAL_SCENES = ["bamboo", "wheat", "village", "castle", "ocean", "neon"];
+  var SCENES = { bamboo: bamboo_default, wheat: wheat_default, sakura: sakura_default, village: village_default, falls: falls_default, castle: castle_default, ocean: ocean_default, aurora: aurora_default, neon: neon_default, city: city_default, storm: storm_default };
+  var CASUAL_SCENES = ["bamboo", "wheat", "sakura", "village", "falls", "castle", "ocean", "aurora", "neon"];
   var MODE_SCENES = { sprint: "city", blitz: "storm" };
   var FADE_S = 1.6;
   var FRAME_MS2 = 1e3 / 30;
@@ -1332,7 +2110,7 @@
   function describeScene(id) {
     return id === "cycle" ? "Cycle by level" : SCENES[id]?.name || id;
   }
-  function createBackground(canvas, layerEl, settings2) {
+  function createBackground(canvas, layerEl, settings2, onScene) {
     canvas.width = W;
     canvas.height = H;
     const ctx = canvas.getContext("2d");
@@ -1364,10 +2142,11 @@
       previous = current;
       current = id;
       fadeStart = (performance.now() - start) / 1e3;
+      onScene?.(SCENES[id].ambience || {});
     }
     function casualScene(level) {
-      const pick = settings2.casualScene || "cycle";
-      if (pick !== "cycle" && SCENES[pick]) return pick;
+      const pick2 = settings2.casualScene || "cycle";
+      if (pick2 !== "cycle" && SCENES[pick2]) return pick2;
       return CASUAL_SCENES[(Math.max(1, level) - 1) % CASUAL_SCENES.length];
     }
     function frame(now) {
@@ -2905,6 +3684,346 @@
       /** Silence the soundtrack while this returns true (for example, user music playing). */
       setSuppressor(fn) {
         isSuppressed = fn;
+      },
+      dispose() {
+        if (timer) clearInterval(timer);
+        if (ctx) ctx.close();
+        ctx = null;
+      }
+    };
+  }
+
+  // js/ambience.js
+  var BEDS = ["rain", "storm", "wind", "wheat", "water", "waves", "hum", "city"];
+  var CALLS = ["birds", "crickets", "owl", "gulls", "chimes", "thunder", "traffic"];
+  var AMBIENCE_LAYERS = [...BEDS, ...CALLS];
+  var GLIDE_S = 0.9;
+  var TICK_MS2 = 200;
+  var LOOKAHEAD_S2 = 0.6;
+  var MASTER_GAIN = 0.5;
+  var IDLE_S = 8;
+  var rand = (min, max) => min + Math.random() * (max - min);
+  var pick = (list) => list[Math.floor(Math.random() * list.length)];
+  function createNoiseBuffer2(ctx) {
+    const buffer = ctx.createBuffer(1, ctx.sampleRate * 3, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+    return buffer;
+  }
+  function createSources(ctx, noise) {
+    function noiseSource(nodes) {
+      const src = ctx.createBufferSource();
+      src.buffer = noise;
+      src.loop = true;
+      src.start(0, Math.random() * 2);
+      nodes.push(src);
+      return src;
+    }
+    function filter(type, freq, q, nodes) {
+      const f = ctx.createBiquadFilter();
+      f.type = type;
+      f.frequency.value = freq;
+      if (q) f.Q.value = q;
+      nodes.push(f);
+      return f;
+    }
+    function gain(value, nodes) {
+      const g = ctx.createGain();
+      g.gain.value = value;
+      nodes.push(g);
+      return g;
+    }
+    function lfo(param, hz, depth, nodes) {
+      const o = ctx.createOscillator();
+      o.frequency.value = hz;
+      const g = gain(depth, nodes);
+      o.connect(g);
+      g.connect(param);
+      o.start();
+      nodes.push(o);
+    }
+    function noisePath(nodes, dest, level, ...filters) {
+      let node = noiseSource(nodes);
+      for (const f of filters) {
+        node.connect(f);
+        node = f;
+      }
+      const g = gain(level, nodes);
+      node.connect(g);
+      g.connect(dest);
+      return g;
+    }
+    const beds = {
+      rain(dest, nodes) {
+        noisePath(nodes, dest, 0.22, filter("highpass", 2200, 0, nodes), filter("lowpass", 9e3, 0, nodes));
+        const body = noisePath(nodes, dest, 0.3, filter("bandpass", 700, 0.4, nodes));
+        lfo(body.gain, 0.07, 0.08, nodes);
+      },
+      storm(dest, nodes) {
+        noisePath(nodes, dest, 0.5, filter("lowpass", 2600, 0, nodes));
+        const hiss = noisePath(nodes, dest, 0.2, filter("highpass", 3e3, 0, nodes));
+        lfo(hiss.gain, 0.19, 0.08, nodes);
+      },
+      wind(dest, nodes) {
+        const band = filter("bandpass", 420, 1.4, nodes);
+        const g = noisePath(nodes, dest, 0.75, band);
+        lfo(band.frequency, 0.11, 170, nodes);
+        lfo(g.gain, 0.07, 0.4, nodes);
+        lfo(g.gain, 0.23, 0.15, nodes);
+      },
+      // Dry stalks brushing together: high, thin noise that swells with each gust
+      wheat(dest, nodes) {
+        const g = noisePath(nodes, dest, 0.2, filter("bandpass", 5200, 0.8, nodes), filter("highpass", 2500, 0, nodes));
+        lfo(g.gain, 0.24, 0.1, nodes);
+        lfo(g.gain, 0.056, 0.08, nodes);
+      },
+      water(dest, nodes) {
+        noisePath(nodes, dest, 0.5, filter("lowpass", 1700, 0, nodes), filter("highpass", 120, 0, nodes));
+        const spray = noisePath(nodes, dest, 0.1, filter("highpass", 4e3, 0, nodes));
+        lfo(spray.gain, 0.31, 0.04, nodes);
+      },
+      waves(dest, nodes) {
+        const low = noisePath(nodes, dest, 0.3, filter("lowpass", 800, 0, nodes));
+        const foam = noisePath(nodes, dest, 0.09, filter("highpass", 2600, 0, nodes));
+        lfo(low.gain, 0.13, 0.22, nodes);
+        lfo(foam.gain, 0.13, 0.08, nodes);
+      },
+      hum(dest, nodes) {
+        for (const [freq, level] of [[55, 0.1], [110.6, 0.04], [165.2, 0.015]]) {
+          const o = ctx.createOscillator();
+          o.frequency.value = freq;
+          const g = gain(level, nodes);
+          o.connect(g);
+          g.connect(dest);
+          o.start();
+          nodes.push(o);
+          lfo(g.gain, 0.09 + freq / 900, level * 0.4, nodes);
+        }
+      },
+      city(dest, nodes) {
+        const g = noisePath(nodes, dest, 0.7, filter("lowpass", 210, 0, nodes));
+        lfo(g.gain, 0.05, 0.15, nodes);
+      }
+    };
+    function tone(dest, t, { type = "sine", from, to = from, len, peak, attack = 5e-3, pan = 0 }) {
+      const o = ctx.createOscillator();
+      o.type = type;
+      o.frequency.setValueAtTime(from, t);
+      if (to !== from) o.frequency.exponentialRampToValueAtTime(to, t + len);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(1e-4, t);
+      g.gain.linearRampToValueAtTime(peak, t + attack);
+      g.gain.exponentialRampToValueAtTime(1e-4, t + len);
+      o.connect(g);
+      let out = g;
+      if (pan && ctx.createStereoPanner) {
+        out = ctx.createStereoPanner();
+        out.pan.value = pan;
+        g.connect(out);
+      }
+      out.connect(dest);
+      o.start(t);
+      o.stop(t + len + 0.02);
+      o.onended = () => {
+        g.disconnect();
+        out.disconnect();
+      };
+      return o;
+    }
+    function burst(dest, t, len, type, freq, q, shape) {
+      const src = ctx.createBufferSource();
+      src.buffer = noise;
+      src.loop = true;
+      const f = ctx.createBiquadFilter();
+      f.type = type;
+      f.frequency.setValueAtTime(freq, t);
+      f.Q.value = q;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(1e-4, t);
+      shape(g.gain, f);
+      src.connect(f);
+      f.connect(g);
+      g.connect(dest);
+      src.start(t, Math.random() * 2);
+      src.stop(t + len);
+      src.onended = () => {
+        f.disconnect();
+        g.disconnect();
+      };
+    }
+    const calls = {
+      birds(t, dest) {
+        const pan = rand(-0.7, 0.7);
+        const base = rand(2600, 4600);
+        const song = Math.random();
+        if (song < 0.45) {
+          const n = 2 + Math.floor(Math.random() * 4);
+          for (let i = 0; i < n; i++) {
+            tone(dest, t + i * rand(0.1, 0.15), { from: base, to: base * rand(1.2, 1.5), len: 0.07, peak: 0.22, pan });
+          }
+        } else if (song < 0.75) {
+          const n = 7 + Math.floor(Math.random() * 8);
+          for (let i = 0; i < n; i++) {
+            tone(dest, t + i * 0.045, { from: base * 1.1, to: base * 0.9, len: 0.035, peak: 0.16, pan });
+          }
+        } else {
+          tone(dest, t, { from: base * 0.9, to: base * 0.8, len: 0.22, peak: 0.18, attack: 0.03, pan });
+          tone(dest, t + 0.3, { from: base * 0.72, to: base * 0.66, len: 0.3, peak: 0.18, attack: 0.03, pan });
+        }
+        return rand(1.2, 5.5);
+      },
+      crickets(t, dest) {
+        const freq = pick([4300, 4650, 4900]);
+        const pan = rand(-0.8, 0.8);
+        for (let i = 0; i < 3; i++) tone(dest, t + i * 0.05, { from: freq, len: 0.03, peak: 0.2, attack: 4e-3, pan });
+        return rand(0.35, 0.8);
+      },
+      owl(t, dest) {
+        const base = rand(330, 390);
+        const pan = rand(-0.5, 0.5);
+        [0, 0.5, 0.74].forEach((offset, i) => {
+          tone(dest, t + offset, { from: base, to: base * 0.93, len: i === 0 ? 0.36 : 0.22, peak: 0.26, attack: 0.05, pan });
+        });
+        return rand(11, 26);
+      },
+      gulls(t, dest) {
+        const pan = rand(-0.7, 0.7);
+        const n = 2 + Math.floor(Math.random() * 3);
+        for (let i = 0; i < n; i++) {
+          const start = t + i * 0.42;
+          const o = tone(dest, start, { type: "triangle", from: 1500, to: 1150, len: 0.36, peak: 0.2, attack: 0.04, pan });
+          o.frequency.setValueAtTime(1500, start);
+          o.frequency.linearRampToValueAtTime(2050, start + 0.09);
+        }
+        return rand(6, 15);
+      },
+      chimes(t, dest) {
+        const scale = [1047, 1175, 1319, 1568, 1760, 2093];
+        const n = 3 + Math.floor(Math.random() * 4);
+        for (let i = 0; i < n; i++) {
+          const start = t + rand(0, 1.6);
+          const freq = pick(scale);
+          tone(dest, start, { from: freq, len: 1.8, peak: 0.09, attack: 2e-3 });
+          tone(dest, start, { from: freq * 2.76, len: 0.5, peak: 0.025, attack: 2e-3 });
+        }
+        return rand(5, 12);
+      },
+      thunder(t, dest) {
+        const len = rand(2.5, 4.5);
+        burst(dest, t, 0.3, "lowpass", 1400, 0.5, (g) => {
+          g.linearRampToValueAtTime(0.8, t + 0.01);
+          g.exponentialRampToValueAtTime(1e-4, t + 0.28);
+        });
+        burst(dest, t, len, "lowpass", 220, 0.7, (g, f) => {
+          g.linearRampToValueAtTime(1.6, t + 0.12);
+          g.setValueAtTime(1.6, t + 0.3);
+          g.linearRampToValueAtTime(0.6, t + len * 0.35);
+          g.linearRampToValueAtTime(0.9, t + len * 0.5);
+          g.exponentialRampToValueAtTime(1e-4, t + len - 0.05);
+          f.frequency.exponentialRampToValueAtTime(70, t + len);
+        });
+        return rand(5, 12);
+      },
+      // A car passing on the highway
+      traffic(t, dest) {
+        const len = rand(2.2, 3.6);
+        burst(dest, t, len, "bandpass", 260, 0.8, (g, f) => {
+          g.linearRampToValueAtTime(0.55, t + len * 0.5);
+          g.linearRampToValueAtTime(1e-4, t + len - 0.05);
+          f.frequency.linearRampToValueAtTime(620, t + len * 0.5);
+          f.frequency.linearRampToValueAtTime(240, t + len);
+        });
+        return rand(2.5, 7);
+      }
+    };
+    return {
+      bed(name, dest) {
+        const nodes = [];
+        beds[name](dest, nodes);
+        return () => nodes.forEach((n) => {
+          n.stop?.();
+          n.disconnect();
+        });
+      },
+      call(name, t, dest) {
+        return calls[name](t, dest);
+      }
+    };
+  }
+  function createAmbience(settings2) {
+    let ctx = null;
+    let master = null;
+    let sources = null;
+    let timer = null;
+    let wanted = {};
+    const layers = /* @__PURE__ */ new Map();
+    function targetVolume() {
+      if (!settings2.ambience || settings2.background === "off" || document.hidden) return 0;
+      return (settings2.masterVolume ?? 100) / 100 * ((settings2.ambienceVolume ?? 60) / 100) * MASTER_GAIN;
+    }
+    function ensureLayer(name) {
+      if (layers.has(name)) return layers.get(name);
+      const g = ctx.createGain();
+      g.gain.value = 0;
+      g.connect(master);
+      const layer2 = { gain: g, level: 0, idleSince: 0, next: ctx.currentTime + rand(0.3, 2.5) };
+      layer2.stop = BEDS.includes(name) ? sources.bed(name, g) : () => {
+      };
+      layers.set(name, layer2);
+      return layer2;
+    }
+    function apply() {
+      if (!ctx) return;
+      const now = ctx.currentTime;
+      for (const name of AMBIENCE_LAYERS) {
+        const level = wanted[name] || 0;
+        if (level === 0 && !layers.has(name)) continue;
+        const layer2 = ensureLayer(name);
+        if (layer2.level === level) continue;
+        layer2.level = level;
+        layer2.idleSince = level === 0 ? now : 0;
+        layer2.gain.gain.setTargetAtTime(level, now, GLIDE_S / 3);
+      }
+    }
+    function tick() {
+      const now = ctx.currentTime;
+      const vol = targetVolume();
+      if (Math.abs(master.gain.value - vol) > 1e-3) master.gain.setTargetAtTime(vol, now, 0.15);
+      for (const [name, layer2] of layers) {
+        if (layer2.level === 0) {
+          if (now - layer2.idleSince > IDLE_S) {
+            layer2.stop();
+            layer2.gain.disconnect();
+            layers.delete(name);
+          }
+          continue;
+        }
+        if (BEDS.includes(name) || vol === 0) continue;
+        if (layer2.next < now) layer2.next = now + 0.05;
+        while (layer2.next < now + LOOKAHEAD_S2) {
+          layer2.next += sources.call(name, layer2.next, layer2.gain) / Math.max(0.3, layer2.level);
+        }
+      }
+    }
+    return {
+      /** Create the AudioContext. Call from a user gesture (click or key). */
+      unlock() {
+        if (!ctx) {
+          const AudioContext = window.AudioContext || window.webkitAudioContext;
+          ctx = new AudioContext();
+          master = ctx.createGain();
+          master.gain.value = 0;
+          master.connect(ctx.destination);
+          sources = createSources(ctx, createNoiseBuffer2(ctx));
+          timer = setInterval(tick, TICK_MS2);
+        }
+        if (ctx.state === "suspended") ctx.resume();
+        apply();
+      },
+      /** Glide to a scene's layers: `{ rain: 1, birds: 0.2 }`. Unknown names are ignored. */
+      setScene(levels) {
+        wanted = levels || {};
+        apply();
       },
       dispose() {
         if (timer) clearInterval(timer);
@@ -5305,10 +6424,12 @@
   var settingsClose = document.getElementById("settings-close");
   var musicPlayerContainer = document.getElementById("music-player-container");
   var playfield = document.getElementById("playfield");
+  var ambience = createAmbience(settings);
   var background = createBackground(
     document.getElementById("bg-canvas"),
     document.getElementById("bg-layer"),
-    settings
+    settings,
+    (levels) => ambience.setScene(levels)
   );
   background.showMenu();
   var canvases = {
@@ -5334,6 +6455,7 @@
   }
   function unlockAudio() {
     music.unlock();
+    ambience.unlock();
     document.removeEventListener("pointerdown", unlockAudio);
     document.removeEventListener("keydown", unlockAudio);
   }
@@ -5426,6 +6548,8 @@
         { key: "musicVolume", label: "MUSIC", type: "range", describe: describeVolume },
         { key: "sfxMuted", label: "MUTE SFX", type: "toggle" },
         { key: "musicMuted", label: "MUTE MUSIC", type: "toggle" },
+        { key: "ambience", label: "SCENE SOUNDS", type: "toggle" },
+        { key: "ambienceVolume", label: "SCENE SOUND VOLUME", type: "range", describe: describeVolume },
         { key: "soundPack", label: "SOUND PACK", type: "enum", values: ["ulol", "arcade", "bubbly"], describe: describeSoundPack },
         { key: "soundtrack", label: "SOUNDTRACK", type: "enum", values: ["auto", "calm", "competitive", "intense", "off"], describe: describeSoundtrack },
         { key: "crossfadeDuration", label: "CROSSFADE", type: "range", describe: describeCrossfade }

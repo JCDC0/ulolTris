@@ -46,6 +46,7 @@ function house(ctx, x, w, h, wall, wallDark, roof, roofDark, r, windows, chimney
 export default {
     id: 'village',
     name: 'Night Village',
+    ambience: { crickets: 1, owl: 0.4, wind: 0.2 },
     create() {
         const base = layer();
         const b = base.ctx;

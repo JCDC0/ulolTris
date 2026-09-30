@@ -1,7 +1,7 @@
 /**
  * background.js - Runs the pixel art background behind the game.
  *
- * Casual gets six scenes that change with each level (or one fixed scene, from the
+ * Casual gets nine scenes that change with each level (or one fixed scene, from the
  * casualScene setting). 40 Lines always shows Midnight Circuit and Blitz always
  * shows Thunder Peak. The menu cycles through the Casual scenes. Scenes draw at
  * 320 x 180 and are scaled up with crisp pixels to cover the window.
@@ -16,9 +16,12 @@ import ocean from './scenes/ocean.js';
 import neon from './scenes/neon.js';
 import city from './scenes/city.js';
 import storm from './scenes/storm.js';
+import sakura from './scenes/sakura.js';
+import aurora from './scenes/aurora.js';
+import falls from './scenes/falls.js';
 
-const SCENES = { bamboo, wheat, village, castle, ocean, neon, city, storm };
-export const CASUAL_SCENES = ['bamboo', 'wheat', 'village', 'castle', 'ocean', 'neon'];
+export const SCENES = { bamboo, wheat, sakura, village, falls, castle, ocean, aurora, neon, city, storm };
+export const CASUAL_SCENES = ['bamboo', 'wheat', 'sakura', 'village', 'falls', 'castle', 'ocean', 'aurora', 'neon'];
 const MODE_SCENES = { sprint: 'city', blitz: 'storm' };
 const FADE_S = 1.6;
 const FRAME_MS = 1000 / 30;
@@ -32,8 +35,10 @@ export function describeScene(id) {
  * @param {HTMLCanvasElement} canvas
  * @param {HTMLElement} layerEl - wrapper that gets the bg-dim / bg-off classes
  * @param {Object} settings - Settings reference (background, casualScene)
+ * @param {(ambience: Object) => void} [onScene] - called with the new scene's ambience
+ *   levels (layer name to 0..1) whenever the scene changes
  */
-export function createBackground(canvas, layerEl, settings) {
+export function createBackground(canvas, layerEl, settings, onScene) {
     canvas.width = W;
     canvas.height = H;
     const ctx = canvas.getContext('2d');
@@ -69,6 +74,7 @@ export function createBackground(canvas, layerEl, settings) {
         previous = current;
         current = id;
         fadeStart = (performance.now() - start) / 1000;
+        onScene?.(SCENES[id].ambience || {});
     }
 
     function casualScene(level) {

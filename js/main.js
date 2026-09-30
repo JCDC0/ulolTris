@@ -13,6 +13,7 @@ import { createBackground, describeScene, CASUAL_SCENES } from './background.js'
 import { createSoundEngine } from './sound.js';
 import { createMusicPlayer } from './music-player.js';
 import { createMusicEngine } from './music.js';
+import { createAmbience } from './ambience.js';
 import { createMenuSystem } from './menu.js';
 import { createGame } from './game.js';
 
@@ -31,8 +32,10 @@ const settingsClose = document.getElementById('settings-close');
 const musicPlayerContainer = document.getElementById('music-player-container');
 
 const playfield = document.getElementById('playfield');
+const ambience = createAmbience(settings);
 const background = createBackground(
-    document.getElementById('bg-canvas'), document.getElementById('bg-layer'), settings);
+    document.getElementById('bg-canvas'), document.getElementById('bg-layer'), settings,
+    levels => ambience.setScene(levels));
 background.showMenu();
 
 const canvases = {
@@ -68,6 +71,7 @@ function menuTrack() {
 // Browsers only allow audio after a user gesture, so start on the first click or key.
 function unlockAudio() {
     music.unlock();
+    ambience.unlock();
     document.removeEventListener('pointerdown', unlockAudio);
     document.removeEventListener('keydown', unlockAudio);
 }
@@ -179,6 +183,8 @@ function buildSettingsUI() {
             { key: 'musicVolume', label: 'MUSIC', type: 'range', describe: describeVolume },
             { key: 'sfxMuted', label: 'MUTE SFX', type: 'toggle' },
             { key: 'musicMuted', label: 'MUTE MUSIC', type: 'toggle' },
+            { key: 'ambience', label: 'SCENE SOUNDS', type: 'toggle' },
+            { key: 'ambienceVolume', label: 'SCENE SOUND VOLUME', type: 'range', describe: describeVolume },
             { key: 'soundPack', label: 'SOUND PACK', type: 'enum', values: ['ulol', 'arcade', 'bubbly'], describe: describeSoundPack },
             { key: 'soundtrack', label: 'SOUNDTRACK', type: 'enum', values: ['auto', 'calm', 'competitive', 'intense', 'off'], describe: describeSoundtrack },
             { key: 'crossfadeDuration', label: 'CROSSFADE', type: 'range', describe: describeCrossfade },

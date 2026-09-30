@@ -21,10 +21,10 @@ You can also open `index.html` directly after `npm run build`, because the bundl
 `npm test` bundles each test with esbuild for Node and stubs `document`, `window`, and `performance` where needed, so it needs no browser:
 - `handling.test.mjs` drives `js/input.js` frame by frame at 60 Hz: DAS, ARR, DCD, SDF, the two toggles, settings migration.
 - `modes.test.mjs`: when each mode's music turns intense, lines sent and APM, game style delays.
-- `content.test.mjs`: the attack table, and song data (known voices, events inside their bars, note range, the Korobeiniki motif in every track, keys and tempos).
+- `content.test.mjs`: the attack table, song data (known voices, events inside their bars, note range, the Korobeiniki motif in every track, keys and tempos), and scenes (each has a name and known ambience layers; every Casual scene can be picked in settings).
 - `finesse.test.mjs`: every piece spawns just above the field, and the finesse minimums match the standard chart.
 
-Add a check to the matching file when you change that area. Audio output itself is not covered by `npm test`; to hear a track without playing the game, call `renderTrackOffline(name, seconds)` from `js/music.js` in a browser and save the buffer.
+Add a check to the matching file when you change that area. Audio output itself is not covered by `npm test`; to hear a track without playing the game, call `renderTrackOffline(name, seconds)` from `js/music.js` in a browser and save the buffer. `renderAmbienceOffline(levels, seconds)` in `js/ambience.js` does the same for scene sounds.
 
 ## Rules
 
@@ -44,7 +44,7 @@ Every module uses a factory (`createX(...)` returning an object of closures), no
 - **Pure logic** (no DOM): `piece.js` (shapes, SRS kicks, 7-bag, spawn position), `board.js` (collide, merge, line clear, ghost), `scoring.js` (T-spin detection, combo, back-to-back, perfect clear, attack, sound and color mapping), `finesse.js` (fewest inputs per placement).
 - **Modes** (`modes.js`, `timer.js`): 40 Lines (`sprint`), Blitz (2 minutes), Casual (`classic` in code: endless, level-based gravity). To add a mode, add an ID, a `MODE_INFO` entry, and handling in `createModeState`. The menu reads `MODE_INFO`.
 - **Presentation**: `renderer.js` (board, hold, next canvases), `skins.js` (block skins, cached sprites), `particles.js` (particles and screen shake on the board canvas), `bounce.js` (spring on the playfield element), `hud.js` (DOM around the board: clear feed, stats, number under the board, progress meter, finesse), `menu.js` (all menu screens in `#menu-container`), `background.js` plus `scenes/` (pixel art backgrounds).
-- **Audio**: `sound.js` synthesizes all effects with Web Audio (no files), including the `danger` alarm and the `attack` whoosh. Sound packs (`PACKS` in `sound.js`: `arcade` in a Jstris style, `bubbly` in a Puyo Puyo Tetris style, both original synthesis) replace individual events; events a pack leaves out use the default. `music.js` plays the procedural soundtrack from `tracks.js`. `music-player.js` plays user-dropped files through two crossfading `Audio` elements; while it plays, the soundtrack goes silent (`setSuppressor`).
+- **Audio**: `sound.js` synthesizes all effects with Web Audio (no files), including the `danger` alarm and the `attack` whoosh. Sound packs (`PACKS` in `sound.js`: `arcade` in a Jstris style, `bubbly` in a Puyo Puyo Tetris style, both original synthesis) replace individual events; events a pack leaves out use the default. `music.js` plays the procedural soundtrack from `tracks.js`. `music-player.js` plays user-dropped files through two crossfading `Audio` elements; while it plays, the soundtrack goes silent (`setSuppressor`). `ambience.js` synthesizes the scene sounds (see "Scene sounds").
 - The menu opens the settings panel by dispatching a `uloltris-open-settings` DOM event.
 
 ### Board geometry
@@ -83,11 +83,21 @@ Independent off/low/medium/high levels (`effectLevel()` in `settings.js`): `boar
 
 | Scene | Where |
 |---|---|
-| bamboo (rain), wheat (golden hour), village (night), castle (dusk), ocean (day), neon (falling blocks) | Casual only: one per level, cycling, or a fixed one from the `casualScene` setting. The menu cycles through them. |
+| bamboo (path through the rain), wheat (golden hour), sakura (shrine gate, petals), village (night), falls (waterfall), castle (crag above a lake, dusk), ocean (day), aurora (northern lights, cabin), neon (falling blocks) | Casual only: one per level, cycling, or a fixed one from the `casualScene` setting. The menu cycles through them. |
 | city (Midnight Circuit: neon skyline, light streaks on a highway) | 40 Lines |
 | storm (Thunder Peak: snowy peaks, heavy rain, lightning) | Blitz |
 
 The `background` setting is on, dim (darker overlay) or off. Measured cost: under 1.5 ms per scene frame; building a scene takes 3 to 115 ms.
+
+To add a scene: write `scenes/<id>.js` exporting `{ id, name, ambience, create() }`, add it to `SCENES` (and `CASUAL_SCENES` if Casual should use it) in `background.js`, and add the id to `ENUMS.casualScene` in `settings.js`.
+
+Scene notes. Wheat: each stalk is a sprite (bent stem, ear of staggered kernels, awns on the top kernels) drawn once per size at nine lean angles; the wind picks a lean per stalk each frame. Castle: `wall()` and `roundTower()` take a `ground(x)` function and run every column down to the rock, so nothing floats; all left faces are lit by the sun at `SUN`; the lake is a flipped, darkened copy of the finished scene. Bamboo: `pathHalf(y)` is the half width of the path at row y, and `forestLayer` leaves out any stalk that would stand on it.
+
+### Scene sounds
+
+`ambience.js` plays background sounds that match the scene. Everything is synthesized with Web Audio (filtered noise and sine tones); there are no audio files. Each scene lists its layers and levels, for example `ambience: { rain: 1, wind: 0.2, birds: 0.15 }`. Beds are continuous (`rain`, `storm`, `wind`, `wheat`, `water`, `waves`, `hum`, `city`); calls are short sounds at random intervals (`birds`, `crickets`, `owl`, `gulls`, `chimes`, `thunder`, `traffic`). `background.js` reports each scene change through its `onScene` callback, and `main.js` passes it to `ambience.setScene()`. Every layer glides to its new level (about 1 s), so a layer two scenes share keeps playing. Beds are built when first needed and freed 8 s after they fade out.
+
+Settings: `ambience` (SCENE SOUNDS toggle) and `ambienceVolume`, both in the AUDIO tab. Scene sounds also go silent when `background` is off or the tab is hidden. Thunder is not synced to the lightning flashes in the storm scene.
 
 ### Soundtrack
 
