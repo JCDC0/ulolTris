@@ -12,6 +12,7 @@ import {
 } from './settings.js';
 import { describeSkin, SKINS } from './skins.js';
 import { describeScene, CASUAL_SCENES } from './background.js';
+import { TRACK_INFO, TRACK_IDS } from './tracks.js';
 import { describeWeather, VARIANTS } from './scenes/atmosphere.js';
 
 const SOUND_PACK_LABELS = { ulol: 'uloltris', arcade: 'Arcade (Jstris-style)', bubbly: 'Bubbly (PPT-style)' };
@@ -46,7 +47,8 @@ export const SETTINGS_TABS = [
         { key: 'musicMuted', label: 'MUTE MUSIC', type: 'toggle', hint: 'Silence the soundtrack.' },
         { key: 'ambience', label: 'SCENE SOUNDS', type: 'toggle', hint: 'Play the sounds of the scenery: rain, thunder, wind, wheat, water, birds and more.' },
         { key: 'soundPack', label: 'SOUND PACK', type: 'enum', values: ['ulol', 'arcade', 'bubbly'], describe: v => SOUND_PACK_LABELS[v] || v, hint: 'The set of effect sounds. All are synthesized; none are recordings.' },
-        { key: 'soundtrack', label: 'SOUNDTRACK', type: 'enum', values: ['auto', 'calm', 'competitive', 'intense', 'off'], describe: describeSoundtrack, hint: 'Auto plays calm in the menu, Casual and 40 Lines, and intense in Blitz. Or force one track.' },
+        { key: 'soundtrack', label: 'SOUNDTRACK', type: 'enum', values: ['auto', 'casual', 'competitive', 'intense', 'off'], describe: describeSoundtrack, hint: 'Which playlist plays. Auto plays casual in the menu, Casual and 40 Lines, and intense in Blitz.' },
+        { key: 'track', label: 'TRACK', type: 'enum', values: ['auto', ...TRACK_IDS], describe: v => (v === 'auto' ? 'Auto (playlist)' : TRACK_INFO[v].name), hint: 'Loop one track from the soundtrack instead of the playlist. You can also pick one on the MUSIC tab.' },
         { key: 'crossfadeDuration', label: 'PLAYER CROSSFADE', type: 'range', describe: describeCrossfade, hint: 'Fade between songs in the music player that plays your own files.' },
     ] },
     { id: 'visual', label: 'VISUAL', settings: [

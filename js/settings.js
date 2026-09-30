@@ -3,6 +3,8 @@
  * Persists all settings to localStorage.
  */
 
+import { TRACK_IDS } from './tracks.js';
+
 const STORAGE_KEY = 'uloltris-settings';
 const FRAME_MS = 1000 / 60;
 
@@ -32,7 +34,8 @@ export const DEFAULT_SETTINGS = {
     sfxMuted: false,
     musicMuted: false,
     crossfadeDuration: 2,
-    soundtrack: 'auto',        // 'auto', 'calm', 'competitive', 'intense', 'off'
+    soundtrack: 'auto',        // 'auto' (by mode), 'casual', 'competitive', 'intense', 'off'
+    track: 'auto',             // 'auto' (play the playlist) or the id of one track to loop
     ambience: true,            // background sounds that match the scene (rain, birds, wind)
     ambienceVolume: 60,
 
@@ -83,7 +86,8 @@ const ENUMS = {
     background: ['on', 'dim', 'off'],
     casualScene: ['cycle', 'bamboo', 'wheat', 'sakura', 'village', 'falls', 'castle', 'ocean', 'aurora', 'neon'],
     weather: ['default', 'cycle', 'sunny', 'cloudy', 'sunset', 'rain', 'thunder', 'night', 'nightthunder'],
-    soundtrack: ['auto', 'calm', 'competitive', 'intense', 'off'],
+    soundtrack: ['auto', 'casual', 'competitive', 'intense', 'off'],
+    track: ['auto', ...TRACK_IDS],
     gameStyle: ['modern', 'battle'],
     blockSkin: ['ulol', 'classic', 'glossy', 'flat', 'neon'],
     soundPack: ['ulol', 'arcade', 'bubbly'],
@@ -115,6 +119,9 @@ export function normalizeSettings(raw) {
             result[key] = source[key];
         }
     }
+
+    // Saves from before the new soundtrack called the casual playlist "calm"
+    if (source.soundtrack === 'calm') result.soundtrack = 'casual';
 
     // Boolean settings
     if (typeof source.sfxMuted === 'boolean') result.sfxMuted = source.sfxMuted;

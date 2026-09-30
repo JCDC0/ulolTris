@@ -1,4 +1,675 @@
 (() => {
+  // js/tracks.js
+  var PC = { C: 0, "C#": 1, Db: 1, D: 2, "D#": 3, Eb: 3, E: 4, F: 5, "F#": 6, Gb: 6, G: 7, "G#": 8, Ab: 8, A: 9, "A#": 10, Bb: 10, B: 11 };
+  var NAMES = ["C", "Db", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"];
+  var MODES = { minor: [0, 2, 3, 5, 7, 8, 10], major: [0, 2, 4, 5, 7, 9, 11] };
+  var QUALITY = {
+    "": [0, 4, 7],
+    m: [0, 3, 7],
+    "7": [0, 4, 7, 10],
+    maj7: [0, 4, 7, 11],
+    m7: [0, 3, 7, 10],
+    m9: [0, 3, 7, 10, 14],
+    maj9: [0, 4, 7, 11, 14],
+    "13": [0, 4, 7, 10, 14, 21],
+    m7b5: [0, 3, 6, 10],
+    "7b9": [0, 4, 7, 10, 13],
+    "7#9": [0, 4, 7, 10, 15]
+  };
+  var PRIORITY = [1, 3, 4, 0, 2, 5];
+  function midi(name) {
+    const m = /^([A-G][#b]?)(-?\d)$/.exec(name);
+    if (!m) throw new Error(`bad note name: ${name}`);
+    return PC[m[1]] + 12 * (Number(m[2]) + 1);
+  }
+  function chordInfo(name, shift = 0) {
+    const m = /^([A-G][#b]?)(.*)$/.exec(name);
+    const tones = m && QUALITY[m[2]];
+    if (!tones) throw new Error(`unknown chord: ${name}`);
+    const root = (PC[m[1]] + shift + 120) % 12;
+    return { name, root, tones, pcs: tones.map((t) => (root + t) % 12) };
+  }
+  var nearest = (pc, center) => Math.round((center - pc) / 12) * 12 + pc;
+  function voicing(chord, center, count, rootless = false) {
+    const order = PRIORITY.filter((k) => k < chord.tones.length && !(rootless && k === 0));
+    const notes = order.slice(0, count).map((k) => nearest((chord.root + chord.tones[k]) % 12, center));
+    return [...new Set(notes)].sort((a, b) => a - b);
+  }
+  var bassNote = (chord, low) => low + ((chord.root - low) % 12 + 12) % 12;
+  function segments(spec, shift = 0) {
+    const list = Array.isArray(spec) ? spec : [spec];
+    const len = 16 / list.length;
+    return list.map((name, k) => ({ at: k * len, len, chord: chordInfo(name, shift) }));
+  }
+  function parseMelody(text2, shift = 0) {
+    return text2.trim().split("|").map((bar, b) => {
+      let s = 0;
+      const notes = [];
+      for (const token of bar.trim().split(/\s+/)) {
+        const [name, len] = token.split(":");
+        const l = Number(len);
+        if (name !== "r") notes.push({ s, l, n: midi(name) + shift });
+        s += l;
+      }
+      if (s !== 16) throw new Error(`melody bar ${b + 1} adds up to ${s} steps: ${bar.trim()}`);
+      return notes;
+    });
+  }
+  function scalePcs(key, shift = 0) {
+    return MODES[key.mode].map((iv) => (PC[key.root] + shift + iv) % 12);
+  }
+  function thirdBelow(n, scale) {
+    if (!scale.includes(n % 12)) return null;
+    let m = n;
+    for (let steps = 0; steps < 2; ) {
+      m--;
+      if (scale.includes((m % 12 + 12) % 12)) steps++;
+    }
+    return m;
+  }
+  var ev = (s, l, v, n, g) => ({ s, l, v, n, g });
+  var drum = (v, steps, g) => steps.map((s) => ev(s, 1, v, null, g));
+  var steps16 = Array.from({ length: 16 }, (_, i) => i);
+  function lofi() {
+    return ({ segs, i, bar, name, energy }) => {
+      const e = [];
+      for (const seg of segs) {
+        const keys = voicing(seg.chord, 58, 4);
+        const first = Math.min(9, seg.len - 1);
+        keys.forEach((n, k) => e.push(ev(seg.at + (k >= 3 ? 1 : 0), first, "lofikeys", n, 0.17)));
+        if (seg.len === 16) keys.forEach((n, k) => e.push(ev(10 + (k >= 3 ? 1 : 0), 5, "lofikeys", n, 0.1)));
+        const root = bassNote(seg.chord, 33);
+        e.push(ev(seg.at, seg.len === 16 ? 8 : seg.len - 1, "sub", root, 0.5));
+        if (seg.len === 16) e.push(ev(10, 4, "sub", root + (i % 2 ? 7 : 0), 0.38));
+        if (energy > 0.75) for (const n of voicing(seg.chord, 70, 3, true)) e.push(ev(seg.at, seg.len, "warmpad", n, 0.05));
+      }
+      if (name !== "intro") {
+        e.push(...drum("lofikick", i % 2 ? [0, 6, 10] : [0, 7, 10], 0.6));
+        e.push(...drum("softsnare", [4, 12], 0.42));
+        for (let s = 0; s < 16; s += 2) e.push(ev(s, 1, "hatc", null, s % 4 === 0 ? 0.22 : 0.13));
+        if (i % 4 === 3) e.push(ev(15, 1, "hatc", null, 0.15));
+      }
+      for (const s of [1, 5, 9, 13]) if ((bar * 5 + s * 3) % 7 < 2) e.push(ev(s, 1, "tick", null, 0.25));
+      return e;
+    };
+  }
+  function jazz() {
+    let prev = 43;
+    const near = (pc, ref) => {
+      let n = nearest(pc, ref);
+      while (n < 36) n += 12;
+      while (n > 55) n -= 12;
+      return n;
+    };
+    return ({ segs, next, i, bar, name, energy }) => {
+      const e = [];
+      segs.forEach((seg, si) => {
+        const c = seg.chord;
+        const beats = seg.len / 4;
+        const pattern = [c.root, (c.root + c.tones[1]) % 12, (c.root + c.tones[2]) % 12, (c.root + (c.tones[3] ?? c.tones[2])) % 12];
+        const target = (si + 1 < segs.length ? segs[si + 1].chord : next).root;
+        for (let b = 0; b < beats; b++) {
+          let note;
+          if (b === beats - 1) {
+            const up = near((target + 1) % 12, prev), down = near((target + 11) % 12, prev);
+            note = Math.abs(up - prev) <= Math.abs(down - prev) ? up : down;
+          } else if (b === 0) note = near(c.root, prev);
+          else note = near(pattern[(b === 1 ? 1 : 2) + i % 2], prev);
+          prev = note;
+          e.push(ev(seg.at + b * 4, 3, "upright", note, b === 0 ? 0.5 : 0.42));
+        }
+        const shell = voicing(c, 63, 3, true);
+        const hits = seg.len === 16 ? [[[0, 5], [6, 3]], [[0, 3], [6, 2], [12, 3]], [[2, 3], [8, 5]]][bar % 3] : [[0, 3], [6, 2]];
+        for (const n of shell) for (const [s, l] of hits) e.push(ev(seg.at + s, l, "rhodes", n, name === "intro" ? 0.11 : 0.15));
+      });
+      if (name !== "intro") {
+        for (const s of [0, 4, 6, 8, 12, 14]) e.push(ev(s, 2, "ride", null, s % 8 === 0 ? 0.3 : s % 4 === 0 ? 0.26 : 0.18));
+        e.push(...drum("pedal", [4, 12], 0.22));
+        e.push(...drum("softkick", [0, 4, 8, 12], 0.14));
+        e.push(...drum("brushsnare", bar % 2 ? [3, 11] : [7, 15], energy > 0.8 ? 0.16 : 0.11));
+      }
+      return e;
+    };
+  }
+  function bossa() {
+    return ({ segs, name, i }) => {
+      const e = [];
+      for (const seg of segs) {
+        const c = seg.chord;
+        const root = bassNote(c, 36);
+        const bass = seg.len === 16 ? [[0, root], [6, root + 7], [8, root], [14, root + 7]] : [[0, root], [6, root + 7]];
+        for (const [s, n] of bass) e.push(ev(seg.at + s, Math.min(4, seg.len - s), "upright", n, s % 8 === 0 ? 0.45 : 0.36));
+        const chord = voicing(c, 60, 4);
+        const hits = seg.len === 16 ? [3, 6, 10, 13] : [3, 6];
+        for (const s of hits) for (const n of chord) e.push(ev(seg.at + s, 3, "nylon", n, 0.12));
+        if (seg.len === 16 && i % 4 === 0) for (const n of chord) e.push(ev(seg.at, 3, "nylon", n, 0.1));
+      }
+      if (name !== "intro") {
+        e.push(...drum("xstick", [0, 3, 6, 10, 13], 0.16));
+        e.push(...drum("softkick", [0, 6, 8, 14], 0.3));
+        for (const s of steps16) e.push(ev(s, 1, "shaker", null, s % 2 === 0 ? 0.11 : 0.06));
+      }
+      return e;
+    };
+  }
+  function synthwave() {
+    return ({ segs, name, energy, first, last }) => {
+      const e = [];
+      const intro = name === "intro";
+      for (const seg of segs) {
+        const root = bassNote(seg.chord, 33);
+        for (let s = 0; s < seg.len; s += 2) e.push(ev(seg.at + s, 2, "synthbass", root + (s % 8 === 6 ? 12 : 0), 0.36));
+        const tones = voicing(seg.chord, 67, 4);
+        const up = [0, 1, 2, 3, 2, 1];
+        for (let s = 0; s < seg.len; s++) e.push(ev(seg.at + s, 1, "sawpluck", tones[up[s % up.length] % tones.length], intro ? 0.08 : 0.13));
+        for (const n of voicing(seg.chord, 62, 3)) e.push(ev(seg.at, seg.len, "superpad", n, 0.06));
+      }
+      if (!intro) {
+        e.push(...drum("kick", energy > 0.85 ? [0, 4, 8, 12] : [0, 8, 10], 0.8));
+        e.push(...drum("gsnare", [4, 12], 0.5));
+        for (const s of [2, 6, 10, 14]) e.push(ev(s, 1, "hat", null, 0.22));
+        for (const s of [1, 3, 5, 7, 9, 11, 13, 15]) e.push(ev(s, 1, "hat", null, 0.07));
+        if (first) e.push(ev(0, 1, "crash", null, 0.3));
+        if (last) [[12, 52], [13, 50], [14, 48], [15, 45]].forEach(([s, n]) => e.push(ev(s, 1, "tom", n, 0.6)));
+      }
+      return e;
+    };
+  }
+  function house() {
+    return ({ segs, i, name, energy }) => {
+      const e = [];
+      const breakdown = name === "B" && i < 4;
+      const intro = name === "intro";
+      for (const seg of segs) {
+        for (const n of voicing(seg.chord, 64, 4)) e.push(ev(seg.at, seg.len, "superpad", n, 0.07));
+        if (!breakdown && !intro) {
+          const root = bassNote(seg.chord, 31);
+          for (const s of [2, 6, 10, 14]) if (s < seg.len) e.push(ev(seg.at + s, 2, "rollbass", root + (s === 10 ? 12 : 0), 0.34));
+        }
+        if (!breakdown && !intro && energy >= 0.6) {
+          for (const s of [0, 3, 6, 10]) if (s < seg.len) for (const n of voicing(seg.chord, 66, 3)) e.push(ev(seg.at + s, 2, "stab", n, 0.11));
+        }
+        if (energy >= 0.9 && !breakdown) {
+          const tones = voicing(seg.chord, 72, 3);
+          for (let s = 0; s < seg.len; s++) e.push(ev(seg.at + s, 1, "sawpluck", tones[s % tones.length], 0.08));
+        }
+      }
+      if (!breakdown) {
+        e.push(...drum("kick", [0, 4, 8, 12], intro ? 0.6 : 0.75));
+        if (!intro) {
+          e.push(...drum("clap", [4, 12], 0.5));
+          e.push(...drum("openhat", [2, 6, 10, 14], 0.26));
+          e.push(...drum("hatc", [1, 3, 5, 7, 9, 11, 13, 15], 0.09));
+        }
+      } else if (i === 3) {
+        e.push(ev(0, 16, "riser", null, 0.3));
+        for (let s = 8; s < 16; s++) e.push(ev(s, 1, "clap", null, 0.25 + (s - 8) * 0.05));
+      }
+      return e;
+    };
+  }
+  function funk() {
+    return ({ segs, name, last, first }) => {
+      const e = [];
+      for (const seg of segs) {
+        const c = seg.chord;
+        const root = bassNote(c, 33);
+        const seventh = root + (c.tones[3] === 10 ? 10 : 11);
+        const line = [[0, root, 2], [3, root + 12, 1], [5, root, 1], [8, root, 2], [10, root + 7, 1], [11, seventh, 1], [13, root, 1], [14, root + 12, 1]];
+        for (const [s, n, l] of line) if (s < seg.len) e.push(ev(seg.at + s, l, "funkbass", n, s % 8 === 0 ? 0.4 : 0.32));
+        for (const s of [2, 5, 7, 10, 13]) if (s < seg.len) for (const n of voicing(c, 64, 3)) e.push(ev(seg.at + s, 1, "clav", n, 0.1));
+        for (const n of voicing(c, 66, 4)) e.push(ev(seg.at, seg.len, "strings", n, 0.055));
+      }
+      if (name !== "intro") {
+        e.push(...drum("kick", [0, 4, 8, 12], 0.72));
+        e.push(...drum("clap", [4, 12], 0.5));
+        e.push(...drum("openhat", [2, 6, 10, 14], 0.22));
+        e.push(...drum("hatc", [1, 3, 5, 7, 9, 11, 13, 15], 0.09));
+        if (first) e.push(ev(0, 1, "crash", null, 0.25));
+        if (last) e.push(...drum("clap", [12, 13, 14, 15], 0.4));
+      }
+      return e;
+    };
+  }
+  function dnb() {
+    return ({ segs, i, name, first, last }) => {
+      const e = [];
+      const breakdown = name === "B" && i < 4;
+      const intro = name === "intro";
+      for (const seg of segs) {
+        for (const n of voicing(seg.chord, 62, 3)) e.push(ev(seg.at, seg.len, "superpad", n, 0.07));
+        if (!breakdown) {
+          const root = bassNote(seg.chord, 28);
+          e.push(ev(seg.at, seg.len === 16 ? 10 : seg.len, "reese", root, intro ? 0.3 : 0.42));
+          if (seg.len === 16) {
+            e.push(ev(seg.at + 10, 4, "reese", root + 7, 0.36));
+            e.push(ev(seg.at + 14, 2, "reese", root, 0.36));
+          }
+        }
+        if (!breakdown && !intro) {
+          for (const s of [3, 11]) if (s < seg.len) for (const n of voicing(seg.chord, 66, 3)) e.push(ev(seg.at + s, 1, "stab", n, 0.1));
+        }
+      }
+      if (!breakdown && !intro) {
+        e.push(...drum("kick", [0, 10], 0.85));
+        e.push(...drum("dnbsnare", [4, 12], 0.75));
+        if (i % 2) e.push(...drum("dnbsnare", [7, 15], 0.2));
+        for (let s = 0; s < 16; s += 2) e.push(ev(s, 1, "hat", null, 0.16));
+        for (const s of [5, 13]) e.push(ev(s, 1, "hatc", null, 0.08));
+        if (first) e.push(ev(0, 1, "crash", null, 0.32));
+        if (last) for (const s of [10, 11, 12, 13, 14, 15]) e.push(ev(s, 1, "dnbsnare", null, 0.3 + (s - 10) * 0.08));
+      } else if (breakdown && i === 3) {
+        e.push(ev(0, 16, "riser", null, 0.3));
+      }
+      return e;
+    };
+  }
+  function trance() {
+    return ({ segs, i, name, first }) => {
+      const e = [];
+      const breakdown = name === "B" && i < 4;
+      const intro = name === "intro";
+      for (const seg of segs) {
+        for (const n of voicing(seg.chord, 64, 4)) e.push(ev(seg.at, seg.len, "superpad", n, 0.075));
+        if (!breakdown && !intro) {
+          const root = bassNote(seg.chord, 31);
+          for (let s = 0; s < seg.len; s++) if (s % 4 !== 0) e.push(ev(seg.at + s, 1, "rollbass", root + (s % 8 === 6 ? 12 : 0), 0.3));
+          const tones = voicing(seg.chord, 71, 3);
+          const gate = [1, 1, 0, 1, 1, 0, 1, 1];
+          for (let s = 0; s < seg.len; s++) if (gate[s % 8]) e.push(ev(seg.at + s, 1, "sawpluck", tones[s % tones.length], 0.09));
+        }
+      }
+      if (!breakdown) {
+        e.push(...drum("hardkick", [0, 4, 8, 12], intro ? 0.6 : 0.85));
+        if (!intro) {
+          e.push(...drum("clap", [4, 12], 0.55));
+          e.push(...drum("openhat", [2, 6, 10, 14], 0.3));
+          e.push(...drum("hatc", [1, 3, 5, 7, 9, 11, 13, 15], 0.1));
+          if (first) e.push(ev(0, 1, "crash", null, 0.3));
+        }
+      } else if (i === 3) {
+        e.push(ev(0, 16, "riser", null, 0.3));
+        for (let s = 0; s < 16; s += 2) e.push(ev(s, 1, "clap", null, 0.2 + s * 0.03));
+        for (let s = 12; s < 16; s++) e.push(ev(s, 1, "clap", null, 0.5));
+      }
+      return e;
+    };
+  }
+  function bassMusic() {
+    return ({ segs, i, name, first, last }) => {
+      const e = [];
+      const drop = name === "B" || name === "B2";
+      const intro = name === "intro";
+      for (const seg of segs) {
+        for (const n of voicing(seg.chord, 62, 3)) e.push(ev(seg.at, seg.len, "superpad", n, drop ? 0.05 : 0.07));
+        const root = bassNote(seg.chord, 28);
+        if (!intro) e.push(ev(seg.at, seg.len, "sub", root, 0.5));
+        if (drop) {
+          const low = bassNote(seg.chord, 31);
+          const riff = i % 2 ? [[0, 4, low], [6, 2, low + 12], [8, 2, low], [12, 4, low + 7]] : [[0, 6, low], [8, 2, low], [10, 2, low + 12], [12, 4, low]];
+          for (const [s, l, n] of riff) if (s < seg.len) e.push(ev(seg.at + s, l, "wobble", n, 0.34));
+        } else if (!intro) {
+          const tones = voicing(seg.chord, 69, 2);
+          for (const s of [0, 6, 10]) if (s < seg.len) e.push(ev(seg.at + s, 1, "sawpluck", tones[s % tones.length], 0.1));
+        }
+      }
+      if (!intro) {
+        e.push(...drum("hardkick", drop ? [0, 10] : [0], 0.85));
+        e.push(...drum("snare", [8], drop ? 0.8 : 0.6));
+        if (drop) e.push(...drum("clap", [8], 0.55));
+        for (let s = 0; s < 16; s += 2) e.push(ev(s, 1, "hat", null, 0.13));
+        if (first && drop) e.push(ev(0, 1, "crash", null, 0.32));
+        if (last) [[12, 55], [13, 52], [14, 48], [15, 45]].forEach(([s, n]) => e.push(ev(s, 1, "tom", n, 0.6)));
+      }
+      return e;
+    };
+  }
+  var FORM = [
+    { name: "intro", part: "A", bars: 4, energy: 0.3, melody: null },
+    { name: "A", part: "A", bars: 8, energy: 0.6, melody: "A" },
+    { name: "B", part: "B", bars: 8, energy: 0.9, melody: "B" },
+    { name: "A2", part: "A", bars: 8, energy: 1, melody: "A", harmony: true },
+    { name: "B2", part: "B", bars: 8, energy: 0.85, melody: "B", harmony: true }
+  ];
+  var LOOP_START = FORM[0].bars;
+  function compose(spec) {
+    const shift = spec.transpose || 0;
+    const scale = scalePcs(spec.key, shift);
+    const melodies = { A: parseMelody(spec.melody.A, shift), B: parseMelody(spec.melody.B, shift) };
+    const plan = [];
+    for (const sec of FORM) {
+      for (let i = 0; i < sec.bars; i++) plan.push({ sec, i, segs: segments(spec.chords[sec.part][i], shift) });
+    }
+    const groove = spec.groove();
+    return plan.map((p, idx) => {
+      const after = plan[idx + 1] || plan[LOOP_START];
+      const events = groove({
+        segs: p.segs,
+        next: after.segs[0].chord,
+        i: p.i,
+        bar: idx,
+        name: p.sec.name,
+        energy: p.sec.energy,
+        first: p.i === 0,
+        last: p.i === p.sec.bars - 1
+      });
+      if (p.sec.melody) {
+        const notes = melodies[p.sec.melody][p.i];
+        for (const n of notes) events.push(ev(n.s, n.l, spec.voice, n.n, spec.vel));
+        if (p.sec.harmony) {
+          for (const n of notes) {
+            const h = thirdBelow(n.n, scale);
+            if (h !== null) events.push(ev(n.s, n.l, spec.voice, h, spec.vel * 0.5));
+          }
+        }
+      }
+      return events;
+    });
+  }
+  var SPECS = [
+    {
+      id: "rainy-window",
+      name: "Rainy Window",
+      genre: "Lo-fi",
+      category: "casual",
+      bpm: 76,
+      swing: 0.42,
+      delay: 0.22,
+      verb: 0.24,
+      pump: 0,
+      gain: 0.99,
+      blurb: "Dusty keys, a boom-bap beat and a vibraphone, for a grey afternoon.",
+      art: "rain",
+      key: { root: "F", mode: "minor" },
+      voice: "vibes",
+      vel: 0.58,
+      groove: lofi,
+      chords: {
+        A: ["Fm9", "Dbmaj7", "Ebmaj7", "Cm7", "Fm9", "Dbmaj7", "Bbm9", "C7b9"],
+        B: ["Abmaj7", "Ebmaj7", "Dbmaj7", "Bbm9", "Abmaj7", "Ebmaj7", "Gm7b5", "C7b9"]
+      },
+      melody: {
+        A: `C5:3 Eb5:1 F5:4 r:2 Eb5:2 C5:4 | Db5:4 C5:2 Ab4:2 r:2 Bb4:2 C5:4 | Bb4:4 G4:2 Bb4:2 Eb5:6 r:2 | C5:2 Bb4:2 Ab4:2 G4:2 r:4 C5:4 |
+                C5:3 Eb5:1 F5:4 r:2 Ab5:2 G5:4 | F5:4 Eb5:2 C5:2 r:2 Db5:2 C5:4 | Bb4:4 Db5:4 F5:4 Eb5:2 Db5:2 | E5:4 Db5:4 C5:8`,
+        B: `Eb5:4 C5:2 Eb5:2 Ab5:6 r:2 | G5:4 Eb5:2 Bb4:2 r:2 D5:2 Eb5:4 | F5:3 Ab5:1 F5:4 Db5:4 C5:4 | Bb4:2 C5:2 Db5:4 F5:4 Eb5:2 Db5:2 |
+                Eb5:4 C5:2 Eb5:2 Ab5:4 Bb5:2 C6:2 | Bb5:4 G5:2 Eb5:2 G5:4 Bb4:4 | G5:4 F5:2 Db5:2 Bb4:4 G4:4 | E5:2 G5:2 Bb5:4 Ab5:4 G5:4`
+      }
+    },
+    {
+      id: "midnight-blue",
+      name: "Midnight Blue",
+      genre: "Jazz",
+      category: "casual",
+      bpm: 92,
+      swing: 0.58,
+      delay: 0.12,
+      verb: 0.26,
+      pump: 0,
+      gain: 1.19,
+      blurb: "A slow swing: walking bass, brushes and a vibraphone over ii-V-I changes.",
+      art: "moon",
+      key: { root: "F", mode: "major" },
+      voice: "vibes",
+      vel: 0.42,
+      groove: jazz,
+      chords: {
+        A: ["Fmaj9", "Dm9", "Gm9", "C13", "Am7", "D7b9", "Gm7", "C7b9"],
+        B: ["Bbmaj9", "Bbm7", "Am7", "D7#9", "Gm7", "C7", "Fmaj7", ["Gm7", "C7"]]
+      },
+      melody: {
+        A: `A4:4 C5:2 E5:2 G5:6 F5:2 | F5:3 D5:1 A4:4 r:2 C5:2 D5:4 | Bb4:4 D5:2 F5:2 A5:4 G5:4 | E5:4 G5:2 A5:2 G5:4 E5:4 |
+                C5:4 E5:2 G5:2 E5:4 C5:4 | F#4:4 A4:2 C5:2 Eb5:4 D5:4 | D5:4 Bb4:2 G4:2 F5:4 D5:4 | E5:4 G5:2 Bb5:2 G5:4 E5:4`,
+        B: `D5:4 F5:2 A5:2 F5:4 D5:4 | Db5:4 F5:2 Ab5:2 F5:4 Db5:4 | E5:4 G5:2 A5:2 G5:4 E5:4 | F#5:4 A5:2 C6:2 A5:4 F5:4 |
+                D5:4 F5:2 G5:2 F5:4 D5:4 | E5:4 G5:2 Bb5:2 G5:4 E5:4 | A5:6 G5:2 F5:4 C5:4 | Bb4:4 D5:4 E5:4 G5:4`
+      }
+    },
+    {
+      id: "corner-cafe",
+      name: "Corner Cafe",
+      genre: "Cafe bossa",
+      category: "casual",
+      bpm: 112,
+      swing: 0,
+      delay: 0.18,
+      verb: 0.22,
+      pump: 0,
+      gain: 1.08,
+      blurb: "Nylon guitar on a bossa nova clave, a soft bass and a breathy flute.",
+      art: "cup",
+      key: { root: "A", mode: "minor" },
+      voice: "flute",
+      vel: 0.32,
+      groove: bossa,
+      chords: {
+        A: ["Am9", "Dm9", "G13", "Cmaj9", "Fmaj7", "Bm7b5", "E7b9", "Am9"],
+        B: ["Cmaj9", "Am9", "Dm9", "G13", "Em7", "A7b9", "Dm9", "E7b9"]
+      },
+      melody: {
+        A: `E5:4 A5:2 G5:2 E5:4 C5:4 | D5:3 F5:1 A5:4 G5:2 F5:2 E5:4 | B4:4 D5:2 F5:2 E5:4 D5:4 | E5:4 G5:2 B4:2 D5:4 C5:4 |
+                A4:4 C5:2 E5:2 F5:4 A5:4 | B4:4 D5:2 F5:2 A5:4 F5:4 | G#4:4 B4:2 D5:2 F5:4 E5:4 | E5:6 C5:2 A4:8`,
+        B: `G5:4 E5:2 C5:2 E5:4 G5:4 | A5:4 G5:2 E5:2 C5:4 E5:4 | F5:4 A5:2 C6:2 A5:4 F5:4 | D5:4 F5:2 B4:2 D5:4 G4:4 |
+                B4:4 D5:2 E5:2 G5:4 E5:4 | C#5:4 E5:2 G5:2 Bb5:4 A5:4 | F5:4 E5:2 D5:2 C5:4 A4:4 | G#4:4 B4:4 D5:4 E5:4`
+      }
+    },
+    {
+      id: "neon-circuit",
+      name: "Neon Circuit",
+      genre: "Synthwave",
+      category: "competitive",
+      bpm: 118,
+      swing: 0,
+      delay: 0.28,
+      verb: 0.22,
+      pump: 0.3,
+      gain: 0.97,
+      transpose: 5,
+      blurb: "Arpeggios, gated snares and a big lead, written for a night drive.",
+      art: "sun",
+      key: { root: "A", mode: "minor" },
+      voice: "lead",
+      vel: 0.48,
+      groove: synthwave,
+      chords: {
+        A: ["Am", "F", "C", "G", "Am", "F", "Dm", "E"],
+        B: ["F", "G", "Am", "C", "F", "G", "Am", "E"]
+      },
+      melody: {
+        A: `A5:3 G5:1 E5:4 r:2 C5:2 E5:4 | A5:3 F5:1 C5:4 r:2 A4:2 C5:4 | G5:3 E5:1 C5:4 r:2 E5:2 G5:4 | B5:3 G5:1 D5:4 r:2 B4:2 D5:4 |
+                A5:3 G5:1 E5:4 r:2 C6:2 B5:4 | A5:3 F5:1 C5:4 r:2 F5:2 A5:4 | F5:4 A5:4 D6:4 C6:2 A5:2 | B5:4 G#5:4 E5:4 G#5:2 B5:2`,
+        B: `C6:4 A5:4 F5:8 | D6:4 B5:4 G5:8 | E6:4 C6:4 A5:8 | G5:4 E5:4 C5:4 E5:4 |
+                C6:4 A5:4 C6:4 A5:4 | D6:4 B5:4 D6:4 B5:4 | C6:4 E6:4 A5:8 | B5:2 G#5:2 E5:4 G#5:2 B5:2 E6:4`
+      }
+    },
+    {
+      id: "pulse-driver",
+      name: "Pulse Driver",
+      genre: "Melodic house",
+      category: "competitive",
+      bpm: 126,
+      swing: 0,
+      delay: 0.22,
+      verb: 0.18,
+      pump: 0.5,
+      gain: 1.5,
+      blurb: "Four on the floor, off-beat bass and a bright pluck lead, with a breakdown that builds back in.",
+      art: "beam",
+      key: { root: "G", mode: "minor" },
+      voice: "supersaw",
+      vel: 0.32,
+      groove: house,
+      chords: {
+        A: ["Gm", "Eb", "Bb", "F", "Gm", "Eb", "Cm", "D"],
+        B: ["Eb", "Bb", "F", "Gm", "Eb", "Bb", "F", "D"]
+      },
+      melody: {
+        A: `D5:2 G5:2 Bb5:4 A5:2 G5:2 D5:4 | Eb5:2 G5:2 Bb5:4 G5:2 Eb5:2 Bb4:4 | D5:2 F5:2 Bb5:4 A5:2 F5:2 D5:4 | C5:2 F5:2 A5:4 G5:2 F5:2 C5:4 |
+                D5:2 G5:2 Bb5:4 D6:2 C6:2 Bb5:4 | Eb5:2 G5:2 Bb5:4 C6:2 Bb5:2 G5:4 | C5:2 Eb5:2 G5:4 Bb5:2 G5:2 Eb5:4 | F#5:4 A5:4 D6:4 C6:2 A5:2`,
+        B: `G5:4 Bb5:4 Eb6:8 | F5:4 Bb5:4 D6:8 | A5:4 C6:4 F6:8 | Bb5:4 D6:4 G5:8 |
+                G5:4 Bb5:4 Eb6:4 D6:4 | F5:4 Bb5:4 D6:4 C6:4 | A5:4 C6:4 A5:4 F5:4 | F#5:4 A5:4 C6:2 A5:2 F#5:4`
+      }
+    },
+    {
+      id: "night-shift",
+      name: "Night Shift",
+      genre: "Future funk",
+      category: "competitive",
+      bpm: 112,
+      swing: 0,
+      delay: 0.14,
+      verb: 0.15,
+      pump: 0.25,
+      gain: 1.06,
+      blurb: "A slap bass, a choppy clav and strings over a disco beat, after midnight.",
+      art: "disco",
+      key: { root: "B", mode: "minor" },
+      voice: "lead",
+      vel: 0.36,
+      groove: funk,
+      chords: {
+        A: ["Bm9", "Em9", "A13", "Dmaj9", "Gmaj9", "F#m7", "Em9", "F#7b9"],
+        B: ["Gmaj9", "A13", "Bm9", "F#m7", "Gmaj9", "A13", "Dmaj9", "F#7b9"]
+      },
+      melody: {
+        A: `F#5:3 A5:1 B5:4 r:2 A5:2 F#5:4 | G5:3 B5:1 D6:4 r:2 B5:2 G5:4 | E5:3 G5:1 A5:4 r:2 G5:2 E5:4 | F#5:3 A5:1 C#6:4 r:2 A5:2 F#5:4 |
+                D5:3 G5:1 B5:4 r:2 A5:2 G5:4 | C#5:3 E5:1 F#5:4 r:2 E5:2 C#5:4 | G5:4 B5:4 A5:4 F#5:4 | A#5:4 C#6:4 G5:4 F#5:4`,
+        B: `B4:2 D5:2 G5:4 F#5:2 D5:2 B4:4 | C#5:2 E5:2 A5:4 G5:2 E5:2 C#5:4 | D5:2 F#5:2 B5:4 A5:2 F#5:2 D5:4 | C#5:2 E5:2 F#5:4 A5:2 F#5:2 E5:4 |
+                B4:2 D5:2 G5:4 A5:2 B5:2 D6:4 | C#5:2 E5:2 G5:4 A5:2 G5:2 E5:4 | F#5:4 A5:4 C#6:4 A5:4 | A#4:2 C#5:2 F#5:4 G5:2 F#5:2 C#5:4`
+      }
+    },
+    {
+      id: "redline",
+      name: "Redline",
+      genre: "Drum and bass",
+      category: "intense",
+      bpm: 174,
+      swing: 0,
+      delay: 0.1,
+      verb: 0.12,
+      pump: 0.3,
+      gain: 1,
+      blurb: "A two-step break and a growling reese bass, with a breakdown that drops back in.",
+      art: "wave",
+      key: { root: "E", mode: "minor" },
+      voice: "lead",
+      vel: 0.38,
+      groove: dnb,
+      chords: {
+        A: ["Em", "C", "G", "D", "Em", "C", "Am", "B7"],
+        B: ["C", "D", "Em", "G", "C", "D", "Em", "B7"]
+      },
+      melody: {
+        A: `B4:2 E5:2 G5:4 F#5:2 E5:2 B4:4 | C5:2 E5:2 G5:4 E5:2 C5:2 G4:4 | D5:2 G5:2 B5:4 A5:2 G5:2 D5:4 | D5:2 F#5:2 A5:4 F#5:2 D5:2 A4:4 |
+                B4:2 E5:2 G5:4 B5:2 A5:2 G5:4 | C5:2 E5:2 G5:4 C6:2 B5:2 G5:4 | A4:2 C5:2 E5:4 A5:2 G5:2 E5:4 | D#5:4 F#5:4 B5:4 A5:2 F#5:2`,
+        B: `G5:8 E5:8 | A5:8 F#5:8 | B5:8 G5:8 | D6:8 B5:8 |
+                G5:4 E5:4 C5:4 E5:4 | A5:4 F#5:4 D5:4 F#5:4 | G5:4 B5:4 E6:4 B5:4 | D#5:2 F#5:2 B5:4 A5:4 F#5:4`
+      }
+    },
+    {
+      id: "overclock",
+      name: "Overclock",
+      genre: "Hard trance",
+      category: "intense",
+      bpm: 140,
+      swing: 0,
+      delay: 0.16,
+      verb: 0.14,
+      pump: 0.55,
+      gain: 1.18,
+      transpose: 3,
+      blurb: "A hard kick, rolling 16th bass, wide supersaws and a hoover lead that swoops in.",
+      art: "star",
+      key: { root: "A", mode: "minor" },
+      voice: "hoover",
+      vel: 0.4,
+      groove: trance,
+      chords: {
+        A: ["Am", "G", "F", "E", "Am", "G", "F", "E"],
+        B: ["F", "C", "G", "Am", "F", "C", "G", "E"]
+      },
+      melody: {
+        A: `E5:2 A5:2 C6:4 B5:2 A5:2 E5:4 | D5:2 G5:2 B5:4 A5:2 G5:2 D5:4 | C5:2 F5:2 A5:4 G5:2 F5:2 C5:4 | B4:2 E5:2 G#5:4 B5:2 G#5:2 E5:4 |
+                E5:2 A5:2 C6:4 E6:4 D6:4 | D5:2 G5:2 B5:4 D6:4 C6:4 | C5:2 F5:2 A5:4 C6:4 B5:4 | B4:2 E5:2 G#5:4 B5:4 E6:4`,
+        B: `C6:8 A5:8 | E6:8 C6:8 | D6:8 B5:8 | C6:4 B5:4 A5:8 |
+                A5:4 C6:4 F6:8 | G5:4 E6:4 C6:8 | D6:4 B5:4 G5:4 B5:4 | G#5:2 B5:2 E6:4 D6:4 B5:4`
+      }
+    },
+    {
+      id: "static-storm",
+      name: "Static Storm",
+      genre: "Bass music",
+      category: "intense",
+      bpm: 140,
+      swing: 0,
+      delay: 0.14,
+      verb: 0.16,
+      pump: 0.35,
+      gain: 0.95,
+      transpose: 4,
+      blurb: "Half-time drums, a dark verse and a wobble bass drop.",
+      art: "bolt",
+      key: { root: "A", mode: "minor" },
+      voice: "lead",
+      vel: 0.44,
+      groove: bassMusic,
+      chords: {
+        A: ["Am", "Am", "F", "F", "Am", "Am", "G", "E"],
+        B: ["Am", "Am", "Am", "Am", "F", "F", "G", "G"]
+      },
+      melody: {
+        A: `E5:8 r:2 C5:2 E5:4 | A5:6 r:2 G5:4 E5:4 | C5:8 A4:4 C5:4 | F5:8 E5:4 C5:4 |
+                E5:8 r:2 C5:2 E5:4 | A5:6 r:2 B5:4 C6:4 | B5:8 D6:4 B5:4 | G#5:8 B5:4 G#5:4`,
+        B: `A5:2 r:2 A5:2 C6:2 r:2 E6:2 D6:2 C6:2 | A5:2 r:2 A5:2 C6:2 r:2 B5:2 A5:2 G5:2 | A5:2 r:2 A5:2 C6:2 r:2 E6:2 D6:2 C6:2 | E6:4 D6:2 C6:2 B5:4 A5:4 |
+                F5:2 r:2 F5:2 A5:2 r:2 C6:2 B5:2 A5:2 | F5:2 r:2 F5:2 A5:2 r:2 G5:2 F5:2 E5:2 | G5:2 r:2 G5:2 B5:2 r:2 D6:2 C6:2 B5:2 | D6:4 B5:4 G5:4 A5:4`
+      }
+    }
+  ];
+  var TRACK_INFO = Object.fromEntries(SPECS.map((s) => {
+    const shift = s.transpose || 0;
+    return [s.id, {
+      id: s.id,
+      name: s.name,
+      genre: s.genre,
+      category: s.category,
+      bpm: s.bpm,
+      blurb: s.blurb,
+      art: s.art,
+      key: `${NAMES[(PC[s.key.root] + shift) % 12]} ${s.key.mode}`
+    }];
+  }));
+  var TRACK_IDS = SPECS.map((s) => s.id);
+  var CATEGORIES = {
+    casual: { label: "Casual", blurb: "Lo-fi, jazz and cafe music for calm play." },
+    competitive: { label: "Competitive", blurb: "Synthwave, house and funk with some drive." },
+    intense: { label: "Intense", blurb: "Drum and bass, trance and bass music for when it counts." }
+  };
+  for (const id of Object.keys(CATEGORIES)) CATEGORIES[id].tracks = SPECS.filter((s) => s.category === id).map((s) => s.id);
+  var built = /* @__PURE__ */ new Map();
+  function getTrack(id) {
+    if (!built.has(id)) {
+      const spec = SPECS.find((s) => s.id === id);
+      if (!spec) return void 0;
+      built.set(id, {
+        id,
+        bpm: spec.bpm,
+        swing: spec.swing,
+        delay: spec.delay,
+        verb: spec.verb,
+        pump: spec.pump,
+        gain: spec.gain,
+        loopStart: LOOP_START,
+        bars: compose(spec)
+      });
+    }
+    return built.get(id);
+  }
+  function musicPlan(settings2, category) {
+    const choice = settings2.soundtrack || "auto";
+    if (choice === "off") return { off: true };
+    if (settings2.track && settings2.track !== "auto" && TRACK_INFO[settings2.track]) return { track: settings2.track };
+    const list = CATEGORIES[choice === "auto" ? category : choice] || CATEGORIES.casual;
+    return { playlist: list.tracks };
+  }
+
   // js/settings.js
   var STORAGE_KEY = "uloltris-settings";
   var FRAME_MS = 1e3 / 60;
@@ -24,7 +695,9 @@
     musicMuted: false,
     crossfadeDuration: 2,
     soundtrack: "auto",
-    // 'auto', 'calm', 'competitive', 'intense', 'off'
+    // 'auto' (by mode), 'casual', 'competitive', 'intense', 'off'
+    track: "auto",
+    // 'auto' (play the playlist) or the id of one track to loop
     ambience: true,
     // background sounds that match the scene (rain, birds, wind)
     ambienceVolume: 60,
@@ -85,7 +758,8 @@
     background: ["on", "dim", "off"],
     casualScene: ["cycle", "bamboo", "wheat", "sakura", "village", "falls", "castle", "ocean", "aurora", "neon"],
     weather: ["default", "cycle", "sunny", "cloudy", "sunset", "rain", "thunder", "night", "nightthunder"],
-    soundtrack: ["auto", "calm", "competitive", "intense", "off"],
+    soundtrack: ["auto", "casual", "competitive", "intense", "off"],
+    track: ["auto", ...TRACK_IDS],
     gameStyle: ["modern", "battle"],
     blockSkin: ["ulol", "classic", "glossy", "flat", "neon"],
     soundPack: ["ulol", "arcade", "bubbly"],
@@ -108,6 +782,7 @@
         result[key] = source[key];
       }
     }
+    if (source.soundtrack === "calm") result.soundtrack = "casual";
     if (typeof source.sfxMuted === "boolean") result.sfxMuted = source.sfxMuted;
     if (typeof source.musicMuted === "boolean") result.musicMuted = source.musicMuted;
     if (typeof source.ambience === "boolean") result.ambience = source.ambience;
@@ -347,12 +1022,12 @@
     };
   }
   function layer(w = W, h = H) {
-    const canvas = document.createElement("canvas");
-    canvas.width = w;
-    canvas.height = h;
-    const ctx = canvas.getContext("2d");
+    const canvas2 = document.createElement("canvas");
+    canvas2.width = w;
+    canvas2.height = h;
+    const ctx = canvas2.getContext("2d");
     ctx.imageSmoothingEnabled = false;
-    return { canvas, ctx };
+    return { canvas: canvas2, ctx };
   }
   function rect(ctx, x, y, w, h, color) {
     ctx.fillStyle = color;
@@ -369,13 +1044,13 @@
     [15, 7, 13, 5]
   ];
   function ditherGradient(ctx, x, y, w, h, colors) {
-    const bands = colors.length - 1;
+    const bands2 = colors.length - 1;
     const rgb = colors.map(parseColor);
     const img = ctx.createImageData(w, h);
     const d = img.data;
     for (let row = 0; row < h; row++) {
-      const pos = row / Math.max(1, h - 1) * bands;
-      const i = Math.min(bands - 1, Math.floor(pos));
+      const pos = row / Math.max(1, h - 1) * bands2;
+      const i = Math.min(bands2 - 1, Math.floor(pos));
       const frac = pos - i;
       for (let col = 0; col < w; col++) {
         const c = frac > (BAYER[y + row & 3][x + col & 3] + 0.5) / 16 ? rgb[i + 1] : rgb[i];
@@ -707,13 +1382,13 @@
         return d;
       },
       /** Grade a layer's canvas in place and return it. */
-      grade(canvas) {
-        if (!gradeFn) return canvas;
-        const ctx = canvas.getContext("2d");
-        const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      grade(canvas2) {
+        if (!gradeFn) return canvas2;
+        const ctx = canvas2.getContext("2d");
+        const img = ctx.getImageData(0, 0, canvas2.width, canvas2.height);
         env.gradeData(img.data);
         ctx.putImageData(img, 0, 0);
-        return canvas;
+        return canvas2;
       },
       /** A '#rrggbb' color as graded [r, g, b], for things drawn every frame. */
       rgb(hex) {
@@ -960,7 +1635,7 @@
     }
   }
   function forestLayer(env, seed, count, widths, floor, colors, leafColors, leafScale) {
-    const { canvas, ctx } = layer();
+    const { canvas: canvas2, ctx } = layer();
     const r = rng(seed);
     for (let i = 0; i < count; i++) {
       const x = Math.round((i + r() * 0.8) * (W / count));
@@ -974,13 +1649,13 @@
         leafCluster(ctx, r, x + side, y, leafColors[0], leafColors[1], 2 + Math.floor(r() * 3), leafScale);
       }
     }
-    return env.grade(canvas);
+    return env.grade(canvas2);
   }
   function mistLayer(env, y0, y1, scale) {
     const [color, alpha, density] = MIST[env.id];
-    const { canvas, ctx } = layer();
+    const { canvas: canvas2, ctx } = layer();
     hazeBand(ctx, y0, y1, color, alpha * scale, density);
-    return canvas;
+    return canvas2;
   }
   function lantern(ctx, x, base) {
     const stone = "#8a968c", dark = "#4c5850", lit = "#b8c4b8";
@@ -1412,7 +2087,7 @@
     }
     rect(ctx, x, base, 1, 2, color);
   }
-  function house(ctx, x, w, h, wall2, wallDark, roof, roofDark, r, windows, chimneys) {
+  function house2(ctx, x, w, h, wall2, wallDark, roof, roofDark, r, windows, chimneys) {
     const top = GROUND - h;
     rect(ctx, x, top, w, h, wall2);
     rect(ctx, x + w - 2, top, 2, h, wallDark);
@@ -1473,7 +2148,7 @@
         const h = 15 + Math.floor(r() * 10);
         const [wall2, wallDark] = walls[Math.floor(r() * walls.length)];
         const [roof, roofDark] = roofs[Math.floor(r() * roofs.length)];
-        house(b, x, w, h, wall2, wallDark, roof, roofDark, r, windows, chimneys);
+        house2(b, x, w, h, wall2, wallDark, roof, roofDark, r, windows, chimneys);
         x += w + 10 + Math.floor(r() * 16);
       }
       const lamps = [52, 150, 262].map((lx) => ({ x: lx, y: GROUND - 14 }));
@@ -3385,10 +4060,10 @@
   function describeScene(id) {
     return id === "cycle" ? "Cycle by level" : SCENES[id]?.name || id;
   }
-  function createBackground(canvas, layerEl, settings2, hooks = {}) {
-    canvas.width = W;
-    canvas.height = H;
-    const ctx = canvas.getContext("2d");
+  function createBackground(canvas2, layerEl, settings2, hooks = {}) {
+    canvas2.width = W;
+    canvas2.height = H;
+    const ctx = canvas2.getContext("2d");
     ctx.imageSmoothingEnabled = false;
     const fadeCanvas = document.createElement("canvas");
     fadeCanvas.width = W;
@@ -3423,8 +4098,8 @@
     }
     function fit() {
       const scale = Math.max(window.innerWidth / W, window.innerHeight / H);
-      canvas.style.width = `${Math.ceil(W * scale)}px`;
-      canvas.style.height = `${Math.ceil(H * scale)}px`;
+      canvas2.style.width = `${Math.ceil(W * scale)}px`;
+      canvas2.style.height = `${Math.ceil(H * scale)}px`;
     }
     function variantFor(id, step) {
       const pick2 = settings2.weather || "default";
@@ -3546,7 +4221,8 @@
       { key: "musicMuted", label: "MUTE MUSIC", type: "toggle", hint: "Silence the soundtrack." },
       { key: "ambience", label: "SCENE SOUNDS", type: "toggle", hint: "Play the sounds of the scenery: rain, thunder, wind, wheat, water, birds and more." },
       { key: "soundPack", label: "SOUND PACK", type: "enum", values: ["ulol", "arcade", "bubbly"], describe: (v) => SOUND_PACK_LABELS[v] || v, hint: "The set of effect sounds. All are synthesized; none are recordings." },
-      { key: "soundtrack", label: "SOUNDTRACK", type: "enum", values: ["auto", "calm", "competitive", "intense", "off"], describe: describeSoundtrack, hint: "Auto plays calm in the menu, Casual and 40 Lines, and intense in Blitz. Or force one track." },
+      { key: "soundtrack", label: "SOUNDTRACK", type: "enum", values: ["auto", "casual", "competitive", "intense", "off"], describe: describeSoundtrack, hint: "Which playlist plays. Auto plays casual in the menu, Casual and 40 Lines, and intense in Blitz." },
+      { key: "track", label: "TRACK", type: "enum", values: ["auto", ...TRACK_IDS], describe: (v) => v === "auto" ? "Auto (playlist)" : TRACK_INFO[v].name, hint: "Loop one track from the soundtrack instead of the playlist. You can also pick one on the MUSIC tab." },
       { key: "crossfadeDuration", label: "PLAYER CROSSFADE", type: "range", describe: describeCrossfade, hint: "Fade between songs in the music player that plays your own files." }
     ] },
     { id: "visual", label: "VISUAL", settings: [
@@ -4090,6 +4766,438 @@
     };
   }
 
+  // js/audio-tags.js
+  var MAX_HEAD = 12 * 1024 * 1024;
+  var ascii = (b, at2, n) => String.fromCharCode(...b.subarray(at2, at2 + n));
+  var u32 = (b, at2) => (b[at2] << 24 | b[at2 + 1] << 16 | b[at2 + 2] << 8 | b[at2 + 3]) >>> 0;
+  var u32le = (b, at2) => (b[at2] | b[at2 + 1] << 8 | b[at2 + 2] << 16 | b[at2 + 3] << 24) >>> 0;
+  var u24 = (b, at2) => b[at2] << 16 | b[at2 + 1] << 8 | b[at2 + 2];
+  var synchsafe = (b, at2) => (b[at2] & 127) << 21 | (b[at2 + 1] & 127) << 14 | (b[at2 + 2] & 127) << 7 | b[at2 + 3] & 127;
+  function decodeText(bytes, encoding) {
+    let text2;
+    if (encoding === 1 || encoding === 2) {
+      let label = encoding === 2 ? "utf-16be" : "utf-16le";
+      let body = bytes;
+      if (bytes[0] === 255 && bytes[1] === 254) {
+        label = "utf-16le";
+        body = bytes.subarray(2);
+      } else if (bytes[0] === 254 && bytes[1] === 255) {
+        label = "utf-16be";
+        body = bytes.subarray(2);
+      }
+      text2 = new TextDecoder(label).decode(body);
+    } else text2 = new TextDecoder(encoding === 3 ? "utf-8" : "windows-1252").decode(bytes);
+    return text2.replace(/\0+$/, "").trim();
+  }
+  function pastTerminator(bytes, at2, encoding) {
+    if (encoding === 1 || encoding === 2) {
+      for (let i2 = at2; i2 + 1 < bytes.length; i2 += 2) if (bytes[i2] === 0 && bytes[i2 + 1] === 0) return i2 + 2;
+      return bytes.length;
+    }
+    const i = bytes.indexOf(0, at2);
+    return i < 0 ? bytes.length : i + 1;
+  }
+  var IMAGE_TYPES = { PNG: "image/png", JPG: "image/jpeg", JPEG: "image/jpeg" };
+  function readId3(bytes) {
+    if (ascii(bytes, 0, 3) !== "ID3") return null;
+    const version = bytes[3];
+    if (version < 2 || version > 4) return null;
+    let p = 10;
+    const end = Math.min(bytes.length, 10 + synchsafe(bytes, 6));
+    if (bytes[5] & 64 && version >= 3) p += version === 4 ? synchsafe(bytes, p) : u32(bytes, p) + 4;
+    const header = version === 2 ? 6 : 10;
+    const tags = {};
+    let cover = null;
+    while (p + header <= end) {
+      const id = ascii(bytes, p, version === 2 ? 3 : 4);
+      if (!/^[A-Z0-9]+$/.test(id)) break;
+      const length = version === 2 ? u24(bytes, p + 3) : version === 4 ? synchsafe(bytes, p + 4) : u32(bytes, p + 4);
+      const body = bytes.subarray(p + header, Math.min(end, p + header + length));
+      p += header + length;
+      if (id === "TIT2" || id === "TT2") tags.title = decodeText(body.subarray(1), body[0]);
+      else if (id === "TPE1" || id === "TP1") tags.artist = decodeText(body.subarray(1), body[0]);
+      else if (id === "TALB" || id === "TAL") tags.album = decodeText(body.subarray(1), body[0]);
+      else if (id === "APIC" || id === "PIC") {
+        const encoding = body[0];
+        let q = 1;
+        let type;
+        if (id === "PIC") {
+          type = IMAGE_TYPES[ascii(body, 1, 3).toUpperCase()];
+          q = 4;
+        } else {
+          const z = body.indexOf(0, 1);
+          type = ascii(body, 1, Math.max(0, z - 1)) || "image/jpeg";
+          q = z + 1;
+        }
+        const pictureType = body[q];
+        q = pastTerminator(body, q + 1, encoding);
+        if (type && type !== "-->" && (!cover || pictureType === 3) && body.length > q) cover = new Blob([body.slice(q)], { type });
+      }
+    }
+    if (cover) tags.image = cover;
+    return tags;
+  }
+  function readFlac(bytes) {
+    if (ascii(bytes, 0, 4) !== "fLaC") return null;
+    const tags = {};
+    let p = 4;
+    while (p + 4 <= bytes.length) {
+      const last = bytes[p] & 128;
+      const type = bytes[p] & 127;
+      const length = u24(bytes, p + 1);
+      const body = bytes.subarray(p + 4, p + 4 + length);
+      p += 4 + length;
+      if (type === 4) {
+        let q = 4 + u32le(body, 0);
+        const count = u32le(body, q);
+        q += 4;
+        for (let i = 0; i < count && q + 4 <= body.length; i++) {
+          const size = u32le(body, q);
+          const comment = new TextDecoder("utf-8").decode(body.subarray(q + 4, q + 4 + size));
+          q += 4 + size;
+          const eq = comment.indexOf("=");
+          const key = comment.slice(0, eq).toUpperCase();
+          if (key === "TITLE") tags.title = comment.slice(eq + 1);
+          else if (key === "ARTIST") tags.artist = comment.slice(eq + 1);
+          else if (key === "ALBUM") tags.album = comment.slice(eq + 1);
+        }
+      } else if (type === 6) {
+        const pictureType = u32(body, 0);
+        const mimeLength = u32(body, 4);
+        const mime = ascii(body, 8, mimeLength);
+        let q = 8 + mimeLength;
+        q += 4 + u32(body, q);
+        q += 16;
+        const size = u32(body, q);
+        if (!tags.image || pictureType === 3) tags.image = new Blob([body.slice(q + 4, q + 4 + size)], { type: mime || "image/jpeg" });
+      }
+      if (last) break;
+    }
+    return tags;
+  }
+  function atoms(bytes, start, end, visit) {
+    let p = start;
+    while (p + 8 <= end) {
+      let size = u32(bytes, p);
+      const type = ascii(bytes, p + 4, 4);
+      let header = 8;
+      if (size === 1) {
+        size = u32(bytes, p + 12);
+        header = 16;
+      }
+      if (size === 0) size = end - p;
+      if (size < header) break;
+      visit(type, p + header, Math.min(end, p + size));
+      p += size;
+    }
+  }
+  function readMoov(bytes) {
+    const tags = {};
+    const find = (from, to, path, fn) => {
+      atoms(bytes, from, to, (type, a, b) => {
+        if (type !== path[0]) return;
+        if (path.length === 1) fn(a, b);
+        else find(type === "meta" ? a + 4 : a, b, path.slice(1), fn);
+      });
+    };
+    find(8, bytes.length, ["udta", "meta", "ilst"], (from, to) => {
+      atoms(bytes, from, to, (type, a, b) => {
+        atoms(bytes, a, b, (inner, c, d) => {
+          if (inner !== "data") return;
+          const flags = u24(bytes, c + 1);
+          const payload = bytes.subarray(c + 8, d);
+          if (type === "\xA9nam") tags.title = new TextDecoder("utf-8").decode(payload);
+          else if (type === "\xA9ART") tags.artist = new TextDecoder("utf-8").decode(payload);
+          else if (type === "\xA9alb") tags.album = new TextDecoder("utf-8").decode(payload);
+          else if (type === "covr") tags.image = new Blob([payload.slice()], { type: flags === 14 ? "image/png" : "image/jpeg" });
+        });
+      });
+    });
+    return tags;
+  }
+  async function readMp4(file) {
+    let offset = 0;
+    while (offset + 8 <= file.size) {
+      const head = new Uint8Array(await file.slice(offset, offset + 16).arrayBuffer());
+      let size = u32(head, 0);
+      if (size === 1) size = u32(head, 12);
+      if (size < 8) return null;
+      if (ascii(head, 4, 4) === "moov") {
+        if (size > MAX_HEAD) return null;
+        return readMoov(new Uint8Array(await file.slice(offset, offset + size).arrayBuffer()));
+      }
+      offset += size;
+    }
+    return null;
+  }
+  async function readTags(file) {
+    try {
+      const first = new Uint8Array(await file.slice(0, 12).arrayBuffer());
+      if (ascii(first, 0, 3) === "ID3") {
+        const size = synchsafe(first, 6) + 10;
+        return readId3(new Uint8Array(await file.slice(0, Math.min(size, MAX_HEAD)).arrayBuffer())) || {};
+      }
+      if (ascii(first, 0, 4) === "fLaC") return readFlac(new Uint8Array(await file.slice(0, MAX_HEAD).arrayBuffer())) || {};
+      if (ascii(first, 4, 4) === "ftyp") return await readMp4(file) || {};
+    } catch {
+    }
+    return {};
+  }
+
+  // js/cover-art.js
+  var SIZE = 32;
+  function canvas() {
+    const c = document.createElement("canvas");
+    c.width = c.height = SIZE;
+    const g = c.getContext("2d", { willReadFrequently: true });
+    g.imageSmoothingEnabled = false;
+    return { c, g };
+  }
+  var rect2 = (g, x, y, w, h, color, alpha = 1) => {
+    g.globalAlpha = alpha;
+    g.fillStyle = color;
+    g.fillRect(x, y, w, h);
+    g.globalAlpha = 1;
+  };
+  var disc2 = (g, cx, cy, r, color, alpha = 1) => {
+    g.globalAlpha = alpha;
+    g.fillStyle = color;
+    for (let y = -r; y <= r; y++) for (let x = -r; x <= r; x++) if (x * x + y * y <= r * r + r * 0.4) g.fillRect(cx + x, cy + y, 1, 1);
+    g.globalAlpha = 1;
+  };
+  function bands(g, y0, y1, colors) {
+    const h = (y1 - y0) / colors.length;
+    colors.forEach((color, i) => rect2(g, 0, Math.round(y0 + i * h), SIZE, Math.ceil(h) + 1, color));
+  }
+  function seeded(seed) {
+    let s = seed >>> 0 || 1;
+    return () => {
+      s = Math.imul(s, 1664525) + 1013904223 >>> 0;
+      return s / 4294967296;
+    };
+  }
+  function hash(text2) {
+    let h = 2166136261;
+    for (let i = 0; i < text2.length; i++) h = Math.imul(h ^ text2.charCodeAt(i), 16777619);
+    return h >>> 0;
+  }
+  var PAINTERS2 = {
+    // Rainy Window: rain on the glass, a warm lamp beyond it
+    rain(g) {
+      bands(g, 0, SIZE, ["#242d48", "#2d3859", "#37456a", "#42527a", "#4d5f86"]);
+      disc2(g, 9, 24, 6, "#f3b36a", 0.32);
+      disc2(g, 9, 24, 3, "#ffd590", 0.5);
+      const r = seeded(21);
+      for (let i = 0; i < 26; i++) {
+        const x = 2 + Math.floor(r() * 27), y = 2 + Math.floor(r() * 24);
+        rect2(g, x, y, 1, 3, "#b4cdee", 0.75);
+        rect2(g, x - 1, y + 3, 1, 1, "#b4cdee", 0.5);
+      }
+      for (const [x, y, w, h] of [[0, 0, 32, 2], [0, 30, 32, 2], [0, 0, 2, 32], [30, 0, 2, 32], [15, 0, 2, 32], [0, 15, 32, 2]]) rect2(g, x, y, w, h, "#121628");
+    },
+    // Midnight Blue: a big moon over a sleeping town
+    moon(g) {
+      bands(g, 0, SIZE, ["#080c26", "#0e153a", "#16214f", "#202f66", "#2c3f7c"]);
+      const r = seeded(5);
+      for (let i = 0; i < 16; i++) rect2(g, Math.floor(r() * 32), Math.floor(r() * 18), 1, 1, "#dfe6ff", 0.4 + r() * 0.5);
+      disc2(g, 20, 11, 8, "#f6f1da");
+      disc2(g, 17, 9, 2, "#dcd5b8");
+      disc2(g, 23, 14, 2, "#e3dcc0");
+      disc2(g, 22, 8, 1, "#dcd5b8");
+      let x = 0;
+      while (x < SIZE) {
+        const w = 3 + Math.floor(r() * 4), h = 5 + Math.floor(r() * 9);
+        rect2(g, x, SIZE - h, w, h, "#090d20");
+        for (let wy = SIZE - h + 2; wy < SIZE - 1; wy += 3) if (r() < 0.5) rect2(g, x + 1, wy, 1, 1, "#ffd36b");
+        x += w;
+      }
+    },
+    // Corner Cafe: a cup with steam on a warm table
+    cup(g) {
+      bands(g, 0, SIZE, ["#ecd8b4", "#e6cda4", "#dcbe94", "#ceab80", "#bd9870"]);
+      rect2(g, 0, 25, SIZE, 7, "#8a5a36");
+      rect2(g, 0, 25, SIZE, 1, "#a9744a");
+      rect2(g, 6, 24, 20, 3, "#f7efe0");
+      rect2(g, 8, 27, 16, 1, "#c9b89a");
+      rect2(g, 9, 13, 14, 11, "#fffaf0");
+      rect2(g, 9, 13, 2, 11, "#efe4ce");
+      rect2(g, 21, 13, 2, 11, "#e2d5bb");
+      rect2(g, 11, 22, 10, 2, "#e2d5bb");
+      rect2(g, 10, 12, 12, 3, "#4e2c17");
+      rect2(g, 11, 12, 4, 1, "#7a4a2a");
+      rect2(g, 23, 15, 4, 2, "#fffaf0");
+      rect2(g, 26, 16, 2, 4, "#fffaf0");
+      rect2(g, 23, 20, 4, 2, "#fffaf0");
+      for (const [x, dy] of [[12, 0], [16, 2], [20, 1]]) for (let y = 0; y < 9; y++) rect2(g, x + Math.floor((y + dy) / 2) % 2, 10 - y, 1, 1, "#ffffff", 0.55 - y * 0.05);
+    },
+    // Neon Circuit: a striped sun over a glowing grid
+    sun(g) {
+      bands(g, 0, 20, ["#1a0840", "#3a0f66", "#7a1a84", "#c02a8a", "#ff5a6a", "#ffa05a"]);
+      for (let y = 0; y < 13; y++) {
+        const half = Math.floor(Math.sqrt(81 - (y - 12) * (y - 12)));
+        const t = y / 13;
+        if (y > 6 && y % 3 === 0) continue;
+        rect2(g, 16 - half, 7 + y, half * 2, 1, t < 0.5 ? "#ffe066" : t < 0.8 ? "#ff9a5a" : "#ff4f8a");
+      }
+      rect2(g, 0, 20, SIZE, 12, "#14052a");
+      rect2(g, 0, 20, SIZE, 1, "#ff4fb4");
+      for (const y of [22, 25, 29]) rect2(g, 0, y, SIZE, 1, "#ff4fb4", 0.75);
+      for (let i = -6; i <= 6; i++) for (let y = 21; y < 32; y++) rect2(g, Math.round(16 + i * (y - 19) * 0.9), y, 1, 1, "#ff4fb4", 0.6);
+    },
+    // Pulse Driver: light beams over a dark floor
+    beam(g) {
+      bands(g, 0, SIZE, ["#080620", "#0d0a2e", "#14103e", "#1c1650", "#241c60"]);
+      const beams = [[6, "#3ff5d0"], [13, "#b06bff"], [19, "#3ff5d0"], [26, "#ff4fb4"]];
+      for (const [x0, color] of beams) for (let y = 0; y < 24; y++) rect2(g, x0 - Math.floor(y / 6), y, 1 + Math.floor(y / 3), 1, color, 0.22 + y * 8e-3);
+      rect2(g, 0, 24, SIZE, 8, "#0a0820");
+      rect2(g, 0, 24, SIZE, 1, "#ffffff", 0.4);
+      for (const [x0, color] of beams) rect2(g, x0 - 2, 25, 5, 1, color, 0.5);
+      const r = seeded(9);
+      for (let i = 0; i < 10; i++) rect2(g, Math.floor(r() * 32), Math.floor(r() * 20), 1, 1, "#ffffff", 0.4 + r() * 0.4);
+    },
+    // Night Shift: a mirror ball
+    disco(g) {
+      bands(g, 0, SIZE, ["#1a0a3a", "#2a1252", "#3b1a6a", "#4c2282", "#5d2a9a"]);
+      rect2(g, 16, 0, 1, 6, "#c9c9e0");
+      const cx = 16, cy = 16, rad = 10;
+      for (let y = -rad; y <= rad; y++) for (let x = -rad; x <= rad; x++) {
+        if (x * x + y * y > rad * rad) continue;
+        const tile2 = (x >> 1) + (y >> 1) & 1;
+        const light = 1 - (x + y + 2 * rad) / (4 * rad);
+        const v = Math.round(110 + light * 120 + (tile2 ? 18 : -14));
+        rect2(g, cx + x, cy + y, 1, 1, `rgb(${v},${Math.min(255, v + 8)},${Math.min(255, v + 30)})`);
+      }
+      rect2(g, 11, 11, 2, 2, "#ffffff");
+      for (const [x, y] of [[4, 6], [27, 9], [6, 26], [28, 24], [24, 3]]) {
+        rect2(g, x - 1, y, 3, 1, "#ffffff");
+        rect2(g, x, y - 1, 1, 3, "#ffffff");
+      }
+    },
+    // Redline: a pulse trace across a dark screen
+    wave(g) {
+      rect2(g, 0, 0, SIZE, SIZE, "#120707");
+      for (let y = 0; y < SIZE; y += 2) rect2(g, 0, y, SIZE, 1, "#1c0a0a");
+      for (let x = 0; x < SIZE; x++) {
+        const a = Math.sin(x / 2.4) * 8 * (0.35 + 0.65 * Math.sin(x / SIZE * Math.PI));
+        const y = Math.round(16 + a);
+        rect2(g, x, y - 2, 1, 5, "#6a1a10", 0.6);
+        rect2(g, x, y - 1, 1, 3, "#ff5a36");
+        rect2(g, x, y, 1, 1, "#ffd2a0");
+      }
+      rect2(g, 0, 27, SIZE, 1, "#d8281c");
+      rect2(g, 0, 29, 20, 1, "#d8281c", 0.6);
+    },
+    // Overclock: a star burst
+    star(g) {
+      bands(g, 0, SIZE, ["#050a26", "#0a1240", "#101c5c", "#0a1240", "#050a26"]);
+      const cx = 16, cy = 16;
+      for (let k = 0; k < 8; k++) {
+        const angle = k * Math.PI / 4;
+        const len = k % 2 ? 9 : 15;
+        for (let i = 2; i < len; i++) {
+          const x = Math.round(cx + Math.cos(angle) * i), y = Math.round(cy + Math.sin(angle) * i);
+          rect2(g, x, y, 1, 1, i < len * 0.5 ? "#fff6c0" : "#7aa8ff", 1 - i / (len + 4));
+          if (k % 2 === 0 && i < len * 0.6) rect2(g, x + (k === 2 || k === 6 ? 1 : 0), y + (k === 0 || k === 4 ? 1 : 0), 1, 1, "#b8d0ff", 0.5);
+        }
+      }
+      disc2(g, cx, cy, 4, "#7aa8ff", 0.5);
+      disc2(g, cx, cy, 2, "#ffffff");
+      const r = seeded(77);
+      for (let i = 0; i < 12; i++) rect2(g, Math.floor(r() * 32), Math.floor(r() * 32), 1, 1, "#9cb8ff", 0.5);
+    },
+    // Static Storm: a dark cloud and a bolt
+    bolt(g) {
+      bands(g, 0, SIZE, ["#141a28", "#1c2436", "#252f46", "#2f3a54", "#3a4664"]);
+      for (const [x, y, r2] of [[6, 7, 6], [14, 5, 7], [23, 7, 6], [29, 10, 4], [3, 11, 4]]) disc2(g, x, y, r2, "#0d121d");
+      for (const [x, y, r2] of [[9, 9, 4], [18, 8, 5], [26, 9, 4]]) disc2(g, x, y, r2, "#19202f");
+      const rows = [[12, 17, 20], [14, 15, 19], [16, 14, 18], [18, 12, 19], [20, 15, 20], [22, 14, 18], [24, 12, 16], [26, 11, 14], [28, 10, 12]];
+      for (const [y, x0, x1] of rows) {
+        rect2(g, x0 - 1, y, x1 - x0 + 3, 2, "#ffb400", 0.5);
+        rect2(g, x0, y, x1 - x0 + 1, 2, "#ffe066");
+        rect2(g, x0 + 1, y, Math.max(1, x1 - x0 - 1), 2, "#ffffff");
+      }
+      const r = seeded(14);
+      for (let i = 0; i < 14; i++) rect2(g, Math.floor(r() * 32), 14 + Math.floor(r() * 18), 1, 2, "#7d93c4", 0.35);
+    }
+  };
+  var ART_KINDS = Object.keys(PAINTERS2);
+  function coverArt(kind) {
+    const { c, g } = canvas();
+    (PAINTERS2[kind] || PAINTERS2.moon)(g);
+    return c;
+  }
+  function sparkMark() {
+    const { c, g } = canvas();
+    rect2(g, 0, 0, SIZE, SIZE, "#1b1310");
+    rect2(g, 1, 1, SIZE - 2, 1, "#3a2620");
+    rect2(g, 1, SIZE - 2, SIZE - 2, 1, "#3a2620");
+    rect2(g, 1, 1, 1, SIZE - 2, "#3a2620");
+    rect2(g, SIZE - 2, 1, 1, SIZE - 2, "#3a2620");
+    const cx = 16, cy = 16;
+    const color = (i) => i < 3 ? "#ffd2b4" : i < 8 ? "#f08a64" : "#d8603e";
+    for (let i = 2; i < 13; i++) {
+      const w = i < 5 ? 3 : i < 9 ? 2 : 1;
+      const off = Math.floor((w - 1) / 2);
+      rect2(g, cx - off, cy - i, w, 1, color(i));
+      rect2(g, cx - off, cy + i - 1, w, 1, color(i));
+      rect2(g, cx - i, cy - off, 1, w, color(i));
+      rect2(g, cx + i - 1, cy - off, 1, w, color(i));
+    }
+    for (let i = 3; i < 8; i++) for (const [sx, sy] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+      rect2(g, cx + sx * i - (sx > 0 ? 1 : 0), cy + sy * i - (sy > 0 ? 1 : 0), 2, 2, i < 5 ? "#f3a27e" : "#d8603e");
+    }
+    rect2(g, cx - 2, cy - 2, 4, 4, "#fff1e6");
+    return c;
+  }
+  function noteMark() {
+    const { c, g } = canvas();
+    bands(g, 0, SIZE, ["#0f3a44", "#134852", "#18565f", "#1d646c"]);
+    rect2(g, 13, 7, 2, 15, "#eaffff");
+    rect2(g, 14, 6, 10, 3, "#eaffff");
+    rect2(g, 22, 8, 2, 11, "#eaffff");
+    disc2(g, 11, 22, 4, "#eaffff");
+    disc2(g, 20, 20, 4, "#eaffff");
+    return c;
+  }
+  function identicon(seed) {
+    const h = hash(seed);
+    const r = seeded(h);
+    const hue = h % 360;
+    const { c, g } = canvas();
+    rect2(g, 0, 0, SIZE, SIZE, `hsl(${hue} 35% 16%)`);
+    const ink = `hsl(${(hue + 30) % 360} 70% 62%)`;
+    const dim = `hsl(${(hue + 30) % 360} 60% 40%)`;
+    for (let y = 0; y < 5; y++) for (let x = 0; x < 3; x++) {
+      if (r() < 0.5) continue;
+      const color = r() < 0.3 ? dim : ink;
+      rect2(g, 1 + x * 6, 1 + y * 6, 5, 5, color);
+      rect2(g, 1 + (4 - x) * 6, 1 + y * 6, 5, 5, color);
+    }
+    return c;
+  }
+  function pixelate(image, levels = 5) {
+    const { c, g } = canvas();
+    const w = image.width || image.naturalWidth;
+    const h = image.height || image.naturalHeight;
+    const side = Math.min(w, h);
+    g.imageSmoothingEnabled = true;
+    g.imageSmoothingQuality = "high";
+    g.drawImage(image, (w - side) / 2, (h - side) / 2, side, side, 0, 0, SIZE, SIZE);
+    g.imageSmoothingEnabled = false;
+    const pixels = g.getImageData(0, 0, SIZE, SIZE);
+    const d = pixels.data;
+    const bayer = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+    const step = 255 / (levels - 1);
+    for (let y = 0; y < SIZE; y++) for (let x = 0; x < SIZE; x++) {
+      const nudge = (bayer[y % 4 * 4 + x % 4] / 16 - 0.47) * step * 0.7;
+      const i = (y * SIZE + x) * 4;
+      for (let k = 0; k < 3; k++) d[i + k] = Math.max(0, Math.min(255, Math.round((d[i + k] + nudge) / step) * step));
+      d[i + 3] = 255;
+    }
+    g.putImageData(pixels, 0, 0);
+    return c;
+  }
+
   // js/music-player.js
   function createMusicPlayer(containerEl, settingsRef) {
     const state = {
@@ -4102,7 +5210,8 @@
       minimized: true,
       activePlayer: 0,
       // 0 or 1 for crossfading
-      audioContext: null
+      audioContext: null,
+      listeners: /* @__PURE__ */ new Set()
     };
     const elements = {};
     const players = [
@@ -4164,6 +5273,7 @@
       fileInput.multiple = true;
       fileInput.accept = "audio/*";
       fileInput.style.display = "none";
+      elements.fileInput = fileInput;
       browseBtn.addEventListener("click", () => fileInput.click());
       fileInput.addEventListener("change", (e) => handleFiles(e.target.files));
       dropZone.appendChild(browseBtn);
@@ -4271,26 +5381,47 @@
       const s = Math.floor(seconds % 60);
       return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
     }
-    function handleFiles(files) {
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        if (file.type.startsWith("audio/")) {
-          const url = URL.createObjectURL(file);
-          const tempAudio = new Audio(url);
-          tempAudio.addEventListener("loadedmetadata", () => {
-            const track = {
-              name: file.name.replace(/\.[^/.]+$/, ""),
-              file,
-              url,
-              duration: tempAudio.duration
-            };
-            state.playlist.push(track);
-            renderPlaylist();
-            if (state.playlist.length === 1 && !state.isPlaying) {
-              playTrack(0);
-            }
-          });
+    function changed() {
+      state.listeners.forEach((cb) => cb());
+    }
+    function isAudio(file) {
+      return file.type.startsWith("audio/") || /\.(mp3|flac|m4a|mp4|aac|ogg|oga|opus|wav|webm)$/i.test(file.name);
+    }
+    async function handleFiles(files) {
+      for (const file of Array.from(files)) {
+        if (!isAudio(file)) continue;
+        const url = URL.createObjectURL(file);
+        const tags = await readTags(file);
+        const fileName = file.name.replace(/\.[^/.]+$/, "");
+        let cover = null;
+        if (tags.image) {
+          try {
+            cover = pixelate(await createImageBitmap(tags.image));
+          } catch {
+            cover = null;
+          }
         }
+        const duration = await new Promise((resolve) => {
+          const probe = new Audio(url);
+          probe.addEventListener("loadedmetadata", () => resolve(probe.duration));
+          probe.addEventListener("error", () => resolve(null));
+        });
+        if (duration === null) {
+          URL.revokeObjectURL(url);
+          continue;
+        }
+        state.playlist.push({
+          name: tags.title || fileName,
+          artist: tags.artist || "",
+          album: tags.album || "",
+          file,
+          url,
+          duration,
+          cover: cover || identicon(fileName),
+          hasArt: !!cover
+        });
+        renderPlaylist();
+        if (state.playlist.length === 1 && !state.isPlaying) playTrack(0);
       }
     }
     function renderPlaylist() {
@@ -4301,9 +5432,14 @@
         if (index === state.currentIndex) {
           item.classList.add("playing");
         }
+        const thumb = document.createElement("canvas");
+        thumb.width = thumb.height = 32;
+        thumb.className = "mp-thumb";
+        thumb.getContext("2d").drawImage(track.cover, 0, 0);
+        item.appendChild(thumb);
         const nameSpan = document.createElement("span");
         nameSpan.className = "mp-track-name";
-        nameSpan.textContent = `${index + 1}. ${track.name}`;
+        nameSpan.textContent = `${index + 1}. ${track.artist ? track.artist + " - " : ""}${track.name}`;
         nameSpan.style.cursor = "pointer";
         nameSpan.addEventListener("click", () => playTrack(index));
         const durSpan = document.createElement("span");
@@ -4321,6 +5457,7 @@
         item.appendChild(removeBtn);
         elements.playlist.appendChild(item);
       });
+      changed();
     }
     function removeTrack(index) {
       URL.revokeObjectURL(state.playlist[index].url);
@@ -4343,6 +5480,7 @@
       state.currentIndex = -1;
       elements.btnPlay.textContent = "\u25B6";
       elements.nowPlayingText.textContent = "No track selected";
+      changed();
     }
     function playTrack(index, useCrossfade = true) {
       if (state.playlist.length === 0 || index < 0 || index >= state.playlist.length) return;
@@ -4393,6 +5531,7 @@
         state.isPlaying = true;
         elements.btnPlay.textContent = "\u23F8";
       }
+      changed();
     }
     function playNext() {
       if (state.playlist.length === 0) return;
@@ -4435,8 +5574,8 @@
     }
     function seek(e) {
       if (!state.isPlaying || state.currentIndex === -1) return;
-      const rect2 = elements.progressFill.parentElement.getBoundingClientRect();
-      const pos = (e.clientX - rect2.left) / rect2.width;
+      const rect3 = elements.progressFill.parentElement.getBoundingClientRect();
+      const pos = (e.clientX - rect3.left) / rect3.width;
       const p = players[state.activePlayer];
       if (p.audio.duration) {
         p.audio.currentTime = pos * p.audio.duration;
@@ -4502,260 +5641,44 @@
         state.audioContext.close();
       }
     }
+    function clear() {
+      stopPlayback();
+      state.playlist.forEach((track) => URL.revokeObjectURL(track.url));
+      state.playlist = [];
+      renderPlaylist();
+    }
     buildUI();
     return {
       toggle,
       isPlaying: () => state.isPlaying,
-      dispose
+      dispose,
+      /** The playlist: [{ name, artist, album, duration, cover (a 32 x 32 canvas), hasArt }]. */
+      getTracks: () => state.playlist,
+      /** Index of the track that is loaded, or -1. */
+      getIndex: () => state.currentIndex,
+      play: (index) => playTrack(index),
+      /** Pause or resume. */
+      pauseToggle: togglePlay,
+      stop: stopPlayback,
+      next: playNext,
+      prev: playPrev,
+      remove: removeTrack,
+      clear,
+      /** Open the file picker. */
+      openPicker: () => elements.fileInput.click(),
+      addFiles: handleFiles,
+      /** Call `cb()` when the list or what is playing changes. Returns a function that stops it. */
+      onChange(cb) {
+        state.listeners.add(cb);
+        return () => state.listeners.delete(cb);
+      }
     };
   }
 
-  // js/tracks.js
-  var A4 = 69;
-  var B4 = 71;
-  var C5 = 72;
-  var D5 = 74;
-  var E5 = 76;
-  var F5 = 77;
-  var G5 = 79;
-  var A5 = 81;
-  var Gs4 = 68;
-  var Gs5 = 80;
-  var MELODY_A = [
-    [[E5, 0, 4], [B4, 4, 2], [C5, 6, 2], [D5, 8, 4], [C5, 12, 2], [B4, 14, 2]],
-    [[A4, 0, 4], [A4, 4, 2], [C5, 6, 2], [E5, 8, 4], [D5, 12, 2], [C5, 14, 2]],
-    [[B4, 0, 6], [C5, 6, 2], [D5, 8, 4], [E5, 12, 4]],
-    [[C5, 0, 4], [A4, 4, 4], [A4, 8, 4]],
-    [[D5, 2, 4], [F5, 6, 2], [A5, 8, 4], [G5, 12, 2], [F5, 14, 2]],
-    [[E5, 0, 6], [C5, 6, 2], [E5, 8, 4], [D5, 12, 2], [C5, 14, 2]],
-    [[B4, 0, 4], [B4, 4, 2], [C5, 6, 2], [D5, 8, 4], [E5, 12, 4]],
-    [[C5, 0, 4], [A4, 4, 4], [A4, 8, 4]]
-  ];
-  var MELODY_B = [
-    [[E5, 0, 8], [C5, 8, 8]],
-    [[D5, 0, 8], [B4, 8, 8]],
-    [[C5, 0, 8], [A4, 8, 8]],
-    [[Gs4, 0, 8], [B4, 8, 8]],
-    [[E5, 0, 8], [C5, 8, 8]],
-    [[D5, 0, 8], [B4, 8, 8]],
-    [[C5, 0, 4], [E5, 4, 4], [A5, 8, 8]],
-    [[Gs5, 0, 16]]
-  ];
-  var FILL = [[E5, 12, 1], [D5, 13, 1], [C5, 14, 1], [B4, 15, 1]];
-  var CH = {
-    Am: { c: [57, 60, 64], r: 45 },
-    Am7: { c: [57, 60, 64, 67], r: 45 },
-    Am9: { c: [57, 60, 64, 67, 71], r: 45 },
-    Amadd9: { c: [57, 60, 64, 71], r: 45 },
-    F: { c: [53, 57, 60], r: 41 },
-    Fmaj7: { c: [53, 57, 60, 64], r: 41 },
-    E: { c: [52, 56, 59], r: 40 },
-    E7: { c: [52, 56, 59, 62], r: 40 },
-    E7sus4: { c: [52, 57, 59, 62], r: 40 },
-    E7b9: { c: [52, 56, 59, 62, 65], r: 40 },
-    Dm: { c: [50, 53, 57], r: 38 },
-    Dm9: { c: [50, 53, 57, 60, 64], r: 38 },
-    C: { c: [48, 52, 55, 60], r: 36 },
-    Cmaj7: { c: [48, 55, 59, 64], r: 36 },
-    G: { c: [55, 59, 62], r: 43 },
-    G6: { c: [55, 59, 62, 64], r: 43 },
-    Bm7b5: { c: [47, 50, 53, 57], r: 35 }
-  };
-  function harmony(spec) {
-    if (Array.isArray(spec)) {
-      return [{ at: 0, len: 8, ch: CH[spec[0]] }, { at: 8, len: 8, ch: CH[spec[1]] }];
-    }
-    return [{ at: 0, len: 16, ch: CH[spec] }];
-  }
-  var SCALE_PCS = [9, 11, 0, 2, 4, 5, 7];
-  function thirdBelow(midi) {
-    const pc = (midi % 12 + 12) % 12 === 8 ? 7 : (midi % 12 + 12) % 12;
-    const deg = SCALE_PCS.indexOf(pc);
-    const target = SCALE_PCS[(deg + 5) % 7];
-    let n = midi - 1;
-    while ((n % 12 + 12) % 12 !== target) n--;
-    return n;
-  }
-  function melodyEvents(notes, voice, vel, shift = 0) {
-    return notes.map(([n, s, l]) => ({ s, l, v: voice, n: n + shift, g: vel }));
-  }
-  function drum(voice, steps, vel) {
-    return steps.map((s) => ({ s, l: 1, v: voice, n: null, g: vel }));
-  }
-  function transposeBar(events, semitones) {
-    return events.map((e) => e.n === null ? e : { ...e, n: e.n + semitones });
-  }
-  var CALM_A = ["Am9", "Fmaj7", ["E7sus4", "E7"], "Am7", "Dm9", "Cmaj7", ["Bm7b5", "E7"], "Amadd9"];
-  var CALM_B = ["Am9", "G6", "Fmaj7", "E7", "Am9", "G6", "Fmaj7", "E7b9"];
-  function calmBacking(spec, withDrums) {
-    const events = [];
-    for (const seg of harmony(spec)) {
-      for (const n of seg.ch.c) {
-        events.push({ s: seg.at, l: seg.len === 16 ? 10 : seg.len, v: "epiano", n, g: 0.2 });
-        if (seg.len === 16) events.push({ s: 10, l: 6, v: "epiano", n, g: 0.12 });
-        events.push({ s: seg.at, l: seg.len, v: "pad", n: n + 12, g: 0.07 });
-      }
-      events.push({ s: seg.at, l: seg.len === 16 ? 8 : seg.len, v: "softbass", n: seg.ch.r, g: 0.38 });
-      if (seg.len === 16) events.push({ s: 8, l: 8, v: "softbass", n: seg.ch.r + 7, g: 0.3 });
-    }
-    if (withDrums) {
-      events.push(...drum("lofikick", [0, 10], 0.6));
-      events.push(...drum("rim", [8], 0.25));
-      events.push(...drum("brush", [2, 6, 10, 14], 0.12));
-    }
-    return events;
-  }
-  function buildCalm() {
-    const bars = [];
-    bars.push(calmBacking("Am9", false), calmBacking("Fmaj7", false));
-    for (let i = 0; i < 8; i++) {
-      bars.push([...calmBacking(CALM_A[i], true), ...melodyEvents(MELODY_A[i], "bell", 0.7)]);
-    }
-    for (let i = 0; i < 8; i++) {
-      const shift = i >= 4 ? 12 : 0;
-      const mel = melodyEvents(MELODY_A[i], "bell", i >= 4 ? 0.55 : 0.7, shift);
-      if (i === 3 || i === 7) mel.push(...melodyEvents(FILL, "bell", 0.4, shift));
-      bars.push([...calmBacking(CALM_A[i], true), ...mel]);
-    }
-    for (let i = 0; i < 8; i++) {
-      const arp = harmony(CALM_B[i]).flatMap((seg) => [0, 2, 4, 6].filter((s) => s < seg.len).map((s, k) => ({
-        s: seg.at + s,
-        l: 2,
-        v: "epiano",
-        n: seg.ch.c[k % seg.ch.c.length] + 12,
-        g: 0.14
-      })));
-      bars.push([...calmBacking(CALM_B[i], true), ...arp, ...melodyEvents(MELODY_B[i], "bell", 0.65)]);
-    }
-    for (let i = 0; i < 8; i++) {
-      const harm = MELODY_A[i].map(([n, s, l]) => [thirdBelow(n), s, l]);
-      bars.push([
-        ...calmBacking(CALM_A[i], true),
-        ...melodyEvents(MELODY_A[i], "bell", 0.65),
-        ...melodyEvents(harm, "epiano", 0.16, 12)
-      ]);
-    }
-    return bars.map((b) => transposeBar(b, 3));
-  }
-  var COMP_A = ["Am", "F", "E", "Am", "Dm", "C", ["G", "E"], "Am"];
-  var COMP_B = ["F", "G", "Am", "E", "F", "G", "Am", "E"];
-  function compBacking(spec, { fill = false, drums = true } = {}) {
-    const events = [];
-    for (const seg of harmony(spec)) {
-      for (let s = 0; s < seg.len; s += 2) {
-        events.push({ s: seg.at + s, l: 2, v: "bass", n: seg.ch.r + (s % 4 === 2 ? 12 : 0), g: 0.36 });
-      }
-      for (let s = 0; s < seg.len; s++) {
-        const tones = seg.ch.c;
-        events.push({ s: seg.at + s, l: 1, v: "pluck", n: tones[s % tones.length] + 12, g: 0.16 });
-      }
-      for (const n of seg.ch.c) events.push({ s: seg.at, l: seg.len, v: "pad", n, g: 0.06 });
-    }
-    if (drums) {
-      events.push(...drum("kick", [0, 4, 8, 12], 0.8));
-      events.push(...drum("snare", fill ? [4, 12, 13, 14, 15] : [4, 12], 0.55));
-      events.push(...drum("hat", [2, 6, 10, 14], 0.3));
-      events.push(...drum("hat", [1, 3, 5, 7, 9, 11, 13, 15], 0.1));
-    }
-    return events;
-  }
-  function buildCompetitive() {
-    const bars = [];
-    bars.push(compBacking("Am"), compBacking("F", { fill: true }));
-    for (let i = 0; i < 8; i++) {
-      bars.push([...compBacking(COMP_A[i], { fill: i === 7 }), ...melodyEvents(MELODY_A[i], "lead", 0.46)]);
-    }
-    for (let i = 0; i < 8; i++) {
-      const harm = MELODY_A[i].map(([n, s, l]) => [thirdBelow(n), s, l]);
-      bars.push([
-        ...compBacking(COMP_A[i], { fill: i === 7 }),
-        ...melodyEvents(MELODY_A[i], "lead", 0.4, 12),
-        ...melodyEvents(harm, "lead", 0.16, 12)
-      ]);
-    }
-    for (let i = 0; i < 8; i++) {
-      bars.push([...compBacking(COMP_B[i], { fill: i === 7 }), ...melodyEvents(MELODY_B[i], "lead", 0.44)]);
-    }
-    for (let i = 0; i < 8; i++) {
-      const mel = melodyEvents(MELODY_A[i], "lead", 0.46);
-      if (i === 3) mel.push(...melodyEvents(FILL, "lead", 0.24));
-      bars.push([...compBacking(COMP_A[i], { fill: i === 7 }), ...mel]);
-    }
-    return bars.map((b) => transposeBar(b, 5));
-  }
-  var INT_A = ["Am", "Am", "E", "Am", "Dm", "Am", "E", "Am"];
-  var INT_B = ["Am", "E", "Am", "E", "F", "G", "Am", "E"];
-  function intenseBacking(spec, { crash = false, fill = false } = {}) {
-    const events = [];
-    for (const seg of harmony(spec)) {
-      for (let s = 0; s < seg.len; s++) {
-        const up = s % 8 === 6;
-        events.push({ s: seg.at + s, l: 1, v: "bass", n: seg.ch.r + (up ? 12 : 0), g: s % 4 === 0 ? 0.4 : 0.26 });
-      }
-      for (const s of [0, 3, 6].filter((x) => x < seg.len)) {
-        for (const n of seg.ch.c) events.push({ s: seg.at + s, l: 1, v: "stab", n: n + 12, g: 0.13 });
-      }
-      for (const n of seg.ch.c) events.push({ s: seg.at, l: seg.len, v: "pad", n: n + 12, g: 0.05 });
-    }
-    events.push(...drum("kick", [0, 4, 8, 10, 12], 0.85));
-    events.push(...drum("snare", fill ? [4, 10, 11, 12, 13, 14, 15] : [4, 12], 0.6));
-    events.push(...drum("hat", [...Array(16).keys()], 0.14));
-    if (crash) events.push(...drum("crash", [0], 0.35));
-    return events;
-  }
-  function buildIntense() {
-    const bars = [];
-    for (let i = 0; i < 8; i++) {
-      bars.push([
-        ...intenseBacking(INT_A[i], { crash: i === 0, fill: i === 7 }),
-        ...melodyEvents(MELODY_A[i], "lead", 0.46, -12),
-        ...melodyEvents(MELODY_A[i], "lead", 0.12)
-      ]);
-    }
-    for (let i = 0; i < 8; i++) {
-      const harm = MELODY_A[i].map(([n, s, l]) => [thirdBelow(n), s, l]);
-      bars.push([
-        ...intenseBacking(INT_A[i], { crash: i === 0, fill: i === 7 }),
-        ...melodyEvents(MELODY_A[i], "lead", 0.42),
-        ...melodyEvents(harm, "lead", 0.18)
-      ]);
-    }
-    for (let i = 0; i < 8; i++) {
-      const chopped = MELODY_B[i].flatMap(([n, s, l]) => {
-        const out = [];
-        for (let k = 0; k < l; k += 2) out.push([n, s + k, 2]);
-        return out;
-      });
-      bars.push([
-        ...intenseBacking(INT_B[i], { crash: i === 0, fill: i === 7 }),
-        ...melodyEvents(chopped, "lead", 0.4, -12),
-        ...melodyEvents(chopped, "lead", 0.1)
-      ]);
-    }
-    return bars.map((b) => transposeBar(b, 7));
-  }
-  var TRACKS = {
-    calm: { bpm: 88, swing: 0.35, delay: 0.3, loopStart: 2, bars: buildCalm() },
-    competitive: { bpm: 150, swing: 0, delay: 0.12, loopStart: 2, bars: buildCompetitive() },
-    intense: { bpm: 176, swing: 0, delay: 0.08, loopStart: 0, bars: buildIntense() }
-  };
-  var TRACK_NAMES = Object.keys(TRACKS);
-
-  // js/music.js
-  var TICK_MS = 25;
-  var LOOKAHEAD_S = 0.2;
-  var HANDOFF_S = 0.12;
-  var TRACK_GAIN = 0.3;
-  function midiToFreq(midi) {
-    return 440 * Math.pow(2, (midi - 69) / 12);
-  }
-  function createNoiseBuffer(ctx) {
-    const noise = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
-    const data = noise.getChannelData(0);
-    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
-    return noise;
-  }
+  // js/voices.js
+  var KICKS = /* @__PURE__ */ new Set(["lofikick", "softkick", "kick", "hardkick"]);
   function createVoices(ctx, noise) {
+    const ksCache = /* @__PURE__ */ new Map();
     function env(param, t, peak, attack, hold, release) {
       param.setValueAtTime(1e-4, t);
       param.linearRampToValueAtTime(peak, t + attack);
@@ -4763,12 +5686,18 @@
       param.exponentialRampToValueAtTime(1e-4, t + attack + hold + release);
       return attack + hold + release;
     }
-    function osc(type, freq, t, end, dest, detune = 0) {
+    function osc(type, freq, t, end, dest, detune = 0, level = 1) {
       const o = ctx.createOscillator();
       o.type = type;
       o.frequency.setValueAtTime(freq, t);
       o.detune.value = detune;
-      o.connect(dest);
+      if (level === 1) o.connect(dest);
+      else {
+        const g = ctx.createGain();
+        g.gain.value = level;
+        o.connect(g);
+        g.connect(dest);
+      }
       o.start(t);
       o.stop(end);
       return o;
@@ -4783,102 +5712,217 @@
         };
       } };
     }
-    function noiseBurst(t, dur, vel, dest, filterType, freq, q = 1) {
-      const src = ctx.createBufferSource();
-      src.buffer = noise;
+    function biquad(type, freq, q, dest) {
       const f = ctx.createBiquadFilter();
-      f.type = filterType;
+      f.type = type;
       f.frequency.value = freq;
       f.Q.value = q;
-      const { g, done } = voiceGain(dest, () => f.disconnect());
-      env(g.gain, t, vel, 1e-3, 0, dur);
+      f.connect(dest);
+      return f;
+    }
+    function burst(t, dur, vel, dests, type, freq, q = 1, attack = 1e-3) {
+      const src = ctx.createBufferSource();
+      src.buffer = noise;
+      src.loop = true;
+      const f = ctx.createBiquadFilter();
+      f.type = type;
+      f.frequency.value = freq;
+      f.Q.value = q;
+      const { g, done } = voiceGain(dests[0], () => f.disconnect());
+      for (const d of dests.slice(1)) g.connect(d);
+      env(g.gain, t, vel, attack, 0, dur);
       src.connect(f);
       f.connect(g);
-      src.start(t);
-      src.stop(t + dur + 0.02);
+      src.start(t, Math.random() * 0.5);
+      src.stop(t + attack + dur + 0.02);
       done(src);
     }
+    function fm(freq, ratio, from, to, over, t, end, dest, detune = 0) {
+      const car = osc("sine", freq, t, end, dest, detune);
+      const mod = ctx.createOscillator();
+      mod.frequency.value = freq * ratio;
+      const mg = ctx.createGain();
+      mg.gain.setValueAtTime(freq * from, t);
+      mg.gain.exponentialRampToValueAtTime(Math.max(0.01, freq * to), t + over);
+      mod.connect(mg);
+      mg.connect(car.frequency);
+      mod.start(t);
+      mod.stop(end);
+      return car;
+    }
+    function string(freq) {
+      const key = Math.round(freq * 2) / 2;
+      if (ksCache.has(key)) return ksCache.get(key);
+      const sr = ctx.sampleRate;
+      const period = Math.max(2, Math.round(sr / key));
+      const len = Math.floor(sr * 1.6);
+      const buffer = ctx.createBuffer(1, len, sr);
+      const out = buffer.getChannelData(0);
+      const line = new Float32Array(period);
+      let seed = 9301 + Math.round(key * 7);
+      for (let i = 0; i < period; i++) {
+        seed = seed * 1664525 + 1013904223 >>> 0;
+        line[i] = seed / 4294967296 * 2 - 1;
+      }
+      for (let i = 1; i < period; i++) line[i] = 0.55 * line[i] + 0.45 * line[i - 1];
+      let p = 0;
+      for (let i = 0; i < len; i++) {
+        const next = (p + 1) % period;
+        out[i] = line[p];
+        line[p] = (line[p] + line[next]) * 0.4985;
+        p = next;
+      }
+      const entry = { buffer, rate: key / (sr / period) };
+      ksCache.set(key, entry);
+      return entry;
+    }
+    function drive(amount) {
+      const shaper = ctx.createWaveShaper();
+      const curve = new Float32Array(1024);
+      for (let i = 0; i < curve.length; i++) curve[i] = Math.tanh((i / 511.5 - 1) * amount);
+      shaper.curve = curve;
+      return shaper;
+    }
+    function padNote(type, detunes, cutoff, attack, release, t, freq, dur, vel, bus) {
+      const f = biquad("lowpass", cutoff, 0.5, bus.pad);
+      f.connect(bus.verb);
+      const { g, done } = voiceGain(f, () => f.disconnect());
+      const len = env(g.gain, t, vel, attack, Math.max(0, dur - attack), release);
+      let last;
+      for (const d of detunes) last = osc(type, freq, t, t + len, g, d, 1 / Math.sqrt(detunes.length));
+      done(last);
+    }
     return {
-      /** FM electric piano: sine carrier, sine modulator at 1:1 with a decaying index. */
-      epiano(t, freq, dur, vel, bus) {
-        const { g, done } = voiceGain(bus.dry);
-        const len = env(g.gain, t, vel, 5e-3, Math.max(0, dur - 0.05), 0.6);
-        const mod = ctx.createOscillator();
-        const modGain = ctx.createGain();
-        mod.frequency.value = freq;
-        modGain.gain.setValueAtTime(freq * 1.2, t);
-        modGain.gain.exponentialRampToValueAtTime(freq * 0.1, t + 0.4);
-        mod.connect(modGain);
-        const car = osc("sine", freq, t, t + len, g);
-        modGain.connect(car.frequency);
-        mod.start(t);
-        mod.stop(t + len);
-        done(car);
-      },
-      /** Bell: FM at 1:3.5 for a glassy tone, with a delay send. */
-      bell(t, freq, dur, vel, bus) {
-        const { g, done } = voiceGain(bus.dry);
-        g.connect(bus.send);
-        const len = env(g.gain, t, vel, 3e-3, Math.min(dur, 0.1), 0.9 + dur * 0.5);
-        const mod = ctx.createOscillator();
-        const modGain = ctx.createGain();
-        mod.frequency.value = freq * 3.5;
-        modGain.gain.setValueAtTime(freq * 0.8, t);
-        modGain.gain.exponentialRampToValueAtTime(freq * 0.05, t + 0.8);
-        mod.connect(modGain);
-        const car = osc("sine", freq, t, t + len, g);
-        modGain.connect(car.frequency);
-        mod.start(t);
-        mod.stop(t + len);
-        done(car);
-      },
-      /** Detuned saws through a slow lowpass. */
-      pad(t, freq, dur, vel, bus) {
-        const f = ctx.createBiquadFilter();
-        f.type = "lowpass";
-        f.frequency.value = 1400;
-        f.connect(bus.dry);
+      // --- Keys and mallets ---
+      /** Dusty electric piano: two slightly detuned FM pairs through a low filter. */
+      lofikeys(t, freq, dur, vel, bus) {
+        const f = biquad("lowpass", 1700, 0.6, bus.dry);
+        f.connect(bus.verb);
         const { g, done } = voiceGain(f, () => f.disconnect());
-        const len = env(g.gain, t, vel, 0.25, Math.max(0, dur - 0.25), 0.5);
-        osc("sawtooth", freq, t, t + len, g, -8);
-        done(osc("sawtooth", freq, t, t + len, g, 8));
+        const len = env(g.gain, t, vel, 6e-3, Math.max(0, dur - 0.1), 0.55);
+        fm(freq, 1, 1, 0.1, 0.5, t, t + len, g, -7);
+        done(fm(freq, 1, 0.8, 0.1, 0.5, t, t + len, g, 7));
       },
-      softbass(t, freq, dur, vel, bus) {
-        const { g, done } = voiceGain(bus.dry);
-        const len = env(g.gain, t, vel, 0.01, Math.max(0, dur - 0.1), 0.25);
-        osc("sine", freq, t, t + len, g);
-        done(osc("triangle", freq * 2, t, t + len, g));
-      },
-      bass(t, freq, dur, vel, bus) {
-        const f = ctx.createBiquadFilter();
-        f.type = "lowpass";
-        f.frequency.setValueAtTime(1800, t);
-        f.frequency.exponentialRampToValueAtTime(300, t + 0.12);
-        f.connect(bus.dry);
+      /** Electric piano with a tine: FM with a bright start that settles, and a small knock. */
+      rhodes(t, freq, dur, vel, bus) {
+        const f = biquad("lowpass", 3400, 0.5, bus.dry);
+        f.connect(bus.verb);
         const { g, done } = voiceGain(f, () => f.disconnect());
-        const len = env(g.gain, t, vel, 4e-3, Math.max(0, dur * 0.7), 0.06);
-        osc("sine", freq, t, t + len, g);
-        done(osc("square", freq, t, t + len, g));
+        const len = env(g.gain, t, vel, 4e-3, Math.max(0, dur - 0.05), 0.6);
+        done(fm(freq, 1, 1.5, 0.14, 0.7, t, t + len, g));
+        burst(t, 0.03, vel * 0.25, [f], "bandpass", Math.min(9e3, freq * 6), 3);
       },
-      pluck(t, freq, dur, vel, bus) {
+      /** Vibraphone: a sine with a short bright overtone and a slow tremolo, ringing on. */
+      vibes(t, freq, dur, vel, bus) {
         const { g, done } = voiceGain(bus.dry);
-        g.connect(bus.send);
-        const len = env(g.gain, t, vel, 2e-3, 0, 0.12);
-        done(osc("square", freq, t, t + len, g));
+        g.connect(bus.verb);
+        const len = env(g.gain, t, vel, 3e-3, Math.min(dur, 0.25), 0.9 + dur * 0.35);
+        const tremolo = ctx.createOscillator();
+        const depth = ctx.createGain();
+        tremolo.frequency.value = 5.2;
+        depth.gain.value = vel * 0.22;
+        tremolo.connect(depth);
+        depth.connect(g.gain);
+        tremolo.start(t);
+        tremolo.stop(t + len);
+        const top = ctx.createGain();
+        top.gain.setValueAtTime(0.28, t);
+        top.gain.exponentialRampToValueAtTime(1e-3, t + 0.4);
+        top.connect(g);
+        osc("sine", freq * 3.98, t, t + len, top);
+        done(osc("sine", freq, t, t + len, g));
       },
+      /** Flute: a sine and a soft triangle with a little breath and a vibrato that arrives late. */
+      flute(t, freq, dur, vel, bus) {
+        const f = biquad("lowpass", 5200, 0.5, bus.dry);
+        f.connect(bus.verb);
+        f.connect(bus.send);
+        const { g, done } = voiceGain(f, () => f.disconnect());
+        const len = env(g.gain, t, vel, 0.05, Math.max(0, dur - 0.08), 0.18);
+        const vib = ctx.createOscillator();
+        const vibDepth = ctx.createGain();
+        vib.frequency.value = 5.3;
+        vibDepth.gain.setValueAtTime(0, t);
+        vibDepth.gain.linearRampToValueAtTime(freq * 7e-3, t + 0.3);
+        vib.connect(vibDepth);
+        vib.start(t);
+        vib.stop(t + len);
+        const a = osc("sine", freq, t, t + len, g);
+        const b = osc("triangle", freq, t, t + len, g, 0, 0.3);
+        vibDepth.connect(a.frequency);
+        vibDepth.connect(b.frequency);
+        burst(t, len, vel * 0.12, [f], "bandpass", Math.min(8e3, freq * 2.5), 1.5, 0.05);
+        done(a);
+      },
+      /** Nylon guitar: a modelled plucked string. */
+      nylon(t, freq, dur, vel, bus) {
+        const { buffer, rate } = string(freq);
+        const src = ctx.createBufferSource();
+        src.buffer = buffer;
+        src.playbackRate.value = rate;
+        const f = biquad("lowpass", 3800, 0.5, bus.dry);
+        f.connect(bus.verb);
+        const { g, done } = voiceGain(f, () => f.disconnect());
+        g.gain.setValueAtTime(vel * 1.6, t);
+        g.gain.setValueAtTime(vel * 1.6, t + Math.max(0.12, dur));
+        g.gain.exponentialRampToValueAtTime(1e-4, t + Math.max(0.12, dur) + 0.35);
+        src.connect(g);
+        src.start(t);
+        src.stop(t + Math.max(0.12, dur) + 0.4);
+        done(src);
+      },
+      // --- Pads and synths ---
+      warmpad(t, freq, dur, vel, bus) {
+        padNote("triangle", [-6, 6], 1e3, 0.5, 0.8, t, freq, dur, vel, bus);
+      },
+      strings(t, freq, dur, vel, bus) {
+        padNote("sawtooth", [-10, 0, 10], 2200, 0.3, 0.5, t, freq, dur, vel, bus);
+      },
+      superpad(t, freq, dur, vel, bus) {
+        padNote("sawtooth", [-18, -9, 0, 9, 18], 2600, 0.14, 0.4, t, freq, dur, vel, bus);
+      },
+      /** Five detuned saws: the wide lead of trance and house. */
+      supersaw(t, freq, dur, vel, bus) {
+        const f = biquad("lowpass", 5200, 0.5, bus.dry);
+        f.connect(bus.send);
+        f.connect(bus.verb);
+        const { g, done } = voiceGain(f, () => f.disconnect());
+        const len = env(g.gain, t, vel, 6e-3, Math.max(0, dur - 0.02), 0.14);
+        let last;
+        for (const d of [-16, -8, 0, 8, 16]) last = osc("sawtooth", freq, t, t + len, g, d, 0.45);
+        done(last);
+      },
+      /** A saw whose filter closes as it decays: the arpeggio voice. */
+      sawpluck(t, freq, dur, vel, bus) {
+        const f = biquad("lowpass", 4500, 1.2, bus.pad);
+        f.frequency.setValueAtTime(4500, t);
+        f.frequency.exponentialRampToValueAtTime(700, t + 0.17);
+        f.connect(bus.send);
+        const { g, done } = voiceGain(f, () => f.disconnect());
+        const len = env(g.gain, t, vel, 2e-3, 0, 0.22);
+        osc("sawtooth", freq, t, t + len, g, -6, 0.6);
+        done(osc("sawtooth", freq, t, t + len, g, 6, 0.6));
+      },
+      /** A short, dry, funky keyboard: a pulse-ish tone through a band. */
+      clav(t, freq, dur, vel, bus) {
+        const f = biquad("bandpass", 1900, 1.1, bus.dry);
+        const { g, done } = voiceGain(f, () => f.disconnect());
+        const len = env(g.gain, t, vel * 2.2, 1e-3, 0, 0.09);
+        osc("square", freq, t, t + len, g, 0, 0.5);
+        done(osc("sawtooth", freq, t, t + len, g, 8, 0.5));
+      },
+      /** A short chord hit from two detuned saws. */
       stab(t, freq, dur, vel, bus) {
-        const { g, done } = voiceGain(bus.dry);
-        const len = env(g.gain, t, vel, 2e-3, 0.03, 0.08);
+        const { g, done } = voiceGain(bus.pad);
+        const len = env(g.gain, t, vel, 2e-3, 0.03, 0.09);
         osc("sawtooth", freq, t, t + len, g, -10);
         done(osc("sawtooth", freq, t, t + len, g, 10));
       },
-      /** Square/saw lead with delayed vibrato. */
+      /** Square and saw lead with a vibrato that arrives late. */
       lead(t, freq, dur, vel, bus) {
-        const f = ctx.createBiquadFilter();
-        f.type = "lowpass";
-        f.frequency.value = 3200;
-        f.connect(bus.dry);
+        const f = biquad("lowpass", 3200, 0.7, bus.dry);
         f.connect(bus.send);
+        f.connect(bus.verb);
         const { g, done } = voiceGain(f, () => f.disconnect());
         const len = env(g.gain, t, vel, 8e-3, Math.max(0, dur - 0.03), 0.12);
         const lfo = ctx.createOscillator();
@@ -4895,6 +5939,101 @@
         lfo.stop(t + len);
         done(a);
       },
+      /** The trance "hoover": wide saws that start a fourth high and swoop down into the note. */
+      hoover(t, freq, dur, vel, bus) {
+        const f = biquad("lowpass", 3600, 0.9, bus.dry);
+        f.connect(bus.send);
+        const { g, done } = voiceGain(f, () => f.disconnect());
+        const len = env(g.gain, t, vel, 0.01, Math.max(0, dur - 0.03), 0.14);
+        let last;
+        for (const d of [-28, 0, 28]) {
+          const o = osc("sawtooth", freq * 1.335, t, t + len, g, d, 0.55);
+          o.frequency.exponentialRampToValueAtTime(freq, t + 0.06);
+          last = o;
+        }
+        done(last);
+      },
+      // --- Bass ---
+      /** A pure low sine with a soft edge. */
+      sub(t, freq, dur, vel, bus) {
+        const { g, done } = voiceGain(bus.dry);
+        const len = env(g.gain, t, vel, 0.01, Math.max(0, dur - 0.1), 0.12);
+        done(osc("sine", freq, t, t + len, g));
+      },
+      /** Upright bass: a plucked triangle and sine with a little finger noise. */
+      upright(t, freq, dur, vel, bus) {
+        const f = biquad("lowpass", 950, 0.7, bus.dry);
+        const { g, done } = voiceGain(f, () => f.disconnect());
+        const len = env(g.gain, t, vel * 1.3, 6e-3, 0, Math.max(0.3, dur * 1.2));
+        osc("triangle", freq, t, t + len, g);
+        done(osc("sine", freq * 2, t, t + len, g, 0, 0.3));
+        burst(t, 0.015, vel * 0.3, [bus.dry], "bandpass", 1800, 1);
+      },
+      /** Synthwave bass: a saw with a filter that snaps shut, over a sine. */
+      synthbass(t, freq, dur, vel, bus) {
+        const f = biquad("lowpass", 1800, 1.5, bus.dry);
+        f.frequency.setValueAtTime(1800, t);
+        f.frequency.exponentialRampToValueAtTime(320, t + 0.14);
+        const { g, done } = voiceGain(f, () => f.disconnect());
+        const len = env(g.gain, t, vel, 4e-3, Math.max(0, dur * 0.7), 0.06);
+        osc("sawtooth", freq, t, t + len, g, 0, 0.7);
+        osc("sine", freq, t, t + len, bus.dry, 0, vel * 0.8);
+        done(osc("square", freq, t, t + len, g, 4, 0.3));
+      },
+      /** Funk bass: a quick pop from a filter that opens and shuts, over a sine. */
+      funkbass(t, freq, dur, vel, bus) {
+        const f = biquad("lowpass", 2600, 2, bus.dry);
+        f.frequency.setValueAtTime(2600, t);
+        f.frequency.exponentialRampToValueAtTime(380, t + 0.1);
+        const { g, done } = voiceGain(f, () => f.disconnect());
+        const len = env(g.gain, t, vel, 2e-3, Math.max(0, dur * 0.4), 0.09);
+        osc("sawtooth", freq, t, t + len, g, 0, 0.6);
+        osc("square", freq, t, t + len, g, 0, 0.3);
+        done(osc("sine", freq, t, t + len, g, 0, 0.8));
+      },
+      /** Reese: detuned saws that beat against each other through a low filter, over a sub. */
+      reese(t, freq, dur, vel, bus) {
+        const f = biquad("lowpass", 520, 1.4, bus.dry);
+        f.frequency.setValueAtTime(380, t);
+        f.frequency.linearRampToValueAtTime(700, t + Math.max(0.2, dur * 0.5));
+        const { g, done } = voiceGain(f, () => f.disconnect());
+        const len = env(g.gain, t, vel, 0.012, Math.max(0, dur - 0.05), 0.08);
+        osc("sawtooth", freq, t, t + len, g, -22, 0.5);
+        osc("sawtooth", freq, t, t + len, g, 22, 0.5);
+        osc("sawtooth", freq * 2, t, t + len, g, 11, 0.2);
+        osc("sine", freq, t, t + len, bus.dry, 0, vel * 0.7);
+        done(osc("square", freq / 2, t, t + len, g, 0, 0.2));
+      },
+      /** Trance bass: a short saw on the off-beat 16ths, closing fast. */
+      rollbass(t, freq, dur, vel, bus) {
+        const f = biquad("lowpass", 1500, 1, bus.dry);
+        f.frequency.setValueAtTime(1500, t);
+        f.frequency.exponentialRampToValueAtTime(260, t + 0.1);
+        const { g, done } = voiceGain(f, () => f.disconnect());
+        const len = env(g.gain, t, vel, 2e-3, 0.02, 0.07);
+        osc("sawtooth", freq, t, t + len, g, -5, 0.6);
+        done(osc("sawtooth", freq, t, t + len, g, 5, 0.6));
+      },
+      /** The bass-music wobble: saws through a resonant filter that an eighth-note LFO opens and closes. */
+      wobble(t, freq, dur, vel, bus) {
+        const f = biquad("lowpass", 700, 7, bus.dry);
+        const lfo = ctx.createOscillator();
+        const depth = ctx.createGain();
+        lfo.frequency.value = (bus.bpm || 140) / 60 * 2;
+        depth.gain.value = 620;
+        f.frequency.value = 760;
+        lfo.connect(depth);
+        depth.connect(f.frequency);
+        const { g, done } = voiceGain(f, () => f.disconnect());
+        const len = env(g.gain, t, vel, 8e-3, Math.max(0, dur - 0.04), 0.06);
+        lfo.start(t);
+        lfo.stop(t + len);
+        osc("sawtooth", freq, t, t + len, g, -12, 0.5);
+        osc("sawtooth", freq, t, t + len, g, 12, 0.5);
+        osc("sine", freq, t, t + len, bus.dry, 0, vel * 0.6);
+        done(osc("square", freq, t, t + len, g, 0, 0.25));
+      },
+      // --- Drums and percussion ---
       kick(t, _f, _d, vel, bus) {
         const { g, done } = voiceGain(bus.dry);
         env(g.gain, t, vel, 1e-3, 0.02, 0.25);
@@ -4902,6 +6041,7 @@
         o.frequency.exponentialRampToValueAtTime(45, t + 0.12);
         done(o);
       },
+      /** Boom-bap kick: soft and round. */
       lofikick(t, _f, _d, vel, bus) {
         const { g, done } = voiceGain(bus.dry);
         env(g.gain, t, vel, 4e-3, 0.02, 0.3);
@@ -4909,25 +6049,178 @@
         o.frequency.exponentialRampToValueAtTime(40, t + 0.15);
         done(o);
       },
+      /** Jazz kick: a feathered thump you feel more than hear. */
+      softkick(t, _f, _d, vel, bus) {
+        const { g, done } = voiceGain(bus.dry);
+        env(g.gain, t, vel, 4e-3, 0, 0.16);
+        const o = osc("sine", 95, t, t + 0.2, g);
+        o.frequency.exponentialRampToValueAtTime(50, t + 0.08);
+        done(o);
+      },
+      /** A hard, driven kick with a click on the front. */
+      hardkick(t, _f, _d, vel, bus) {
+        const shaper = drive(2.6);
+        shaper.connect(bus.dry);
+        const { g, done } = voiceGain(shaper, () => shaper.disconnect());
+        env(g.gain, t, vel * 0.85, 1e-3, 0.05, 0.22);
+        const o = osc("sine", 210, t, t + 0.32, g);
+        o.frequency.exponentialRampToValueAtTime(48, t + 0.13);
+        burst(t, 0.012, vel * 0.35, [bus.dry], "highpass", 3e3);
+        done(o);
+      },
+      softsnare(t, _f, _d, vel, bus) {
+        burst(t, 0.17, vel, [bus.dry, bus.verb], "bandpass", 1700, 0.5);
+        const { g, done } = voiceGain(bus.dry);
+        env(g.gain, t, vel * 0.45, 1e-3, 0, 0.1);
+        done(osc("triangle", 175, t, t + 0.12, g));
+      },
+      /** Brushes swept across the snare. */
+      brushsnare(t, _f, _d, vel, bus) {
+        burst(t, 0.2, vel, [bus.dry], "bandpass", 4500, 0.5, 0.014);
+      },
+      /** Gated-reverb snare: a big burst that is cut off short. */
+      gsnare(t, _f, _d, vel, bus) {
+        const src = ctx.createBufferSource();
+        src.buffer = noise;
+        src.loop = true;
+        const f = biquad("bandpass", 1600, 0.6, bus.dry);
+        f.connect(bus.verb);
+        const { g, done } = voiceGain(f, () => f.disconnect());
+        g.gain.setValueAtTime(1e-4, t);
+        g.gain.linearRampToValueAtTime(vel, t + 2e-3);
+        g.gain.setValueAtTime(vel * 0.8, t + 0.13);
+        g.gain.linearRampToValueAtTime(1e-4, t + 0.19);
+        src.connect(f);
+        f.connect(g);
+        src.start(t, Math.random() * 0.5);
+        src.stop(t + 0.22);
+        done(src);
+        const { g: tone, done: toneDone } = voiceGain(bus.dry);
+        env(tone.gain, t, vel * 0.5, 1e-3, 0, 0.12);
+        toneDone(osc("triangle", 205, t, t + 0.14, tone));
+      },
+      /** Drum and bass snare: a tight crack. */
+      dnbsnare(t, _f, _d, vel, bus) {
+        burst(t, 0.13, vel, [bus.dry], "bandpass", 2300, 0.7);
+        burst(t, 0.01, vel * 0.5, [bus.dry], "highpass", 5e3);
+        const { g, done } = voiceGain(bus.dry);
+        env(g.gain, t, vel * 0.55, 1e-3, 0, 0.1);
+        const o = osc("triangle", 250, t, t + 0.12, g);
+        o.frequency.exponentialRampToValueAtTime(175, t + 0.08);
+        done(o);
+      },
       snare(t, _f, _d, vel, bus) {
-        noiseBurst(t, 0.16, vel, bus.dry, "bandpass", 1800, 0.8);
+        burst(t, 0.16, vel, [bus.dry], "bandpass", 1800, 0.8);
         const { g, done } = voiceGain(bus.dry);
         env(g.gain, t, vel * 0.5, 1e-3, 0, 0.08);
         done(osc("triangle", 190, t, t + 0.1, g));
       },
-      rim(t, _f, _d, vel, bus) {
-        noiseBurst(t, 0.05, vel, bus.dry, "bandpass", 2500, 4);
+      /** A clap: three quick bursts and a tail. */
+      clap(t, _f, _d, vel, bus) {
+        for (const at2 of [0, 0.011, 0.022]) burst(t + at2, 0.012, vel * 0.8, [bus.dry], "bandpass", 1500, 1.2);
+        burst(t + 0.03, 0.16, vel * 0.7, [bus.dry, bus.verb], "bandpass", 1400, 1);
+      },
+      /** Cross-stick: the rim click of a bossa nova. */
+      xstick(t, _f, _d, vel, bus) {
+        burst(t, 0.045, vel, [bus.dry, bus.verb], "bandpass", 2e3, 5);
+        const { g, done } = voiceGain(bus.dry);
+        env(g.gain, t, vel * 0.4, 1e-3, 0, 0.03);
+        const o = osc("sine", 820, t, t + 0.05, g);
+        o.frequency.exponentialRampToValueAtTime(600, t + 0.03);
+        done(o);
+      },
+      hatc(t, _f, _d, vel, bus) {
+        burst(t, 0.028, vel, [bus.dry], "highpass", 8e3);
       },
       hat(t, _f, _d, vel, bus) {
-        noiseBurst(t, 0.035, vel, bus.dry, "highpass", 7500);
+        burst(t, 0.035, vel, [bus.dry], "highpass", 7500);
       },
-      brush(t, _f, _d, vel, bus) {
-        noiseBurst(t, 0.12, vel, bus.dry, "bandpass", 5e3, 0.6);
+      openhat(t, _f, _d, vel, bus) {
+        burst(t, 0.22, vel, [bus.dry], "highpass", 7e3);
+      },
+      pedal(t, _f, _d, vel, bus) {
+        burst(t, 0.05, vel, [bus.dry], "highpass", 4500);
+      },
+      /** Ride cymbal: bright noise with a few inharmonic sines in it. */
+      ride(t, _f, _d, vel, bus) {
+        burst(t, 0.5, vel * 0.6, [bus.dry, bus.verb], "highpass", 5500);
+        const { g, done } = voiceGain(bus.dry);
+        env(g.gain, t, vel * 0.1, 1e-3, 0, 0.45);
+        osc("sine", 4300, t, t + 0.5, g);
+        osc("sine", 5900, t, t + 0.5, g);
+        done(osc("sine", 7400, t, t + 0.5, g));
+      },
+      shaker(t, _f, _d, vel, bus) {
+        burst(t, 0.045, vel, [bus.dry], "bandpass", 7e3, 0.8, 6e-3);
+      },
+      /** A tom: a sine that falls from its pitch. */
+      tom(t, freq, _d, vel, bus) {
+        const { g, done } = voiceGain(bus.dry);
+        env(g.gain, t, vel, 2e-3, 0, 0.26);
+        const o = osc("sine", freq * 1.4, t, t + 0.3, g);
+        o.frequency.exponentialRampToValueAtTime(freq * 0.85, t + 0.14);
+        done(o);
       },
       crash(t, _f, _d, vel, bus) {
-        noiseBurst(t, 1.2, vel, bus.dry, "highpass", 4e3);
+        burst(t, 1.2, vel, [bus.dry, bus.verb], "highpass", 4e3);
+      },
+      /** A riser: noise whose band sweeps up over the note's length, getting louder. */
+      riser(t, _f, dur, vel, bus) {
+        const src = ctx.createBufferSource();
+        src.buffer = noise;
+        src.loop = true;
+        const f = biquad("bandpass", 300, 1.5, bus.dry);
+        f.frequency.setValueAtTime(300, t);
+        f.frequency.exponentialRampToValueAtTime(9e3, t + dur);
+        const { g, done } = voiceGain(f, () => f.disconnect());
+        g.gain.setValueAtTime(1e-4, t);
+        g.gain.linearRampToValueAtTime(vel, t + dur * 0.97);
+        g.gain.linearRampToValueAtTime(1e-4, t + dur + 0.04);
+        src.connect(f);
+        f.connect(g);
+        src.start(t, Math.random() * 0.5);
+        src.stop(t + dur + 0.06);
+        done(src);
+      },
+      /** A tick of vinyl crackle. */
+      tick(t, _f, _d, vel, bus) {
+        burst(t, 3e-3, vel, [bus.dry], "highpass", 2500);
       }
     };
+  }
+
+  // js/music.js
+  var TICK_MS = 25;
+  var LOOKAHEAD_S = 0.2;
+  var HANDOFF_S = 0.12;
+  var TRACK_GAIN = 0.3;
+  function midiToFreq(midi2) {
+    return 440 * Math.pow(2, (midi2 - 69) / 12);
+  }
+  function createNoiseBuffer(ctx) {
+    const noise = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
+    const data = noise.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+    return noise;
+  }
+  var impulses = /* @__PURE__ */ new WeakMap();
+  function impulse(ctx) {
+    if (!impulses.has(ctx)) {
+      const length = Math.floor(ctx.sampleRate * 1.8);
+      const buffer = ctx.createBuffer(2, length, ctx.sampleRate);
+      for (let c = 0; c < 2; c++) {
+        const data = buffer.getChannelData(c);
+        let seed = 7 + c * 13;
+        let dark = 0;
+        for (let i = 0; i < length; i++) {
+          seed = seed * 1664525 + 1013904223 >>> 0;
+          dark += (seed / 4294967296 * 2 - 1 - dark) * 0.4;
+          data[i] = dark * Math.pow(1 - i / length, 3.2);
+        }
+      }
+      impulses.set(ctx, buffer);
+    }
+    return impulses.get(ctx);
   }
   function createBus(ctx, track, destination) {
     const gain = ctx.createGain();
@@ -4950,15 +6243,34 @@
     feedback.connect(delay);
     delay.connect(wet);
     wet.connect(comp);
-    return { gain, bus: { dry: comp, send: delay }, nodes: [comp, delay, feedback, wet] };
+    const verb = ctx.createGain();
+    verb.gain.value = track.verb;
+    const room = ctx.createConvolver();
+    room.buffer = impulse(ctx);
+    verb.connect(room);
+    room.connect(comp);
+    const pad2 = ctx.createGain();
+    pad2.connect(comp);
+    return {
+      gain,
+      bus: { dry: comp, send: delay, verb, pad: pad2, bpm: track.bpm },
+      pump: pad2.gain,
+      nodes: [comp, delay, feedback, wet, verb, room, pad2]
+    };
   }
-  function scheduleBar(voices, track, bus, events, barStart, tempoScale) {
-    const step = 60 / (track.bpm * tempoScale) / 4;
-    for (const e of events) {
-      let start = e.s;
-      if (track.swing && e.s % 4 === 2) start += track.swing;
-      voices[e.v]?.(barStart + start * step, e.n === null ? 0 : midiToFreq(e.n), e.l * step, e.g, bus);
+  function scheduleBar(voices, track, bus, pump, events, barStart, tempoScale) {
+    const bpm = track.bpm * tempoScale;
+    const step = 60 / bpm / 4;
+    bus.bpm = bpm;
+    const when = (e) => barStart + (e.s + (track.swing && e.s % 4 === 2 ? track.swing : 0)) * step;
+    if (track.pump > 0) {
+      const kicks = events.filter((e) => KICKS.has(e.v)).map(when).sort((a, b) => a - b);
+      for (const t of kicks) {
+        pump.setValueAtTime(1 - track.pump, t);
+        pump.linearRampToValueAtTime(1, t + Math.min(0.25, step * 4));
+      }
     }
+    for (const e of events) voices[e.v]?.(when(e), e.n === null ? 0 : midiToFreq(e.n), e.l * step, e.g, bus);
     return 16 * step;
   }
   function nextBar(track, bar) {
@@ -4973,9 +6285,13 @@
     let timer = null;
     const players = [];
     let wanted = null;
+    let mode = "off";
+    let playlist = [];
+    let playlistKey = "";
     let paused = false;
     let tempoScale = 1;
     let isSuppressed = () => false;
+    const listeners = /* @__PURE__ */ new Set();
     function init() {
       if (ctx) return;
       const AudioContext = window.AudioContext || window.webkitAudioContext;
@@ -4996,11 +6312,12 @@
       if (settingsRef.musicMuted) return 0;
       return (settingsRef.masterVolume ?? 100) / 100 * ((settingsRef.musicVolume ?? 100) / 100);
     }
-    function createPlayer(name, startAt) {
-      const track = TRACKS[name];
-      const { gain, bus, nodes } = createBus(ctx, track, duckGain);
-      gain.gain.value = TRACK_GAIN;
-      return { name, track, gain, bus, nodes, bar: 0, nextBarTime: startAt, barStart: null, barLen: 0, stopAt: null };
+    function createPlayer(id, startAt) {
+      const track = getTrack(id);
+      const { gain, bus, pump, nodes } = createBus(ctx, track, duckGain);
+      const level = TRACK_GAIN * track.gain;
+      gain.gain.value = level;
+      return { id, track, level, gain, bus, pump, nodes, bar: 0, nextBarTime: startAt, barStart: null, barLen: 0, stopAt: null };
     }
     function nextBeat(p, now) {
       if (p.barStart === null) return now + 0.1;
@@ -5018,9 +6335,13 @@
         while (p.nextBarTime < until) {
           if (p.nextBarTime < now - 0.05) p.nextBarTime = now + 0.02;
           p.barStart = p.nextBarTime;
-          p.barLen = scheduleBar(voices, p.track, p.bus, p.track.bars[p.bar], p.nextBarTime, tempoScale);
+          p.barLen = scheduleBar(voices, p.track, p.bus, p.pump, p.track.bars[p.bar], p.nextBarTime, tempoScale);
           p.nextBarTime += p.barLen;
+          const finished = p.bar + 1 >= p.track.bars.length;
           p.bar = nextBar(p.track, p.bar);
+          if (finished && p.stopAt === null && mode === "playlist" && playlist.length > 1 && p.id === wanted) {
+            setWanted(playlist[(playlist.indexOf(wanted) + 1) % playlist.length], p.nextBarTime);
+          }
         }
       }
       if (suppressed) {
@@ -5031,25 +6352,31 @@
       const now = ctx.currentTime;
       p.stopAt = at2;
       p.gain.gain.cancelScheduledValues(now);
-      p.gain.gain.setValueAtTime(TRACK_GAIN, at2);
+      p.gain.gain.setValueAtTime(p.level, at2);
       p.gain.gain.linearRampToValueAtTime(0, at2 + HANDOFF_S);
       setTimeout(() => {
         p.gain.disconnect();
         p.nodes.forEach((n) => n.disconnect());
         players.splice(players.indexOf(p), 1);
-      }, (at2 - now + HANDOFF_S) * 1e3 + 500);
+      }, (at2 - now + HANDOFF_S) * 1e3 + 1500);
     }
-    function applyTrack() {
+    function applyTrack(at2 = null) {
       if (!ctx) return;
       const now = ctx.currentTime;
       const live = players.find((p) => p.stopAt === null);
-      if (live && live.name === wanted) return;
+      if (live && live.id === wanted) return;
       let startAt = now + 0.1;
       if (live) {
-        startAt = wanted && !isSuppressed() ? nextBeat(live, now) : now + 0.05;
+        startAt = at2 ?? (wanted && !isSuppressed() ? nextBeat(live, now) : now + 0.05);
         release(live, startAt);
       }
       if (wanted) players.push(createPlayer(wanted, startAt));
+    }
+    function setWanted(id, at2 = null) {
+      if (id === wanted) return;
+      wanted = id;
+      applyTrack(at2);
+      listeners.forEach((cb) => cb(wanted));
     }
     return {
       /** Create the AudioContext. Call from a user gesture (click or key). */
@@ -5058,14 +6385,48 @@
         if (ctx.state === "suspended") ctx.resume();
         applyTrack();
       },
-      /** Switch to a track ('calm' | 'competitive' | 'intense'), or null for silence. */
-      setTrack(name) {
-        if (name === wanted) return;
-        wanted = name && TRACKS[name] ? name : null;
-        applyTrack();
+      /** Loop one track (an id from tracks.js), or pass null for silence. */
+      setTrack(id) {
+        const known = id && TRACK_INFO[id] ? id : null;
+        mode = known ? "pinned" : "off";
+        playlist = [];
+        playlistKey = "";
+        setWanted(known);
       },
+      /**
+       * Play a playlist: its tracks in order, each handed to the next on the bar line when it
+       * ends. Asking again for the same list changes nothing, so the game can ask every frame;
+       * a new list starts on a random one of its tracks, unless the one playing is in it.
+       * @param {string[]} ids
+       */
+      setPlaylist(ids) {
+        const list = ids.filter((id) => TRACK_INFO[id]);
+        const key = list.join();
+        if (mode === "playlist" && key === playlistKey) return;
+        mode = list.length ? "playlist" : "off";
+        playlist = list;
+        playlistKey = key;
+        setWanted(list.length ? list.includes(wanted) ? wanted : list[Math.floor(Math.random() * list.length)] : null);
+      },
+      /** Do what musicPlan() in tracks.js says: silence, one track, or a playlist. */
+      play(plan) {
+        if (plan.off) this.setTrack(null);
+        else if (plan.track) this.setTrack(plan.track);
+        else this.setPlaylist(plan.playlist);
+      },
+      /** Move on to the next track of the playlist, on the next beat. */
+      skip() {
+        if (mode !== "playlist" || playlist.length < 2) return;
+        setWanted(playlist[(playlist.indexOf(wanted) + 1) % playlist.length]);
+      },
+      /** The id of the track that is (or is about to be) playing, or null. */
       getTrack() {
         return wanted;
+      },
+      /** Call `cb(id)` whenever the playing track changes. Returns a function that stops it. */
+      onTrack(cb) {
+        listeners.add(cb);
+        return () => listeners.delete(cb);
       },
       /** Muffle and lower the music while the game is paused. */
       setPaused(value) {
@@ -5191,13 +6552,13 @@
     }
     return out;
   }
-  function* rainLoop(sr, { seconds = 6.5, bands = [], breathe = 0.2, ticks = 16, leaves = 8, drips = 1, gusts = 0, seed = 1 } = {}) {
+  function* rainLoop(sr, { seconds = 6.5, bands: bands2 = [], breathe = 0.2, ticks = 16, leaves = 8, drips = 1, gusts = 0, seed = 1 } = {}) {
     const out = stereo(sr, seconds);
     const n = out[0].length;
     const r = rng(seed);
     const gustPhase = r() * TAU;
     for (const ch of out) {
-      for (const band of bands) {
+      for (const band of bands2) {
         yield* addBand(ch, sr, r, band, breathe, gustPhase);
       }
     }
@@ -6373,21 +7734,21 @@
       name: "40 LINES",
       subtitle: "SPRINT",
       description: "Clear 40 lines as fast as possible.",
-      track: "calm",
+      music: "casual",
       icon: "\u23F1"
     },
     [MODE_BLITZ]: {
       name: "BLITZ",
       subtitle: "2 MINUTES",
       description: "Score as many points as you can before time runs out.",
-      track: "intense",
+      music: "intense",
       icon: "\u26A1"
     },
     [MODE_CLASSIC]: {
       name: "CASUAL",
       subtitle: "ENDLESS",
       description: "Relaxed endless play. Gravity rises and the scenery changes as you level up.",
-      track: "calm",
+      music: "casual",
       icon: "\u221E"
     }
   };
@@ -6590,6 +7951,14 @@
   var pad = (n) => String(n + 1).padStart(2, "0");
   var esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
   var capital = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+  var clock = (seconds) => Number.isFinite(seconds) ? `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}` : "-:--";
+  function copyCanvas(source) {
+    const c = document.createElement("canvas");
+    c.width = source.width;
+    c.height = source.height;
+    c.getContext("2d").drawImage(source, 0, 0);
+    return c;
+  }
   var MODE_DETAIL = {
     [MODE_SPRINT]: { goal: "Clear 40 lines. Your time is your score.", scenery: "Midnight Circuit" },
     [MODE_BLITZ]: { goal: "Score as much as you can in 2 minutes.", scenery: "Thunder Peak" },
@@ -6605,7 +7974,7 @@
     ["PAUSE", "ESC"]
   ];
   function createMenuSystem(container, options) {
-    const { settings: settings2, tabs, setSetting, resetSettings: resetSettings2, openMusic, sound = {} } = options;
+    const { settings: settings2, tabs, setSetting, resetSettings: resetSettings2, openMusic, music: music2 = null, sound = {} } = options;
     const cb = {};
     const root = document.createElement("div");
     root.className = "ac";
@@ -6685,7 +8054,7 @@
             text: info.description,
             lines: [
               { label: "GOAL", value: MODE_DETAIL[id].goal },
-              { label: "MUSIC", value: capital(info.track) },
+              { label: "MUSIC", value: capital(info.music) + " playlist" },
               { label: "SCENERY", value: MODE_DETAIL[id].scenery }
             ]
           },
@@ -6716,14 +8085,153 @@
       if (withBack) nodes.push(backNode());
       return nodes;
     }
-    function musicNodes() {
-      return [{
+    function claudeTrackNode(id) {
+      const t = TRACK_INFO[id];
+      const pinned = settings2.track === id;
+      return {
         kind: "action",
-        label: "MUSIC PLAYER",
+        label: t.name.toUpperCase(),
+        hint: `${t.genre.toUpperCase()}  ${t.bpm}`,
+        thumb: () => coverArt(t.art),
+        mark: () => music2.current() === id && !music2.userPlaying() ? "\u25B6" : "",
+        info: {
+          title: t.name,
+          art: () => coverArt(t.art),
+          credit: true,
+          text: t.blurb,
+          lines: [
+            { label: "GENRE", value: t.genre },
+            { label: "TEMPO", value: `${t.bpm} BPM` },
+            { label: "KEY", value: capital(t.key) },
+            { label: "PLAYLIST", value: CATEGORIES[t.category].label },
+            { label: "STATUS", value: music2.current() === id && !music2.userPlaying() ? pinned ? "Playing on a loop" : "Playing" : "Select to play" }
+          ]
+        },
+        run() {
+          music2.pick(id);
+        }
+      };
+    }
+    function claudeNodes() {
+      const nodes = [{
+        kind: "action",
+        label: "AUTO PLAYLIST",
+        hint: settings2.track === "auto" ? "ON" : "SELECT",
+        thumb: sparkMark,
+        mark: () => settings2.track === "auto" && !music2.userPlaying() ? "\u25B6" : "",
+        info: {
+          title: "AUTO PLAYLIST",
+          art: sparkMark,
+          credit: true,
+          text: "Each mode plays its own playlist and moves on to the next track by itself: casual in the menu, Casual and 40 Lines, intense in Blitz. Choose which playlist with SOUNDTRACK."
+        },
+        run() {
+          music2.pick("auto");
+        }
+      }];
+      for (const [id, cat] of Object.entries(CATEGORIES)) {
+        nodes.push({ kind: "info", label: cat.label.toUpperCase(), value: `${cat.tracks.length} TRACKS` });
+        for (const track of cat.tracks) nodes.push(claudeTrackNode(track));
+      }
+      nodes.push(backNode());
+      return nodes;
+    }
+    function yoursNodes() {
+      const u = music2.user;
+      const tracks = u.tracks();
+      const nodes = [{
+        kind: "action",
+        label: "ADD FILES",
         hint: "OPEN",
-        info: { title: "MUSIC PLAYER", text: "Drop your own songs on the player to play them instead of the soundtrack." },
-        run: () => openMusic()
-      }, settingNode("soundtrack"), settingNode("musicVolume"), settingNode("musicMuted")];
+        thumb: noteMark,
+        info: {
+          title: "ADD FILES",
+          art: noteMark,
+          text: "Choose songs from your device (MP3, FLAC, M4A, OGG, WAV), or drop them anywhere on this window. Nothing is uploaded: they play from your own browser and are gone when you close the page. Cover art inside a file is shown as pixel art."
+        },
+        run: () => u.add()
+      }];
+      if (!tracks.length) nodes.push({ kind: "info", label: "NO SONGS YET", value: "" });
+      tracks.forEach((t, i) => nodes.push({
+        kind: "action",
+        label: t.name.toUpperCase(),
+        hint: clock(t.duration),
+        thumb: () => copyCanvas(t.cover),
+        mark: () => u.index() === i ? u.playing() ? "\u25B6" : "\u23F8" : "",
+        info: {
+          title: t.name,
+          art: () => copyCanvas(t.cover),
+          text: [t.artist, t.album].filter(Boolean).join(" / ") || "This file has no title or artist tags.",
+          lines: [
+            { label: "LENGTH", value: clock(t.duration) },
+            { label: "COVER", value: t.hasArt ? "From the file, pixelated" : "Made from the name" },
+            { label: "STATUS", value: u.index() === i ? u.playing() ? "Playing" : "Paused" : "Select to play" }
+          ]
+        },
+        run() {
+          if (u.index() === i) u.toggle();
+          else u.play(i);
+        }
+      }));
+      if (tracks.length) {
+        nodes.push({
+          kind: "action",
+          label: "CLEAR LIST",
+          hint: "",
+          armable: true,
+          info: { title: "CLEAR LIST", text: "Stop the music and take every song off the list. Press twice to confirm. Your files are not touched." },
+          run() {
+            u.clear();
+          }
+        });
+      }
+      nodes.push(backNode());
+      return nodes;
+    }
+    function musicNodes() {
+      if (!music2) return [settingNode("soundtrack"), settingNode("musicVolume"), settingNode("musicMuted")];
+      const current = music2.current();
+      const nowName = current && TRACK_INFO[current] ? TRACK_INFO[current].name.toUpperCase() : "";
+      const yours = music2.user.tracks().length;
+      return [
+        {
+          kind: "menu",
+          label: "MADE WITH CLAUDE",
+          hint: music2.userPlaying() ? `${TRACK_IDS.length} TRACKS` : nowName || `${TRACK_IDS.length} TRACKS`,
+          title: "MADE WITH CLAUDE",
+          thumb: sparkMark,
+          mark: () => music2.userPlaying() ? "" : "\u25B6",
+          live: true,
+          info: {
+            title: "MADE WITH CLAUDE",
+            art: sparkMark,
+            credit: true,
+            text: "Nine original tracks in three playlists: lo-fi, jazz and cafe music; synthwave, house and funk; drum and bass, trance and bass music. Written for this game and synthesized live in your browser. Nothing is sampled or downloaded.",
+            lines: [{ label: "TRACKS", value: TRACK_IDS.length }, { label: "NOW", value: nowName || "Silence" }]
+          },
+          children: claudeNodes
+        },
+        {
+          kind: "menu",
+          label: "YOUR MUSIC",
+          hint: yours ? `${yours} SONG${yours === 1 ? "" : "S"}` : "ADD SONGS",
+          title: "YOUR MUSIC",
+          thumb: noteMark,
+          mark: () => music2.userPlaying() ? "\u25B6" : "",
+          live: true,
+          info: {
+            title: "YOUR MUSIC",
+            art: noteMark,
+            text: "Play songs from your own device instead of the soundtrack. Their cover art becomes pixel art here. Pick a Made with Claude track, or the auto playlist, to go back to the soundtrack.",
+            lines: [{ label: "SONGS", value: yours }]
+          },
+          children: yoursNodes
+        },
+        settingNode("soundtrack"),
+        settingNode("musicVolume"),
+        settingNode("musicMuted"),
+        { kind: "action", label: "PLAYER PANEL", hint: "OPEN", info: { title: "PLAYER PANEL", text: "The small player with seek, shuffle, repeat and crossfade for your own songs." }, run: () => openMusic() }
+      ];
     }
     function controlNodes() {
       const nodes = CONTROL_ROWS.map(([label, value]) => ({ kind: "info", label, value }));
@@ -6734,12 +8242,12 @@
       { label: "PLAY", info: { title: "PLAY", text: "Pick a mode, then set it up before you start." }, children: modeNodes },
       { label: "SETTINGS", info: { title: "SETTINGS", text: "Handling, sound, visuals and game options. Changes save at once." }, children: () => settingsNodes(false) },
       { label: "CONTROLS", info: { title: "CONTROLS", text: "How to play on a keyboard. On phones and tablets, use the on-screen buttons." }, children: controlNodes },
-      { label: "MUSIC", info: { title: "MUSIC", text: "Soundtrack options, and a player for your own music." }, children: musicNodes }
+      { label: "MUSIC", info: { title: "MUSIC", text: "The soundtrack made for this game, your own songs, and the volume." }, children: musicNodes, live: true }
     ];
     function rootLevel(tabIndex) {
       const tab = MAIN_TABS[tabIndex];
       const nodes = tab.children();
-      return { title: tab.label, nodes, index: firstFocusable(nodes) };
+      return { title: tab.label, nodes, index: firstFocusable(nodes), rebuild: tab.live ? tab.children : null };
     }
     function valueText(n) {
       if (n.kind === "toggle") return settings2[n.def.key] ? "ON" : "OFF";
@@ -6773,8 +8281,8 @@
     }
     function setFromGauge(n, clientX, gauge) {
       const c = getConstraint(n.def.key);
-      const rect2 = gauge.getBoundingClientRect();
-      const k = Math.max(0, Math.min(1, (clientX - rect2.left) / rect2.width));
+      const rect3 = gauge.getBoundingClientRect();
+      const k = Math.max(0, Math.min(1, (clientX - rect3.left) / rect3.width));
       const raw = c.min + k * (c.max - c.min);
       const snapped = c.min + Math.round((raw - c.min) / c.step) * c.step;
       const value = Math.max(c.min, Math.min(c.max, Number(snapped.toFixed(3))));
@@ -6782,7 +8290,7 @@
     }
     function activate(n) {
       if (n.kind === "menu") {
-        state.levels.push({ title: n.title || n.label, nodes: n.children(), index: 0 });
+        state.levels.push({ title: n.title || n.label, nodes: n.children(), index: 0, rebuild: n.live ? n.children : null });
         const lvl = level();
         lvl.index = firstFocusable(lvl.nodes);
         state.focus = "list";
@@ -6849,7 +8357,9 @@
       } else {
         right = `<span class="ac-read">${esc(valueText(n))}</span>`;
       }
-      return `<div class="ac-row ack-${n.kind}" role="listitem" data-i="${i}" style="--i:${i}"><span class="ac-num">${pad(i)}</span><span class="ac-label">${esc(n.label)}</span>${right}</div>`;
+      const thumb = n.thumb ? '<span class="ac-thumb"></span>' : "";
+      const mark = n.mark ? `<span class="ac-mark">${n.mark()}</span>` : "";
+      return `<div class="ac-row ack-${n.kind}${n.thumb ? " has-thumb" : ""}" role="listitem" data-i="${i}" style="--i:${i}"><span class="ac-num">${pad(i)}</span>${thumb}<span class="ac-label">${esc(n.label)}</span>${right}${mark}</div>`;
     }
     function patchRow(i) {
       const n = level().nodes[i];
@@ -6871,6 +8381,7 @@
       const n = state.focus === "row" ? null : level().nodes[level().index];
       const info = n ? n.info || { title: n.label } : MAIN_TABS[state.tab]?.info || {};
       let html = "";
+      if (info.art) html += '<div class="ac-art"></div>';
       if (info.title) html += `<div class="ac-info-title">${esc(info.title)}</div>`;
       if (n && (n.kind === "range" || n.kind === "toggle" || n.kind === "enum")) {
         html += `<div class="ac-info-value">${esc(valueText(n))}</div>`;
@@ -6881,7 +8392,10 @@
       if (lines) {
         html += '<dl class="ac-lines">' + lines.map((l) => `<div${l.big ? ' class="big"' : ""}><dt>${esc(l.label)}</dt><dd>${esc(l.value)}</dd></div>`).join("") + "</dl>";
       }
+      if (info.credit) html += '<div class="ac-credit"><span class="ac-credit-mark"></span>MADE WITH CLAUDE</div>';
       el.info.innerHTML = html;
+      if (info.art) el.info.querySelector(".ac-art").appendChild(info.art());
+      if (info.credit) el.info.querySelector(".ac-credit-mark").appendChild(sparkMark());
     }
     function refreshFocus() {
       const lvl = level();
@@ -6897,7 +8411,7 @@
       const onRow = state.focus === "row";
       el.keys.innerHTML = onRow ? `${k("\u25C0")}${k("\u25B6")} CHOOSE &nbsp; ${k("\u25BC")} OPEN` : `${k("\u25B2")}${k("\u25BC")} SELECT &nbsp; ${k("\u25C0")}${k("\u25B6")} ADJUST &nbsp; ${k("ENTER")} CONFIRM &nbsp; ${k("ESC")} BACK`;
     }
-    function render() {
+    function render(quiet = false) {
       const main = state.screen === "main";
       root.classList.toggle("over", !main);
       el.tabs.hidden = !main;
@@ -6908,7 +8422,11 @@
         el.banner.innerHTML = `<span class="ac-banner-main">${esc(state.banner.text)}</span><span class="ac-banner-sub">${esc(state.banner.sub || "")}</span>`;
       }
       renderCrumbs();
+      el.list.classList.toggle("quiet", quiet);
       el.list.innerHTML = level().nodes.map(rowHtml).join("");
+      level().nodes.forEach((n, i) => {
+        if (n.thumb) el.list.querySelector(`[data-i="${i}"] .ac-thumb`)?.appendChild(n.thumb());
+      });
       refreshFocus();
     }
     function onKey(e) {
@@ -7019,7 +8537,7 @@
       state.focus = "list";
       refreshFocus();
       setFromGauge(n, e.clientX, gauge);
-      const drag = (ev) => setFromGauge(n, ev.clientX, gauge);
+      const drag = (ev2) => setFromGauge(n, ev2.clientX, gauge);
       const stop = () => {
         window.removeEventListener("pointermove", drag);
         window.removeEventListener("pointerup", stop);
@@ -7137,7 +8655,14 @@
       isOpen: () => !root.hidden,
       /** Redraw after settings changed from outside (for example a reset). */
       refresh() {
-        if (!root.hidden) render();
+        if (root.hidden) return;
+        const lvl = level();
+        if (lvl.rebuild) {
+          lvl.nodes = lvl.rebuild();
+          lvl.index = Math.max(0, Math.min(lvl.index, lvl.nodes.length - 1));
+          if (!focusable(lvl.nodes[lvl.index])) lvl.index = firstFocusable(lvl.nodes);
+        }
+        render(true);
       },
       /** The line at the bottom right naming the scene and weather behind the menu. */
       setSceneTag(text2) {
@@ -7172,7 +8697,7 @@
     T: { matrix: [[0, 1, 0], [1, 1, 1], [0, 0, 0]], color: "#cf5ce0" },
     Z: { matrix: [[1, 1, 0], [0, 1, 1], [0, 0, 0]], color: "#ec4a5c" }
   };
-  var KICKS = {
+  var KICKS2 = {
     JLSTZ: {
       "0->1": [[0, 0], [-1, 0], [-1, -1], [0, 2], [-1, 2]],
       "1->0": [[0, 0], [1, 0], [1, 1], [0, -2], [1, -2]],
@@ -7241,7 +8766,7 @@
     }
     const kickKey = `${originalRotation}->${newRotation}`;
     const kickType = player.shape === "I" ? "I" : "JLSTZ";
-    const kickTests = KICKS[kickType][kickKey];
+    const kickTests = KICKS2[kickType][kickKey];
     for (let i = 0; i < kickTests.length; i++) {
       const [xOff, yOff] = kickTests[i];
       player.pos.x += xOff;
@@ -8326,8 +9851,8 @@
         const kpp = s.pieces > 0 ? s.keys / s.pieces : 0;
         const vs = sec > 0 ? s.linesSent / sec * 100 : 0;
         const finessePct = s.finesseJudged > 0 ? (s.finesseJudged - s.finesseFaults) / s.finesseJudged * 100 : 100;
-        const clock = formatClock(s.clockMs);
-        const timeRow = row("TIME", clock.main, clock.sub, `stat-time${s.urgent ? " urgent" : ""}`);
+        const clock2 = formatClock(s.clockMs);
+        const timeRow = row("TIME", clock2.main, clock2.sub, `stat-time${s.urgent ? " urgent" : ""}`);
         const levelRow = modeId === "classic" ? row("LEVEL", s.level) : "";
         let rows = "";
         switch (mode) {
@@ -8776,12 +10301,7 @@
     }
     function updateMusic() {
       if (!music2) return;
-      const choice = settings2.soundtrack || "auto";
-      if (choice === "off") {
-        music2.setTrack(null);
-        return;
-      }
-      music2.setTrack(choice === "auto" ? MODE_INFO[modeId].track : choice);
+      music2.play(musicPlan(settings2, MODE_INFO[modeId].music));
       const levelBoost = modeId === "classic" ? (modeState.stats.level - 1) * 0.012 : 0;
       music2.setTempoScale(1 + Math.min(levelBoost, 0.12));
     }
@@ -9019,10 +10539,8 @@
   }
   var music = createMusicEngine(settings);
   if (musicPlayer) music.setSuppressor(() => musicPlayer.isPlaying());
-  function menuTrack() {
-    const choice = settings.soundtrack || "auto";
-    if (choice === "off") return null;
-    return choice === "auto" ? "calm" : choice;
+  function playMenuMusic() {
+    music.play(musicPlan(settings, "casual"));
   }
   function unlockAudio() {
     music.unlock();
@@ -9032,21 +10550,26 @@
   }
   document.addEventListener("pointerdown", unlockAudio);
   document.addEventListener("keydown", unlockAudio);
-  music.setTrack(menuTrack());
+  playMenuMusic();
   function applySetting(key, value) {
     settings[key] = value;
     saveSettings(settings);
-    if (key === "soundtrack" && !currentGame?.isRunning()) music.setTrack(menuTrack());
+    if ((key === "soundtrack" || key === "track") && !currentGame?.isRunning()) playMenuMusic();
     if (key === "soundPack") soundEngine?.play("rotate");
     if (key === "touchControls") fitGame();
     if (key === "casualScene" || key === "weather") background.refresh();
+  }
+  function pickTrack(id) {
+    musicPlayer?.stop();
+    applySetting("track", id);
+    menu?.refresh();
   }
   function resetSettings() {
     Object.assign(settings, DEFAULT_SETTINGS);
     saveSettings(settings);
     fitGame();
     background.refresh();
-    if (!currentGame?.isRunning()) music.setTrack(menuTrack());
+    if (!currentGame?.isRunning()) playMenuMusic();
   }
   menu = createMenuSystem(menuContainer, {
     settings,
@@ -9054,12 +10577,36 @@
     setSetting: applySetting,
     resetSettings,
     openMusic: () => musicPlayer?.toggle(),
+    music: {
+      current: () => music.getTrack(),
+      userPlaying: () => !!musicPlayer?.isPlaying(),
+      pick: pickTrack,
+      user: {
+        tracks: () => musicPlayer?.getTracks() ?? [],
+        index: () => musicPlayer?.getIndex() ?? -1,
+        playing: () => !!musicPlayer?.isPlaying(),
+        play: (i) => musicPlayer?.play(i),
+        toggle: () => musicPlayer?.pauseToggle(),
+        add: () => musicPlayer?.openPicker(),
+        clear: () => musicPlayer?.clear()
+      }
+    },
     sound: {
       move: () => soundEngine?.play("menuMove"),
       select: () => soundEngine?.play("menuSelect")
     }
   });
   menu.setSceneTag(sceneTag);
+  music.onTrack(() => menu.refresh());
+  musicPlayer?.onChange(() => menu.refresh());
+  window.addEventListener("dragover", (e) => {
+    if (e.dataTransfer?.types?.includes("Files")) e.preventDefault();
+  });
+  window.addEventListener("drop", (e) => {
+    if (e.defaultPrevented || !e.dataTransfer?.files?.length) return;
+    e.preventDefault();
+    musicPlayer?.addFiles(e.dataTransfer.files);
+  });
   menu.onModeSelect((modeId) => {
     gameContainer.classList.remove("game-hidden");
     startNewGame(modeId);
@@ -9082,7 +10629,7 @@
     }
     gameContainer.classList.add("game-hidden");
     music.setTempoScale(1);
-    music.setTrack(menuTrack());
+    playMenuMusic();
     background.showMenu();
   });
   settingsToggle.addEventListener("click", () => {
@@ -9122,7 +10669,7 @@
       music,
       onGameOver(results) {
         music.setTempoScale(1);
-        music.setTrack(menuTrack());
+        playMenuMusic();
         menu.showResults(results);
       },
       onPause() {

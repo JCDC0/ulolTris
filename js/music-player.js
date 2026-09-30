@@ -1,7 +1,12 @@
 /**
  * Music Player Module for ulolTris
  * Provides a drag-and-drop music player with playlist, crossfading, and transport controls.
+ * Each track carries its title, artist and a pixel cover made from the artwork inside the
+ * file (or a generated one), and the menu reads the list through the methods it returns.
  */
+
+import { readTags } from './audio-tags.js';
+import { pixelate, identicon } from './cover-art.js';
 
 /**
  * Creates a drag-and-drop music player.
@@ -19,7 +24,8 @@ export function createMusicPlayer(containerEl, settingsRef) {
         repeat: 0, // 0: off, 1: all, 2: one
         minimized: true,
         activePlayer: 0, // 0 or 1 for crossfading
-        audioContext: null
+        audioContext: null,
+        listeners: new Set()
     };
 
     // DOM Elements
@@ -99,6 +105,7 @@ export function createMusicPlayer(containerEl, settingsRef) {
         fileInput.multiple = true;
         fileInput.accept = 'audio/*';
         fileInput.style.display = 'none';
+        elements.fileInput = fileInput;
         
         browseBtn.addEventListener('click', () => fileInput.click());
         fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
@@ -234,29 +241,39 @@ export function createMusicPlayer(containerEl, settingsRef) {
         return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
     }
 
-    function handleFiles(files) {
-        for (let i = 0; i < files.length; i++) {
-            const file = files[i];
-            if (file.type.startsWith('audio/')) {
-                const url = URL.createObjectURL(file);
-                
-                // Get duration
-                const tempAudio = new Audio(url);
-                tempAudio.addEventListener('loadedmetadata', () => {
-                    const track = {
-                        name: file.name.replace(/\.[^/.]+$/, ""),
-                        file: file,
-                        url: url,
-                        duration: tempAudio.duration
-                    };
-                    state.playlist.push(track);
-                    renderPlaylist();
-                    
-                    if (state.playlist.length === 1 && !state.isPlaying) {
-                        playTrack(0);
-                    }
-                });
+    /** Tell whoever is listening (the menu) that the list or what is playing changed. */
+    function changed() {
+        state.listeners.forEach(cb => cb());
+    }
+
+    /** True for anything that looks like a song: by its type, or by its extension when the system gives none. */
+    function isAudio(file) {
+        return file.type.startsWith('audio/') || /\.(mp3|flac|m4a|mp4|aac|ogg|oga|opus|wav|webm)$/i.test(file.name);
+    }
+
+    /** Add audio files: read the tags and artwork of each, then start playing if nothing is. */
+    async function handleFiles(files) {
+        for (const file of Array.from(files)) {
+            if (!isAudio(file)) continue;
+            const url = URL.createObjectURL(file);
+            const tags = await readTags(file);
+            const fileName = file.name.replace(/\.[^/.]+$/, '');
+            let cover = null;
+            if (tags.image) {
+                try { cover = pixelate(await createImageBitmap(tags.image)); } catch { cover = null; }
             }
+            const duration = await new Promise(resolve => {
+                const probe = new Audio(url);
+                probe.addEventListener('loadedmetadata', () => resolve(probe.duration));
+                probe.addEventListener('error', () => resolve(null));
+            });
+            if (duration === null) { URL.revokeObjectURL(url); continue; }
+            state.playlist.push({
+                name: tags.title || fileName, artist: tags.artist || '', album: tags.album || '', file, url, duration,
+                cover: cover || identicon(fileName), hasArt: !!cover,
+            });
+            renderPlaylist();
+            if (state.playlist.length === 1 && !state.isPlaying) playTrack(0);
         }
     }
 
@@ -269,9 +286,15 @@ export function createMusicPlayer(containerEl, settingsRef) {
                 item.classList.add('playing');
             }
 
+            const thumb = document.createElement('canvas');
+            thumb.width = thumb.height = 32;
+            thumb.className = 'mp-thumb';
+            thumb.getContext('2d').drawImage(track.cover, 0, 0);
+            item.appendChild(thumb);
+
             const nameSpan = document.createElement('span');
             nameSpan.className = 'mp-track-name';
-            nameSpan.textContent = `${index + 1}. ${track.name}`;
+            nameSpan.textContent = `${index + 1}. ${track.artist ? track.artist + ' - ' : ''}${track.name}`;
             nameSpan.style.cursor = 'pointer';
             nameSpan.addEventListener('click', () => playTrack(index));
 
@@ -292,6 +315,7 @@ export function createMusicPlayer(containerEl, settingsRef) {
             item.appendChild(removeBtn);
             elements.playlist.appendChild(item);
         });
+        changed();
     }
 
     function removeTrack(index) {
@@ -318,6 +342,7 @@ export function createMusicPlayer(containerEl, settingsRef) {
         state.currentIndex = -1;
         elements.btnPlay.textContent = '▶';
         elements.nowPlayingText.textContent = 'No track selected';
+        changed();
     }
 
     function playTrack(index, useCrossfade = true) {
@@ -385,6 +410,7 @@ export function createMusicPlayer(containerEl, settingsRef) {
             state.isPlaying = true;
             elements.btnPlay.textContent = '⏸';
         }
+        changed();
     }
 
     function playNext() {
@@ -521,12 +547,40 @@ export function createMusicPlayer(containerEl, settingsRef) {
         }
     }
 
+    /** Empty the playlist and stop the music. */
+    function clear() {
+        stopPlayback();
+        state.playlist.forEach(track => URL.revokeObjectURL(track.url));
+        state.playlist = [];
+        renderPlaylist();
+    }
+
     // Initialize
     buildUI();
 
     return {
         toggle,
         isPlaying: () => state.isPlaying,
-        dispose
+        dispose,
+        /** The playlist: [{ name, artist, album, duration, cover (a 32 x 32 canvas), hasArt }]. */
+        getTracks: () => state.playlist,
+        /** Index of the track that is loaded, or -1. */
+        getIndex: () => state.currentIndex,
+        play: index => playTrack(index),
+        /** Pause or resume. */
+        pauseToggle: togglePlay,
+        stop: stopPlayback,
+        next: playNext,
+        prev: playPrev,
+        remove: removeTrack,
+        clear,
+        /** Open the file picker. */
+        openPicker: () => elements.fileInput.click(),
+        addFiles: handleFiles,
+        /** Call `cb()` when the list or what is playing changes. Returns a function that stops it. */
+        onChange(cb) {
+            state.listeners.add(cb);
+            return () => state.listeners.delete(cb);
+        },
     };
 }

@@ -1389,3 +1389,93 @@ body.touch-ui .mp-container {
     left: 10px;
     max-width: calc(100vw - 20px);
 }
+
+/* === MUSIC SCREENS: covers, the "made with" credit, now-playing marks === */
+.ac-list.quiet .ac-row {
+    animation: none;
+}
+
+.ac-thumb {
+    flex: none;
+    width: 38px;
+    height: 38px;
+    margin-left: -4px;
+    background: #0b0b14;
+    border: 2px solid rgba(255, 255, 255, 0.28);
+    overflow: hidden;
+    transform: skewX(6deg);
+}
+
+.ac-thumb canvas,
+.ac-art canvas,
+.ac-credit-mark canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+}
+
+.ac-row.focus .ac-thumb {
+    border-color: #0a0c12;
+}
+
+.ac-mark {
+    flex: none;
+    width: 18px;
+    text-align: center;
+    font-size: 14px;
+    color: var(--accent);
+}
+
+.ac-row.focus .ac-mark {
+    color: #0a0c12;
+}
+
+.ac-art {
+    width: 112px;
+    height: 112px;
+    margin-bottom: 14px;
+    border: 3px solid var(--accent);
+    background: #0b0b14;
+    box-shadow: 5px 5px 0 rgba(0, 0, 0, 0.5);
+    overflow: hidden;
+}
+
+.ac-credit {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 14px;
+    font-family: var(--font-pixel);
+    font-size: 10px;
+    letter-spacing: 2px;
+    color: #f08a64;
+}
+
+.ac-credit-mark {
+    display: block;
+    width: 18px;
+    height: 18px;
+    flex: none;
+    border: 1px solid #3a2620;
+    overflow: hidden;
+}
+
+.mp-thumb {
+    flex: none;
+    width: 26px;
+    height: 26px;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+@media (max-width: 560px) {
+    .ac-thumb { width: 32px; height: 32px; margin-left: -6px; }
+    .ac-art { width: 88px; height: 88px; margin-bottom: 10px; }
+    .ac-row.has-thumb .ac-num,
+    .ac-row.has-thumb .ac-arrow { display: none; }
+    .ac-row.has-thumb .ac-label { letter-spacing: 2px; font-size: 17px; }
+    .ac-row.has-thumb .ac-read { font-size: 14px; max-width: 42%; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+}

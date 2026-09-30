@@ -11,6 +11,7 @@ import { createRenderer } from './renderer.js';
 import { createInputHandler } from './input.js';
 import { createModeState, GAME_STYLES, BIG_HIT_LINES, MODE_INFO } from './modes.js';
 import { createHud } from './hud.js';
+import { musicPlan } from './tracks.js';
 import { createBoardBounce } from './bounce.js';
 import { minimumInputs } from './finesse.js';
 
@@ -387,13 +388,8 @@ export function createGame(config) {
 
     function updateMusic() {
         if (!music) return;
-        const choice = settings.soundtrack || 'auto';
-        if (choice === 'off') {
-            music.setTrack(null);
-            return;
-        }
-        // Every mode keeps one track for the whole run, so the music never jumps mid-game.
-        music.setTrack(choice === 'auto' ? MODE_INFO[modeId].track : choice);
+        // A mode plays its playlist, and the song carries on from the menu when the playlist is the same.
+        music.play(musicPlan(settings, MODE_INFO[modeId].music));
         // Casual's track picks up a little with each level instead.
         const levelBoost = modeId === 'classic' ? (modeState.stats.level - 1) * 0.012 : 0;
         music.setTempoScale(1 + Math.min(levelBoost, 0.12));

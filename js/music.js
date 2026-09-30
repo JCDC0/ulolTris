@@ -1,15 +1,22 @@
 /**
  * music.js - Procedural soundtrack engine.
  *
- * Plays the song data in tracks.js with Web Audio synth voices. Scheduling uses a
+ * Plays the songs in tracks.js on the synth voices in voices.js. Scheduling uses a
  * lookahead timer: every TICK_MS it queues whole bars that start within LOOKAHEAD_S,
  * timed on the AudioContext clock so tempo stays exact even when frames drop.
+ *
  * Switching tracks is a handoff, not a fade: the new track starts exactly on the old
- * track's next beat at full level, and the old one is released over HANDOFF_S from
- * that same beat. There is never a dip in volume between the two.
+ * track's next beat at full level, and the old one is released over HANDOFF_S from that
+ * same beat. There is never a dip in volume between the two. A playlist uses the same
+ * handoff at the end of each track, on the bar line.
+ *
+ * Each track has its own bus: a compressor (so dense bars cannot clip), a tempo-synced
+ * delay, a reverb, and a "pump" input that the kick ducks, the way dance music ducks its
+ * pads.
  */
 
-import { TRACKS } from './tracks.js';
+import { getTrack, TRACK_INFO } from './tracks.js';
+import { createVoices, KICKS } from './voices.js';
 
 const TICK_MS = 25;
 const LOOKAHEAD_S = 0.2;
@@ -27,202 +34,33 @@ function createNoiseBuffer(ctx) {
     return noise;
 }
 
-/**
- * Synth voices bound to one AudioContext. Each voice is
- * (time, freq, duration, velocity, bus) and schedules its own nodes.
- */
-function createVoices(ctx, noise) {
-    function env(param, t, peak, attack, hold, release) {
-        param.setValueAtTime(0.0001, t);
-        param.linearRampToValueAtTime(peak, t + attack);
-        param.setValueAtTime(peak, t + attack + hold);
-        param.exponentialRampToValueAtTime(0.0001, t + attack + hold + release);
-        return attack + hold + release;
+const impulses = new WeakMap();
+
+/** A short, dark room: noise that dies away, made once per context. */
+function impulse(ctx) {
+    if (!impulses.has(ctx)) {
+        const length = Math.floor(ctx.sampleRate * 1.8);
+        const buffer = ctx.createBuffer(2, length, ctx.sampleRate);
+        for (let c = 0; c < 2; c++) {
+            const data = buffer.getChannelData(c);
+            let seed = 7 + c * 13;
+            let dark = 0;
+            for (let i = 0; i < length; i++) {
+                seed = (seed * 1664525 + 1013904223) >>> 0;
+                dark += ((seed / 4294967296) * 2 - 1 - dark) * 0.4;
+                data[i] = dark * Math.pow(1 - i / length, 3.2);
+            }
+        }
+        impulses.set(ctx, buffer);
     }
-
-    function osc(type, freq, t, end, dest, detune = 0) {
-        const o = ctx.createOscillator();
-        o.type = type;
-        o.frequency.setValueAtTime(freq, t);
-        o.detune.value = detune;
-        o.connect(dest);
-        o.start(t);
-        o.stop(end);
-        return o;
-    }
-
-    function voiceGain(dest, onEnd) {
-        const g = ctx.createGain();
-        g.connect(dest);
-        return { g, done: (node) => { node.onended = () => { g.disconnect(); onEnd?.(); }; } };
-    }
-
-    function noiseBurst(t, dur, vel, dest, filterType, freq, q = 1) {
-        const src = ctx.createBufferSource();
-        src.buffer = noise;
-        const f = ctx.createBiquadFilter();
-        f.type = filterType;
-        f.frequency.value = freq;
-        f.Q.value = q;
-        const { g, done } = voiceGain(dest, () => f.disconnect());
-        env(g.gain, t, vel, 0.001, 0, dur);
-        src.connect(f);
-        f.connect(g);
-        src.start(t);
-        src.stop(t + dur + 0.02);
-        done(src);
-    }
-
-    return {
-        /** FM electric piano: sine carrier, sine modulator at 1:1 with a decaying index. */
-        epiano(t, freq, dur, vel, bus) {
-            const { g, done } = voiceGain(bus.dry);
-            const len = env(g.gain, t, vel, 0.005, Math.max(0, dur - 0.05), 0.6);
-            const mod = ctx.createOscillator();
-            const modGain = ctx.createGain();
-            mod.frequency.value = freq;
-            modGain.gain.setValueAtTime(freq * 1.2, t);
-            modGain.gain.exponentialRampToValueAtTime(freq * 0.1, t + 0.4);
-            mod.connect(modGain);
-            const car = osc('sine', freq, t, t + len, g);
-            modGain.connect(car.frequency);
-            mod.start(t);
-            mod.stop(t + len);
-            done(car);
-        },
-
-        /** Bell: FM at 1:3.5 for a glassy tone, with a delay send. */
-        bell(t, freq, dur, vel, bus) {
-            const { g, done } = voiceGain(bus.dry);
-            g.connect(bus.send);
-            const len = env(g.gain, t, vel, 0.003, Math.min(dur, 0.1), 0.9 + dur * 0.5);
-            const mod = ctx.createOscillator();
-            const modGain = ctx.createGain();
-            mod.frequency.value = freq * 3.5;
-            modGain.gain.setValueAtTime(freq * 0.8, t);
-            modGain.gain.exponentialRampToValueAtTime(freq * 0.05, t + 0.8);
-            mod.connect(modGain);
-            const car = osc('sine', freq, t, t + len, g);
-            modGain.connect(car.frequency);
-            mod.start(t);
-            mod.stop(t + len);
-            done(car);
-        },
-
-        /** Detuned saws through a slow lowpass. */
-        pad(t, freq, dur, vel, bus) {
-            const f = ctx.createBiquadFilter();
-            f.type = 'lowpass';
-            f.frequency.value = 1400;
-            f.connect(bus.dry);
-            const { g, done } = voiceGain(f, () => f.disconnect());
-            const len = env(g.gain, t, vel, 0.25, Math.max(0, dur - 0.25), 0.5);
-            osc('sawtooth', freq, t, t + len, g, -8);
-            done(osc('sawtooth', freq, t, t + len, g, 8));
-        },
-
-        softbass(t, freq, dur, vel, bus) {
-            const { g, done } = voiceGain(bus.dry);
-            const len = env(g.gain, t, vel, 0.01, Math.max(0, dur - 0.1), 0.25);
-            osc('sine', freq, t, t + len, g);
-            done(osc('triangle', freq * 2, t, t + len, g));
-        },
-
-        bass(t, freq, dur, vel, bus) {
-            const f = ctx.createBiquadFilter();
-            f.type = 'lowpass';
-            f.frequency.setValueAtTime(1800, t);
-            f.frequency.exponentialRampToValueAtTime(300, t + 0.12);
-            f.connect(bus.dry);
-            const { g, done } = voiceGain(f, () => f.disconnect());
-            const len = env(g.gain, t, vel, 0.004, Math.max(0, dur * 0.7), 0.06);
-            osc('sine', freq, t, t + len, g);
-            done(osc('square', freq, t, t + len, g));
-        },
-
-        pluck(t, freq, dur, vel, bus) {
-            const { g, done } = voiceGain(bus.dry);
-            g.connect(bus.send);
-            const len = env(g.gain, t, vel, 0.002, 0, 0.12);
-            done(osc('square', freq, t, t + len, g));
-        },
-
-        stab(t, freq, dur, vel, bus) {
-            const { g, done } = voiceGain(bus.dry);
-            const len = env(g.gain, t, vel, 0.002, 0.03, 0.08);
-            osc('sawtooth', freq, t, t + len, g, -10);
-            done(osc('sawtooth', freq, t, t + len, g, 10));
-        },
-
-        /** Square/saw lead with delayed vibrato. */
-        lead(t, freq, dur, vel, bus) {
-            const f = ctx.createBiquadFilter();
-            f.type = 'lowpass';
-            f.frequency.value = 3200;
-            f.connect(bus.dry);
-            f.connect(bus.send);
-            const { g, done } = voiceGain(f, () => f.disconnect());
-            const len = env(g.gain, t, vel, 0.008, Math.max(0, dur - 0.03), 0.12);
-            const lfo = ctx.createOscillator();
-            const lfoGain = ctx.createGain();
-            lfo.frequency.value = 5.5;
-            lfoGain.gain.setValueAtTime(0, t);
-            lfoGain.gain.linearRampToValueAtTime(freq * 0.006, t + 0.25);
-            lfo.connect(lfoGain);
-            const a = osc('square', freq, t, t + len, g);
-            const b = osc('sawtooth', freq, t, t + len, g, 6);
-            lfoGain.connect(a.frequency);
-            lfoGain.connect(b.frequency);
-            lfo.start(t);
-            lfo.stop(t + len);
-            done(a);
-        },
-
-        kick(t, _f, _d, vel, bus) {
-            const { g, done } = voiceGain(bus.dry);
-            env(g.gain, t, vel, 0.001, 0.02, 0.25);
-            const o = osc('sine', 150, t, t + 0.3, g);
-            o.frequency.exponentialRampToValueAtTime(45, t + 0.12);
-            done(o);
-        },
-
-        lofikick(t, _f, _d, vel, bus) {
-            const { g, done } = voiceGain(bus.dry);
-            env(g.gain, t, vel, 0.004, 0.02, 0.3);
-            const o = osc('sine', 110, t, t + 0.35, g);
-            o.frequency.exponentialRampToValueAtTime(40, t + 0.15);
-            done(o);
-        },
-
-        snare(t, _f, _d, vel, bus) {
-            noiseBurst(t, 0.16, vel, bus.dry, 'bandpass', 1800, 0.8);
-            const { g, done } = voiceGain(bus.dry);
-            env(g.gain, t, vel * 0.5, 0.001, 0, 0.08);
-            done(osc('triangle', 190, t, t + 0.1, g));
-        },
-
-        rim(t, _f, _d, vel, bus) {
-            noiseBurst(t, 0.05, vel, bus.dry, 'bandpass', 2500, 4);
-        },
-
-        hat(t, _f, _d, vel, bus) {
-            noiseBurst(t, 0.035, vel, bus.dry, 'highpass', 7500);
-        },
-
-        brush(t, _f, _d, vel, bus) {
-            noiseBurst(t, 0.12, vel, bus.dry, 'bandpass', 5000, 0.6);
-        },
-
-        crash(t, _f, _d, vel, bus) {
-            noiseBurst(t, 1.2, vel, bus.dry, 'highpass', 4000);
-        },
-    };
+    return impulses.get(ctx);
 }
 
 /**
- * A track's output: voices and a tempo-synced delay feed a compressor, then the
- * track gain (used for the handoff between tracks). The compressor keeps dense bars from clipping.
- * @returns {{ gain: GainNode, bus: { dry: AudioNode, send: AudioNode }, nodes: AudioNode[] }}
+ * A track's output. Voices feed `dry`, `send` (delay), `verb` (reverb) or `pad` (dry, but
+ * ducked by the kick); everything ends in the compressor, then the track gain that the
+ * handoff between tracks works on.
+ * @returns {{ gain: GainNode, bus: Object, pump: AudioParam, nodes: AudioNode[] }}
  */
 function createBus(ctx, track, destination) {
     const gain = ctx.createGain();
@@ -248,19 +86,41 @@ function createBus(ctx, track, destination) {
     delay.connect(wet);
     wet.connect(comp);
 
-    return { gain, bus: { dry: comp, send: delay }, nodes: [comp, delay, feedback, wet] };
+    const verb = ctx.createGain();
+    verb.gain.value = track.verb;
+    const room = ctx.createConvolver();
+    room.buffer = impulse(ctx);
+    verb.connect(room);
+    room.connect(comp);
+
+    const pad = ctx.createGain();
+    pad.connect(comp);
+
+    return {
+        gain,
+        bus: { dry: comp, send: delay, verb, pad, bpm: track.bpm },
+        pump: pad.gain,
+        nodes: [comp, delay, feedback, wet, verb, room, pad],
+    };
 }
 
 /**
  * Schedule one bar of events starting at barStart. Returns the bar length in seconds.
  */
-function scheduleBar(voices, track, bus, events, barStart, tempoScale) {
-    const step = 60 / (track.bpm * tempoScale) / 4;
-    for (const e of events) {
-        let start = e.s;
-        if (track.swing && e.s % 4 === 2) start += track.swing;
-        voices[e.v]?.(barStart + start * step, e.n === null ? 0 : midiToFreq(e.n), e.l * step, e.g, bus);
+function scheduleBar(voices, track, bus, pump, events, barStart, tempoScale) {
+    const bpm = track.bpm * tempoScale;
+    const step = 60 / bpm / 4;
+    bus.bpm = bpm;
+    const when = e => barStart + (e.s + (track.swing && e.s % 4 === 2 ? track.swing : 0)) * step;
+    if (track.pump > 0) {
+        // Every kick ducks the pumped voices and lets them swell back before the next one
+        const kicks = events.filter(e => KICKS.has(e.v)).map(when).sort((a, b) => a - b);
+        for (const t of kicks) {
+            pump.setValueAtTime(1 - track.pump, t);
+            pump.linearRampToValueAtTime(1, t + Math.min(0.25, step * 4));
+        }
     }
+    for (const e of events) voices[e.v]?.(when(e), e.n === null ? 0 : midiToFreq(e.n), e.l * step, e.g, bus);
     return 16 * step;
 }
 
@@ -270,20 +130,23 @@ function nextBar(track, bar) {
 
 /**
  * Render a track without playing it, for tests and previews. Runs faster than real time.
+ * @param {string} id - a track id from tracks.js
+ * @param {number} seconds
  * @param {string[]} [onlyVoices] - render just these voices (a stem), for mix checks
- * @returns {Promise<AudioBuffer>} mono buffer of the given length
+ * @param {number} [startBar] - the bar to start from (8 is the first B section, 12 and on are full)
+ * @returns {Promise<AudioBuffer>} stereo buffer of the given length
  */
-export function renderTrackOffline(name, seconds, sampleRate = 44100, onlyVoices = null) {
-    const track = TRACKS[name];
-    const ctx = new OfflineAudioContext(1, Math.ceil(seconds * sampleRate), sampleRate);
+export function renderTrackOffline(id, seconds, sampleRate = 44100, onlyVoices = null, startBar = 0) {
+    const track = getTrack(id);
+    const ctx = new OfflineAudioContext(2, Math.ceil(seconds * sampleRate), sampleRate);
     const voices = createVoices(ctx, createNoiseBuffer(ctx));
-    const { gain, bus } = createBus(ctx, track, ctx.destination);
-    gain.gain.value = TRACK_GAIN;
+    const { gain, bus, pump } = createBus(ctx, track, ctx.destination);
+    gain.gain.value = TRACK_GAIN * track.gain;
     let t = 0.05;
-    let bar = 0;
+    let bar = startBar;
     while (t < seconds) {
         const events = track.bars[bar].filter(e => !onlyVoices || onlyVoices.includes(e.v));
-        t += scheduleBar(voices, track, bus, events, t, 1);
+        t += scheduleBar(voices, track, bus, pump, events, t, 1);
         bar = nextBar(track, bar);
     }
     return ctx.startRendering();
@@ -302,11 +165,15 @@ export function createMusicEngine(settingsRef) {
     let voices = null;
     let timer = null;
 
-    const players = [];     // { name, track, gain, bus, nodes, bar, nextBarTime, barStart, barLen, stopAt }
-    let wanted = null;      // track name that should be playing
+    const players = [];     // { id, track, level, gain, bus, pump, nodes, bar, nextBarTime, barStart, barLen, stopAt }
+    let wanted = null;      // id of the track that should be playing
+    let mode = 'off';       // 'off', 'pinned' (one track on a loop) or 'playlist'
+    let playlist = [];
+    let playlistKey = '';
     let paused = false;
     let tempoScale = 1;
     let isSuppressed = () => false;
+    const listeners = new Set();
 
     function init() {
         if (ctx) return;
@@ -335,12 +202,13 @@ export function createMusicEngine(settingsRef) {
 
     // --- Scheduling ---
 
-    function createPlayer(name, startAt) {
-        const track = TRACKS[name];
-        const { gain, bus, nodes } = createBus(ctx, track, duckGain);
+    function createPlayer(id, startAt) {
+        const track = getTrack(id);
+        const { gain, bus, pump, nodes } = createBus(ctx, track, duckGain);
         // Full level from the first note: each voice has its own attack, so nothing clicks.
-        gain.gain.value = TRACK_GAIN;
-        return { name, track, gain, bus, nodes, bar: 0, nextBarTime: startAt, barStart: null, barLen: 0, stopAt: null };
+        const level = TRACK_GAIN * track.gain;
+        gain.gain.value = level;
+        return { id, track, level, gain, bus, pump, nodes, bar: 0, nextBarTime: startAt, barStart: null, barLen: 0, stopAt: null };
     }
 
     /** The next beat of a playing track, at least 60 ms away so it can still be scheduled. */
@@ -364,9 +232,14 @@ export function createMusicEngine(settingsRef) {
             while (p.nextBarTime < until) {
                 if (p.nextBarTime < now - 0.05) p.nextBarTime = now + 0.02;
                 p.barStart = p.nextBarTime;
-                p.barLen = scheduleBar(voices, p.track, p.bus, p.track.bars[p.bar], p.nextBarTime, tempoScale);
+                p.barLen = scheduleBar(voices, p.track, p.bus, p.pump, p.track.bars[p.bar], p.nextBarTime, tempoScale);
                 p.nextBarTime += p.barLen;
+                const finished = p.bar + 1 >= p.track.bars.length;
                 p.bar = nextBar(p.track, p.bar);
+                // In a playlist the next track starts on the bar line where this one ends
+                if (finished && p.stopAt === null && mode === 'playlist' && playlist.length > 1 && p.id === wanted) {
+                    setWanted(playlist[(playlist.indexOf(wanted) + 1) % playlist.length], p.nextBarTime);
+                }
             }
         }
 
@@ -379,27 +252,35 @@ export function createMusicEngine(settingsRef) {
         const now = ctx.currentTime;
         p.stopAt = at;
         p.gain.gain.cancelScheduledValues(now);
-        p.gain.gain.setValueAtTime(TRACK_GAIN, at);
+        p.gain.gain.setValueAtTime(p.level, at);
         p.gain.gain.linearRampToValueAtTime(0, at + HANDOFF_S);
         setTimeout(() => {
             p.gain.disconnect();
             p.nodes.forEach(n => n.disconnect());
             players.splice(players.indexOf(p), 1);
-        }, (at - now + HANDOFF_S) * 1000 + 500);
+        }, (at - now + HANDOFF_S) * 1000 + 1500);
     }
 
-    function applyTrack() {
+    /** Make the playing track match `wanted`, starting the change at `at` (default: the next beat). */
+    function applyTrack(at = null) {
         if (!ctx) return;
         const now = ctx.currentTime;
         const live = players.find(p => p.stopAt === null);
-        if (live && live.name === wanted) return;
+        if (live && live.id === wanted) return;
 
         let startAt = now + 0.1;
         if (live) {
-            startAt = wanted && !isSuppressed() ? nextBeat(live, now) : now + 0.05;
+            startAt = at ?? (wanted && !isSuppressed() ? nextBeat(live, now) : now + 0.05);
             release(live, startAt);
         }
         if (wanted) players.push(createPlayer(wanted, startAt));
+    }
+
+    function setWanted(id, at = null) {
+        if (id === wanted) return;
+        wanted = id;
+        applyTrack(at);
+        listeners.forEach(cb => cb(wanted));
     }
 
     return {
@@ -410,15 +291,53 @@ export function createMusicEngine(settingsRef) {
             applyTrack();
         },
 
-        /** Switch to a track ('calm' | 'competitive' | 'intense'), or null for silence. */
-        setTrack(name) {
-            if (name === wanted) return;
-            wanted = name && TRACKS[name] ? name : null;
-            applyTrack();
+        /** Loop one track (an id from tracks.js), or pass null for silence. */
+        setTrack(id) {
+            const known = id && TRACK_INFO[id] ? id : null;
+            mode = known ? 'pinned' : 'off';
+            playlist = [];
+            playlistKey = '';
+            setWanted(known);
         },
 
+        /**
+         * Play a playlist: its tracks in order, each handed to the next on the bar line when it
+         * ends. Asking again for the same list changes nothing, so the game can ask every frame;
+         * a new list starts on a random one of its tracks, unless the one playing is in it.
+         * @param {string[]} ids
+         */
+        setPlaylist(ids) {
+            const list = ids.filter(id => TRACK_INFO[id]);
+            const key = list.join();
+            if (mode === 'playlist' && key === playlistKey) return;
+            mode = list.length ? 'playlist' : 'off';
+            playlist = list;
+            playlistKey = key;
+            setWanted(list.length ? (list.includes(wanted) ? wanted : list[Math.floor(Math.random() * list.length)]) : null);
+        },
+
+        /** Do what musicPlan() in tracks.js says: silence, one track, or a playlist. */
+        play(plan) {
+            if (plan.off) this.setTrack(null);
+            else if (plan.track) this.setTrack(plan.track);
+            else this.setPlaylist(plan.playlist);
+        },
+
+        /** Move on to the next track of the playlist, on the next beat. */
+        skip() {
+            if (mode !== 'playlist' || playlist.length < 2) return;
+            setWanted(playlist[(playlist.indexOf(wanted) + 1) % playlist.length]);
+        },
+
+        /** The id of the track that is (or is about to be) playing, or null. */
         getTrack() {
             return wanted;
+        },
+
+        /** Call `cb(id)` whenever the playing track changes. Returns a function that stops it. */
+        onTrack(cb) {
+            listeners.add(cb);
+            return () => listeners.delete(cb);
         },
 
         /** Muffle and lower the music while the game is paused. */

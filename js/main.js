@@ -14,6 +14,7 @@ import { createTouchControls } from './touch.js';
 import { createMenuSystem } from './menu.js';
 import { createGame } from './game.js';
 import { MODE_INFO } from './modes.js';
+import { musicPlan } from './tracks.js';
 
 // --- State ---
 const settings = loadSettings();
@@ -65,11 +66,9 @@ if (musicPlayerContainer) {
 const music = createMusicEngine(settings);
 if (musicPlayer) music.setSuppressor(() => musicPlayer.isPlaying());
 
-/** Menu music: calm unless the player picked a fixed soundtrack. */
-function menuTrack() {
-    const choice = settings.soundtrack || 'auto';
-    if (choice === 'off') return null;
-    return choice === 'auto' ? 'calm' : choice;
+/** Menu music: the casual playlist unless the player picked another playlist or one track. */
+function playMenuMusic() {
+    music.play(musicPlan(settings, 'casual'));
 }
 
 // Browsers only allow audio after a user gesture, so start on the first click or key.
@@ -81,7 +80,7 @@ function unlockAudio() {
 }
 document.addEventListener('pointerdown', unlockAudio);
 document.addEventListener('keydown', unlockAudio);
-music.setTrack(menuTrack());
+playMenuMusic();
 
 // --- Settings ---
 
@@ -90,10 +89,17 @@ function applySetting(key, value) {
     settings[key] = value;
     saveSettings(settings);
     // In a game the engine picks the track every frame; in the menu, switch here.
-    if (key === 'soundtrack' && !currentGame?.isRunning()) music.setTrack(menuTrack());
+    if ((key === 'soundtrack' || key === 'track') && !currentGame?.isRunning()) playMenuMusic();
     if (key === 'soundPack') soundEngine?.play('rotate');
     if (key === 'touchControls') fitGame();
     if (key === 'casualScene' || key === 'weather') background.refresh();
+}
+
+/** Play one built-in track on a loop (or 'auto' for the playlist), and stop the listener's own music. */
+function pickTrack(id) {
+    musicPlayer?.stop();
+    applySetting('track', id);
+    menu?.refresh();
 }
 
 function resetSettings() {
@@ -102,7 +108,7 @@ function resetSettings() {
     saveSettings(settings);
     fitGame();
     background.refresh();
-    if (!currentGame?.isRunning()) music.setTrack(menuTrack());
+    if (!currentGame?.isRunning()) playMenuMusic();
 }
 
 // --- Menu System ---
@@ -112,12 +118,38 @@ menu = createMenuSystem(menuContainer, {
     setSetting: applySetting,
     resetSettings,
     openMusic: () => musicPlayer?.toggle(),
+    music: {
+        current: () => music.getTrack(),
+        userPlaying: () => !!musicPlayer?.isPlaying(),
+        pick: pickTrack,
+        user: {
+            tracks: () => musicPlayer?.getTracks() ?? [],
+            index: () => musicPlayer?.getIndex() ?? -1,
+            playing: () => !!musicPlayer?.isPlaying(),
+            play: i => musicPlayer?.play(i),
+            toggle: () => musicPlayer?.pauseToggle(),
+            add: () => musicPlayer?.openPicker(),
+            clear: () => musicPlayer?.clear(),
+        },
+    },
     sound: {
         move: () => soundEngine?.play('menuMove'),
         select: () => soundEngine?.play('menuSelect'),
     },
 });
 menu.setSceneTag(sceneTag);
+
+// The MUSIC tab follows the music: a new track in the playlist, or a change to the listener's own songs
+music.onTrack(() => menu.refresh());
+musicPlayer?.onChange(() => menu.refresh());
+
+// Songs can be dropped anywhere on the page, not only on the player's drop zone
+window.addEventListener('dragover', e => { if (e.dataTransfer?.types?.includes('Files')) e.preventDefault(); });
+window.addEventListener('drop', e => {
+    if (e.defaultPrevented || !e.dataTransfer?.files?.length) return;
+    e.preventDefault();
+    musicPlayer?.addFiles(e.dataTransfer.files);
+});
 
 menu.onModeSelect((modeId) => {
     gameContainer.classList.remove('game-hidden');
@@ -144,7 +176,7 @@ menu.onQuit(() => {
     }
     gameContainer.classList.add('game-hidden');
     music.setTempoScale(1);
-    music.setTrack(menuTrack());
+    playMenuMusic();
     background.showMenu();
 });
 
@@ -198,7 +230,7 @@ function startNewGame(modeId) {
         music,
         onGameOver(results) {
             music.setTempoScale(1);
-            music.setTrack(menuTrack());
+            playMenuMusic();
             menu.showResults(results);
         },
         onPause() {

@@ -1,5 +1,6 @@
 import { calculateAttack } from '../js/scoring.js';
-import { TRACKS } from '../js/tracks.js';
+import { SPECS, getTrack, TRACK_INFO, TRACK_IDS, CATEGORIES, musicPlan, chordInfo, segments, parseMelody, scalePcs } from '../js/tracks.js';
+import { VOICE_NAMES, KICKS, createVoices } from '../js/voices.js';
 import { SCENES, CASUAL_SCENES } from '../js/background.js';
 import { AMBIENCE_LAYERS } from '../js/ambience.js';
 import { normalizeSettings, DEFAULT_SETTINGS, getConstraint } from '../js/settings.js';
@@ -24,38 +25,72 @@ check('combo table: combo 1 adds 1, combo 4 adds 2, combo 20 adds 5',
 check('perfect clear adds 10', hit('tetris', { perfectClear: true }) === 14);
 check('no clear sends nothing', calculateAttack({ isClearAction: false, action: 'tspin' }) === 0);
 
-// --- Song data ---
-const VOICES = new Set(['epiano', 'bell', 'pad', 'softbass', 'bass', 'pluck', 'stab', 'lead',
-    'kick', 'lofikick', 'snare', 'rim', 'hat', 'brush', 'crash']);
-for (const [name, track] of Object.entries(TRACKS)) {
+// --- Song data: nine original tracks in three playlists ---
+check('three playlists of three tracks each, and nine distinct tracks',
+    Object.values(CATEGORIES).every(c => c.tracks.length === 3) && new Set(TRACK_IDS).size === 9
+    && new Set(Object.values(TRACK_INFO).map(t => t.name)).size === 9 && new Set(Object.values(TRACK_INFO).map(t => t.art)).size === 9,
+    Object.entries(CATEGORIES).map(([k, c]) => `${k}: ${c.tracks.join(', ')}`).join('; '));
+check('every voice in voices.js is listed in VOICE_NAMES, and the other way round',
+    Object.keys(createVoices({}, null)).sort().join() === [...VOICE_NAMES].sort().join());
+
+// The old soundtrack was arrangements of Korobeiniki. The new one must not open with its motif (E B C D C B).
+const KOROBEINIKI = [-5, 1, 2, -2, -1];
+for (const spec of SPECS) {
+    const info = TRACK_INFO[spec.id];
+    const track = getTrack(spec.id);
     const events = track.bars.flat();
-    const badVoice = events.find(e => !VOICES.has(e.v));
+    const badVoice = events.find(e => !VOICE_NAMES.includes(e.v));
     const badStep = events.find(e => e.s < 0 || e.s >= 16 || e.l <= 0 || e.s + e.l > 16.001);
     const notes = events.filter(e => e.n !== null).map(e => e.n);
-    check(`${name}: every event uses a known voice`, !badVoice, badVoice && badVoice.v);
-    check(`${name}: every event fits inside its bar`, !badStep, badStep && JSON.stringify(badStep));
-    check(`${name}: notes stay in a playable range`, Math.min(...notes) >= 28 && Math.max(...notes) <= 100,
-        `MIDI ${Math.min(...notes)} to ${Math.max(...notes)}`);
-    check(`${name}: loop point is inside the song`, track.loopStart >= 0 && track.loopStart < track.bars.length);
+    check(`${spec.id}: every event uses a known voice and fits inside its bar`, !badVoice && !badStep, badVoice?.v || JSON.stringify(badStep || ''));
+    check(`${spec.id}: notes stay in a playable range`, Math.min(...notes) >= 24 && Math.max(...notes) <= 96, `MIDI ${Math.min(...notes)} to ${Math.max(...notes)}`);
+    check(`${spec.id}: 36 bars that loop back past the intro, about a minute or two long`,
+        track.bars.length === 36 && track.loopStart === 4 && track.bars.length * 16 * (60 / track.bpm / 4) > 45 && track.bars.length * 16 * (60 / track.bpm / 4) < 130,
+        `${(track.bars.length * 16 * (60 / track.bpm / 4)).toFixed(0)} s at ${track.bpm} BPM`);
+
+    // The melody is in the key, or a tone of the chord under it
+    const shift = spec.transpose || 0;
+    const scale = scalePcs(spec.key, shift);
+    let wrong = '';
+    for (const part of ['A', 'B']) {
+        let bars;
+        try { bars = parseMelody(spec.melody[part], shift); } catch (e) { wrong = e.message; break; }
+        if (bars.length !== 8 || spec.chords[part].length !== 8) wrong = `${part} is not eight bars`;
+        bars.forEach((bar, i) => {
+            const allowed = new Set([...scale, ...segments(spec.chords[part][i], shift).flatMap(g => g.chord.pcs)]);
+            for (const n of bar) if (!allowed.has(n.n % 12)) wrong = `${part}${i + 1}: note ${n.n} is not in the key or the chord`;
+        });
+    }
+    check(`${spec.id}: melody adds up in every bar and stays in the key or the chord`, !wrong, wrong);
+
+    const first = parseMelody(spec.melody.A, shift)[0].slice(0, 6).map(n => n.n);
+    const steps = first.slice(1).map((n, i) => n - first[i]);
+    check(`${spec.id}: does not open with the Korobeiniki motif`, steps.slice(0, 5).join() !== KOROBEINIKI.join());
+    check(`${spec.id}: has a name, a genre, a blurb and a key`, !!(info.name && info.genre && info.blurb && info.key), info.key);
+    if (spec.pump > 0) check(`${spec.id}: a pumped track has kicks to duck on`, events.some(e => KICKS.has(e.v)));
+    check(`${spec.id}: the intro has no melody and the A section brings it in`,
+        track.bars.slice(0, 4).every(b => !b.some(e => e.v === spec.voice && e.g === spec.vel)) && track.bars[4].some(e => e.v === spec.voice));
+}
+{
+    const avg = c => CATEGORIES[c].tracks.reduce((a, id) => a + TRACK_INFO[id].bpm, 0) / 3;
+    check('tempos rise from the casual playlist to competitive to intense', avg('casual') < avg('competitive') && avg('competitive') < avg('intense'),
+        ['casual', 'competitive', 'intense'].map(c => `${c} ${avg(c).toFixed(0)} BPM`).join(', '));
+    check('chords can be read, shifted and voiced', chordInfo('F#m7').root === 6 && chordInfo('Am', 5).root === 2 && segments(['Gm7', 'C7']).length === 2);
+    check('a melody bar that does not add up to 16 steps is refused', (() => { try { parseMelody('C5:4 D5:4'); return false; } catch { return true; } })());
 }
 
-// The melody keeps its Korobeiniki shape: first phrase E B C D C B (in A minor) shifted by the track key.
-const firstPhrase = (name, voice) => TRACKS[name].bars
-    .find(bar => bar.some(e => e.v === voice)).filter(e => e.v === voice).slice(0, 6).map(e => e.n);
-const intervals = arr => arr.slice(1).map((n, i) => n - arr[i]);
-const motif = intervals([76, 71, 72, 74, 72, 71]);
-for (const [name, voice] of [['calm', 'bell'], ['competitive', 'lead'], ['intense', 'lead']]) {
-    const phrase = firstPhrase(name, voice);
-    check(`${name}: opens with the Korobeiniki motif`, intervals(phrase).join() === motif.join(), phrase.join(' '));
+// What the soundtrack plays for the settings
+{
+    const auto = musicPlan({ soundtrack: 'auto', track: 'auto' }, 'intense');
+    check('auto plays the mode\'s playlist', auto.playlist?.join() === CATEGORIES.intense.tracks.join());
+    check('a chosen playlist beats the mode', musicPlan({ soundtrack: 'competitive', track: 'auto' }, 'casual').playlist.join() === CATEGORIES.competitive.tracks.join());
+    check('a chosen track plays on its own, in any mode', musicPlan({ soundtrack: 'auto', track: 'redline' }, 'casual').track === 'redline');
+    check('off is silence, even with a track chosen', musicPlan({ soundtrack: 'off', track: 'redline' }, 'casual').off === true);
+    check('an unknown track falls back to the playlist', !!musicPlan({ soundtrack: 'auto', track: 'nope' }, 'casual').playlist);
+    check('saves from the old soundtrack ("calm") still load',
+        normalizeSettings({ version: 2, soundtrack: 'calm' }).soundtrack === 'casual' && normalizeSettings({ version: 2, track: 'redline' }).track === 'redline'
+        && normalizeSettings({ version: 2, track: 'korobeiniki' }).track === 'auto');
 }
-const top = name => firstPhrase(name, name === 'calm' ? 'bell' : 'lead')[0];
-check('calm is raised a minor third (E5 to G5)', top('calm') === 79);
-check('competitive is raised a fourth (E5 to A5)', top('competitive') === 81);
-
-const loopSeconds = t => (t.bars.length - t.loopStart) * 16 * (60 / t.bpm / 4);
-check('tempos rise calm < competitive < intense',
-    TRACKS.calm.bpm < TRACKS.competitive.bpm && TRACKS.competitive.bpm < TRACKS.intense.bpm,
-    Object.entries(TRACKS).map(([n, t]) => `${n} ${t.bpm} BPM, loop ${loopSeconds(t).toFixed(0)}s`).join(', '));
 
 // --- Scenes and their background sounds ---
 for (const [id, scene] of Object.entries(SCENES)) {

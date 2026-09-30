@@ -15,10 +15,22 @@
 import { MODE_INFO, MODE_SPRINT, MODE_BLITZ, MODE_CLASSIC } from './modes.js';
 import { getConstraint } from './settings.js';
 import { findSetting } from './settings-defs.js';
+import { CATEGORIES, TRACK_INFO, TRACK_IDS } from './tracks.js';
+import { coverArt, sparkMark, noteMark } from './cover-art.js';
 
 const pad = n => String(n + 1).padStart(2, '0');
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const capital = s => s.charAt(0).toUpperCase() + s.slice(1);
+const clock = seconds => (Number.isFinite(seconds) ? `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}` : '-:--');
+
+/** A fresh copy of a cover canvas (a canvas can only sit in one place on the page). */
+function copyCanvas(source) {
+    const c = document.createElement('canvas');
+    c.width = source.width;
+    c.height = source.height;
+    c.getContext('2d').drawImage(source, 0, 0);
+    return c;
+}
 
 const MODE_DETAIL = {
     [MODE_SPRINT]: { goal: 'Clear 40 lines. Your time is your score.', scenery: 'Midnight Circuit' },
@@ -38,7 +50,17 @@ const CONTROL_ROWS = [
  * @property {(key: string, value: *) => void} setSetting - change and save a setting
  * @property {() => void} resetSettings - restore defaults
  * @property {() => void} openMusic - show or hide the music player
+ * @property {MusicOptions} [music] - what the MUSIC tab needs to show and control the music
  * @property {{ move?: () => void, select?: () => void }} [sound] - menu sounds
+ */
+
+/**
+ * @typedef {Object} MusicOptions
+ * @property {() => (string|null)} current - id of the built-in track playing now
+ * @property {() => boolean} userPlaying - whether the listener's own music is playing
+ * @property {(id: string) => void} pick - play a built-in track on a loop, or 'auto' for the playlist
+ * @property {Object} user - the listener's own music: tracks() [{ name, artist, album, duration, cover,
+ *   hasArt }], index(), playing(), play(i), toggle(), add(), clear()
  */
 
 /**
@@ -48,7 +70,7 @@ const CONTROL_ROWS = [
  * @returns {Object} menu controller
  */
 export function createMenuSystem(container, options) {
-    const { settings, tabs, setSetting, resetSettings, openMusic, sound = {} } = options;
+    const { settings, tabs, setSetting, resetSettings, openMusic, music = null, sound = {} } = options;
     const cb = {};
 
     const root = document.createElement('div');
@@ -125,7 +147,7 @@ export function createMenuSystem(container, options) {
                     title: info.name, text: info.description,
                     lines: [
                         { label: 'GOAL', value: MODE_DETAIL[id].goal },
-                        { label: 'MUSIC', value: capital(info.track) },
+                        { label: 'MUSIC', value: capital(info.music) + ' playlist' },
                         { label: 'SCENERY', value: MODE_DETAIL[id].scenery },
                     ],
                 },
@@ -149,12 +171,110 @@ export function createMenuSystem(container, options) {
         return nodes;
     }
 
+    // --- The MUSIC tab: two playlists, then the soundtrack settings ---
+
+    function claudeTrackNode(id) {
+        const t = TRACK_INFO[id];
+        const pinned = settings.track === id;
+        return {
+            kind: 'action', label: t.name.toUpperCase(), hint: `${t.genre.toUpperCase()}  ${t.bpm}`,
+            thumb: () => coverArt(t.art),
+            mark: () => (music.current() === id && !music.userPlaying() ? '\u25B6' : ''),
+            info: {
+                title: t.name, art: () => coverArt(t.art), credit: true, text: t.blurb,
+                lines: [
+                    { label: 'GENRE', value: t.genre },
+                    { label: 'TEMPO', value: `${t.bpm} BPM` },
+                    { label: 'KEY', value: capital(t.key) },
+                    { label: 'PLAYLIST', value: CATEGORIES[t.category].label },
+                    { label: 'STATUS', value: music.current() === id && !music.userPlaying() ? (pinned ? 'Playing on a loop' : 'Playing') : 'Select to play' },
+                ],
+            },
+            run() { music.pick(id); },
+        };
+    }
+
+    function claudeNodes() {
+        const nodes = [{
+            kind: 'action', label: 'AUTO PLAYLIST', hint: settings.track === 'auto' ? 'ON' : 'SELECT', thumb: sparkMark,
+            mark: () => (settings.track === 'auto' && !music.userPlaying() ? '\u25B6' : ''),
+            info: {
+                title: 'AUTO PLAYLIST', art: sparkMark, credit: true,
+                text: 'Each mode plays its own playlist and moves on to the next track by itself: casual in the menu, Casual and 40 Lines, intense in Blitz. Choose which playlist with SOUNDTRACK.',
+            },
+            run() { music.pick('auto'); },
+        }];
+        for (const [id, cat] of Object.entries(CATEGORIES)) {
+            nodes.push({ kind: 'info', label: cat.label.toUpperCase(), value: `${cat.tracks.length} TRACKS` });
+            for (const track of cat.tracks) nodes.push(claudeTrackNode(track));
+        }
+        nodes.push(backNode());
+        return nodes;
+    }
+
+    function yoursNodes() {
+        const u = music.user;
+        const tracks = u.tracks();
+        const nodes = [{
+            kind: 'action', label: 'ADD FILES', hint: 'OPEN', thumb: noteMark,
+            info: {
+                title: 'ADD FILES', art: noteMark,
+                text: 'Choose songs from your device (MP3, FLAC, M4A, OGG, WAV), or drop them anywhere on this window. Nothing is uploaded: they play from your own browser and are gone when you close the page. Cover art inside a file is shown as pixel art.',
+            },
+            run: () => u.add(),
+        }];
+        if (!tracks.length) nodes.push({ kind: 'info', label: 'NO SONGS YET', value: '' });
+        tracks.forEach((t, i) => nodes.push({
+            kind: 'action', label: t.name.toUpperCase(), hint: clock(t.duration), thumb: () => copyCanvas(t.cover),
+            mark: () => (u.index() === i ? (u.playing() ? '\u25B6' : '\u23F8') : ''),
+            info: {
+                title: t.name, art: () => copyCanvas(t.cover),
+                text: [t.artist, t.album].filter(Boolean).join(' / ') || 'This file has no title or artist tags.',
+                lines: [
+                    { label: 'LENGTH', value: clock(t.duration) },
+                    { label: 'COVER', value: t.hasArt ? 'From the file, pixelated' : 'Made from the name' },
+                    { label: 'STATUS', value: u.index() === i ? (u.playing() ? 'Playing' : 'Paused') : 'Select to play' },
+                ],
+            },
+            run() { if (u.index() === i) u.toggle(); else u.play(i); },
+        }));
+        if (tracks.length) {
+            nodes.push({
+                kind: 'action', label: 'CLEAR LIST', hint: '', armable: true,
+                info: { title: 'CLEAR LIST', text: 'Stop the music and take every song off the list. Press twice to confirm. Your files are not touched.' },
+                run() { u.clear(); },
+            });
+        }
+        nodes.push(backNode());
+        return nodes;
+    }
+
     function musicNodes() {
+        if (!music) return [settingNode('soundtrack'), settingNode('musicVolume'), settingNode('musicMuted')];
+        const current = music.current();
+        const nowName = current && TRACK_INFO[current] ? TRACK_INFO[current].name.toUpperCase() : '';
+        const yours = music.user.tracks().length;
         return [{
-            kind: 'action', label: 'MUSIC PLAYER', hint: 'OPEN',
-            info: { title: 'MUSIC PLAYER', text: 'Drop your own songs on the player to play them instead of the soundtrack.' },
-            run: () => openMusic(),
-        }, settingNode('soundtrack'), settingNode('musicVolume'), settingNode('musicMuted')];
+            kind: 'menu', label: 'MADE WITH CLAUDE', hint: music.userPlaying() ? `${TRACK_IDS.length} TRACKS` : (nowName || `${TRACK_IDS.length} TRACKS`), title: 'MADE WITH CLAUDE',
+            thumb: sparkMark, mark: () => (music.userPlaying() ? '' : '\u25B6'), live: true,
+            info: {
+                title: 'MADE WITH CLAUDE', art: sparkMark, credit: true,
+                text: 'Nine original tracks in three playlists: lo-fi, jazz and cafe music; synthwave, house and funk; drum and bass, trance and bass music. Written for this game and synthesized live in your browser. Nothing is sampled or downloaded.',
+                lines: [{ label: 'TRACKS', value: TRACK_IDS.length }, { label: 'NOW', value: nowName || 'Silence' }],
+            },
+            children: claudeNodes,
+        }, {
+            kind: 'menu', label: 'YOUR MUSIC', hint: yours ? `${yours} SONG${yours === 1 ? '' : 'S'}` : 'ADD SONGS', title: 'YOUR MUSIC',
+            thumb: noteMark, mark: () => (music.userPlaying() ? '\u25B6' : ''), live: true,
+            info: {
+                title: 'YOUR MUSIC', art: noteMark,
+                text: 'Play songs from your own device instead of the soundtrack. Their cover art becomes pixel art here. Pick a Made with Claude track, or the auto playlist, to go back to the soundtrack.',
+                lines: [{ label: 'SONGS', value: yours }],
+            },
+            children: yoursNodes,
+        },
+        settingNode('soundtrack'), settingNode('musicVolume'), settingNode('musicMuted'),
+        { kind: 'action', label: 'PLAYER PANEL', hint: 'OPEN', info: { title: 'PLAYER PANEL', text: 'The small player with seek, shuffle, repeat and crossfade for your own songs.' }, run: () => openMusic() }];
     }
 
     function controlNodes() {
@@ -167,13 +287,13 @@ export function createMenuSystem(container, options) {
         { label: 'PLAY', info: { title: 'PLAY', text: 'Pick a mode, then set it up before you start.' }, children: modeNodes },
         { label: 'SETTINGS', info: { title: 'SETTINGS', text: 'Handling, sound, visuals and game options. Changes save at once.' }, children: () => settingsNodes(false) },
         { label: 'CONTROLS', info: { title: 'CONTROLS', text: 'How to play on a keyboard. On phones and tablets, use the on-screen buttons.' }, children: controlNodes },
-        { label: 'MUSIC', info: { title: 'MUSIC', text: 'Soundtrack options, and a player for your own music.' }, children: musicNodes },
+        { label: 'MUSIC', info: { title: 'MUSIC', text: 'The soundtrack made for this game, your own songs, and the volume.' }, children: musicNodes, live: true },
     ];
 
     function rootLevel(tabIndex) {
         const tab = MAIN_TABS[tabIndex];
         const nodes = tab.children();
-        return { title: tab.label, nodes, index: firstFocusable(nodes) };
+        return { title: tab.label, nodes, index: firstFocusable(nodes), rebuild: tab.live ? tab.children : null };
     }
 
     // --- Values ---
@@ -227,7 +347,7 @@ export function createMenuSystem(container, options) {
 
     function activate(n) {
         if (n.kind === 'menu') {
-            state.levels.push({ title: n.title || n.label, nodes: n.children(), index: 0 });
+            state.levels.push({ title: n.title || n.label, nodes: n.children(), index: 0, rebuild: n.live ? n.children : null });
             const lvl = level();
             lvl.index = firstFocusable(lvl.nodes);
             state.focus = 'list';
@@ -305,8 +425,10 @@ export function createMenuSystem(container, options) {
         } else {
             right = `<span class="ac-read">${esc(valueText(n))}</span>`;
         }
-        return `<div class="ac-row ack-${n.kind}" role="listitem" data-i="${i}" style="--i:${i}">` +
-            `<span class="ac-num">${pad(i)}</span><span class="ac-label">${esc(n.label)}</span>${right}</div>`;
+        const thumb = n.thumb ? '<span class="ac-thumb"></span>' : '';
+        const mark = n.mark ? `<span class="ac-mark">${n.mark()}</span>` : '';
+        return `<div class="ac-row ack-${n.kind}${n.thumb ? ' has-thumb' : ''}" role="listitem" data-i="${i}" style="--i:${i}">` +
+            `<span class="ac-num">${pad(i)}</span>${thumb}<span class="ac-label">${esc(n.label)}</span>${right}${mark}</div>`;
     }
 
     function patchRow(i) {
@@ -336,6 +458,7 @@ export function createMenuSystem(container, options) {
         const n = state.focus === 'row' ? null : level().nodes[level().index];
         const info = n ? (n.info || { title: n.label }) : MAIN_TABS[state.tab]?.info || {};
         let html = '';
+        if (info.art) html += '<div class="ac-art"></div>';
         if (info.title) html += `<div class="ac-info-title">${esc(info.title)}</div>`;
         if (n && (n.kind === 'range' || n.kind === 'toggle' || n.kind === 'enum')) {
             html += `<div class="ac-info-value">${esc(valueText(n))}</div>`;
@@ -347,7 +470,10 @@ export function createMenuSystem(container, options) {
             html += '<dl class="ac-lines">' + lines.map(l =>
                 `<div${l.big ? ' class="big"' : ''}><dt>${esc(l.label)}</dt><dd>${esc(l.value)}</dd></div>`).join('') + '</dl>';
         }
+        if (info.credit) html += '<div class="ac-credit"><span class="ac-credit-mark"></span>MADE WITH CLAUDE</div>';
         el.info.innerHTML = html;
+        if (info.art) el.info.querySelector('.ac-art').appendChild(info.art());
+        if (info.credit) el.info.querySelector('.ac-credit-mark').appendChild(sparkMark());
     }
 
     function refreshFocus() {
@@ -368,7 +494,8 @@ export function createMenuSystem(container, options) {
             : `${k('▲')}${k('▼')} SELECT &nbsp; ${k('◀')}${k('▶')} ADJUST &nbsp; ${k('ENTER')} CONFIRM &nbsp; ${k('ESC')} BACK`;
     }
 
-    function render() {
+    /** Draw the current level. `quiet` skips the slide-in, for redraws the listener did not ask for. */
+    function render(quiet = false) {
         const main = state.screen === 'main';
         root.classList.toggle('over', !main);
         el.tabs.hidden = !main;
@@ -379,7 +506,11 @@ export function createMenuSystem(container, options) {
             el.banner.innerHTML = `<span class="ac-banner-main">${esc(state.banner.text)}</span><span class="ac-banner-sub">${esc(state.banner.sub || '')}</span>`;
         }
         renderCrumbs();
+        el.list.classList.toggle('quiet', quiet);
         el.list.innerHTML = level().nodes.map(rowHtml).join('');
+        level().nodes.forEach((n, i) => {
+            if (n.thumb) el.list.querySelector(`[data-i="${i}"] .ac-thumb`)?.appendChild(n.thumb());
+        });
         refreshFocus();
     }
 
@@ -599,7 +730,14 @@ export function createMenuSystem(container, options) {
         isOpen: () => !root.hidden,
         /** Redraw after settings changed from outside (for example a reset). */
         refresh() {
-            if (!root.hidden) render();
+            if (root.hidden) return;
+            const lvl = level();
+            if (lvl.rebuild) {
+                lvl.nodes = lvl.rebuild();
+                lvl.index = Math.max(0, Math.min(lvl.index, lvl.nodes.length - 1));
+                if (!focusable(lvl.nodes[lvl.index])) lvl.index = firstFocusable(lvl.nodes);
+            }
+            render(true);
         },
         /** The line at the bottom right naming the scene and weather behind the menu. */
         setSceneTag(text) {

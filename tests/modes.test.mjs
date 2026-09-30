@@ -17,8 +17,8 @@ function mode(id) {
 }
 
 // Soundtrack by mode: one track for the whole run
-check('Casual and 40 Lines play calm, Blitz intense',
-    MODE_INFO.classic.track === 'calm' && MODE_INFO.sprint.track === 'calm' && MODE_INFO.blitz.track === 'intense');
+check('Casual and 40 Lines play the casual playlist, Blitz the intense one',
+    MODE_INFO.classic.music === 'casual' && MODE_INFO.sprint.music === 'casual' && MODE_INFO.blitz.music === 'intense');
 
 // Attack stats
 {
