@@ -2,7 +2,8 @@ import { calculateAttack } from '../js/scoring.js';
 import { TRACKS } from '../js/tracks.js';
 import { SCENES, CASUAL_SCENES } from '../js/background.js';
 import { AMBIENCE_LAYERS } from '../js/ambience.js';
-import { normalizeSettings } from '../js/settings.js';
+import { normalizeSettings, DEFAULT_SETTINGS, getConstraint } from '../js/settings.js';
+import { SETTINGS_TABS, findSetting } from '../js/settings-defs.js';
 import { VARIANTS, VARIANT_INFO, CYCLE_ORDER, ambienceFor, cycleVariant } from '../js/scenes/atmosphere.js';
 
 let failures = 0;
@@ -97,6 +98,32 @@ check('every weather can be picked in settings',
 check('every Casual scene exists and can be picked in settings',
     CASUAL_SCENES.every(id => SCENES[id] && normalizeSettings({ version: 2, casualScene: id }).casualScene === id),
     `${CASUAL_SCENES.length} scenes`);
+
+// --- The settings menu is built from SETTINGS_TABS ---
+{
+    const defs = SETTINGS_TABS.flatMap(t => t.settings);
+    const problems = [];
+    for (const def of defs) {
+        if (!(def.key in DEFAULT_SETTINGS)) problems.push(`${def.key}: not in DEFAULT_SETTINGS`);
+        if (!def.label || !def.hint) problems.push(`${def.key}: missing label or hint`);
+        if (def.type === 'range' && !getConstraint(def.key)) problems.push(`${def.key}: range without a constraint`);
+        if (def.type === 'toggle' && typeof DEFAULT_SETTINGS[def.key] !== 'boolean') problems.push(`${def.key}: toggle on a non-boolean`);
+        if (def.type === 'enum') {
+            if (!def.values?.length) problems.push(`${def.key}: enum without values`);
+            for (const v of def.values || []) {
+                if (normalizeSettings({ version: 2, [def.key]: v })[def.key] !== v) problems.push(`${def.key}: "${v}" is not accepted by settings.js`);
+                if (def.describe && !String(def.describe(v))) problems.push(`${def.key}: "${v}" reads as nothing`);
+            }
+            if (!def.values.includes(DEFAULT_SETTINGS[def.key])) problems.push(`${def.key}: default is not one of its values`);
+        }
+        if (def.describe && !String(def.describe(DEFAULT_SETTINGS[def.key]))) problems.push(`${def.key}: default reads as nothing`);
+    }
+    check('every menu setting has a default, a hint and valid values', problems.length === 0, problems.join('; '));
+    check('every setting in DEFAULT_SETTINGS can be changed in the menu',
+        Object.keys(DEFAULT_SETTINGS).every(k => findSetting(k)),
+        Object.keys(DEFAULT_SETTINGS).filter(k => !findSetting(k)).join(', '));
+    check('settings labels are unique within a tab', SETTINGS_TABS.every(t => new Set(t.settings.map(s => s.label)).size === t.settings.length));
+}
 
 console.log(failures ? `\n${failures} FAILED` : '\nAll content checks passed');
 process.exit(failures ? 1 : 0);

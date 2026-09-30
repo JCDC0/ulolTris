@@ -271,10 +271,10 @@
     /** Rounded candy block with a vertical gradient and a specular highlight. */
     glossy(ctx, s, color) {
       const r = s * 0.22;
-      const pad = Math.max(1, s * 0.03);
+      const pad2 = Math.max(1, s * 0.03);
       const path = () => {
         ctx.beginPath();
-        ctx.roundRect(pad, pad, s - pad * 2, s - pad * 2, r);
+        ctx.roundRect(pad2, pad2, s - pad2 * 2, s - pad2 * 2, r);
       };
       const g = ctx.createLinearGradient(0, 0, 0, s);
       g.addColorStop(0, shade(color, 0.3));
@@ -286,7 +286,7 @@
       ctx.lineWidth = Math.max(1, s * 0.05);
       ctx.strokeStyle = shade(color, -0.5);
       ctx.stroke();
-      const hl = ctx.createLinearGradient(0, pad, 0, s * 0.5);
+      const hl = ctx.createLinearGradient(0, pad2, 0, s * 0.5);
       hl.addColorStop(0, "rgba(255,255,255,0.75)");
       hl.addColorStop(1, "rgba(255,255,255,0)");
       ctx.beginPath();
@@ -473,6 +473,7 @@
   }
 
   // js/scenes/atmosphere.js
+  var VARIANTS = ["sunny", "cloudy", "sunset", "rain", "thunder", "night", "nightthunder"];
   var CYCLE_ORDER = ["sunny", "cloudy", "rain", "thunder", "sunset", "night", "nightthunder"];
   var VARIANT_INFO = {
     sunny: {
@@ -1171,11 +1172,11 @@
     const { kw, kh, pairs, awn, stem, colors, bend } = size;
     const earH = pairs * kh + kh + Math.ceil(kh / 2);
     const h = awn + earH + stem;
-    const pad = bend + awn + kw + 2;
-    const w = pad * 2 + 1;
+    const pad2 = bend + awn + kw + 2;
+    const w = pad2 * 2 + 1;
     const grid = layer(w, h);
     const g = grid.ctx;
-    const cx = pad;
+    const cx = pad2;
     const earTop = awn;
     rect(g, cx, earTop + kh, 1, h - earTop - kh, colors.stem);
     if (size.leaves) {
@@ -3040,6 +3041,60 @@
         if (!MODE_SCENES[modeId]) showCasual(level);
       }
     };
+  }
+
+  // js/settings-defs.js
+  var SOUND_PACK_LABELS = { ulol: "uloltris", arcade: "Arcade (Jstris-style)", bubbly: "Bubbly (PPT-style)" };
+  var LEVELS = ["off", "low", "medium", "high"];
+  var SETTINGS_TABS = [
+    { id: "handling", label: "HANDLING", settings: [
+      { key: "arr", label: "ARR", type: "range", describe: describeArr, hint: "Auto repeat rate. Frames between auto-shifts once DAS has charged. 0 slides to the wall at once." },
+      { key: "das", label: "DAS", type: "range", describe: describeFrames, hint: "Delayed auto shift. Frames you hold a direction before it starts repeating." },
+      { key: "dcd", label: "DCD", type: "range", describe: describeDcd, hint: "DAS cut delay. Pauses DAS charging for this many frames after a rotation or a new piece. 0 is off." },
+      { key: "sdf", label: "SDF", type: "range", describe: describeSoftDrop, hint: "Soft drop factor. How many times faster than gravity a held soft drop falls. The top value drops at once." },
+      { key: "cancelDasOnDirectionChange", label: "CANCEL DAS ON TURN", type: "toggle", hint: "On: changing direction resets the DAS charge. Off: the charge carries over." },
+      { key: "preferSoftDrop", label: "PREFER SOFT DROP", type: "toggle", hint: "On: soft drop runs before sideways movement within a frame." }
+    ] },
+    { id: "audio", label: "AUDIO", settings: [
+      { key: "masterVolume", label: "MASTER", type: "range", describe: describeVolume, hint: "Overall volume for everything." },
+      { key: "sfxVolume", label: "SFX", type: "range", describe: describeVolume, hint: "Volume of move, rotate, drop and clear sounds." },
+      { key: "musicVolume", label: "MUSIC", type: "range", describe: describeVolume, hint: "Volume of the soundtrack." },
+      { key: "ambienceVolume", label: "SCENE SOUND VOLUME", type: "range", describe: describeVolume, hint: "Volume of rain, wind, birds and the other sounds of the scenery." },
+      { key: "sfxMuted", label: "MUTE SFX", type: "toggle", hint: "Silence the effect sounds." },
+      { key: "musicMuted", label: "MUTE MUSIC", type: "toggle", hint: "Silence the soundtrack." },
+      { key: "ambience", label: "SCENE SOUNDS", type: "toggle", hint: "Play the sounds of the scenery: rain, thunder, wind, wheat, water, birds and more." },
+      { key: "soundPack", label: "SOUND PACK", type: "enum", values: ["ulol", "arcade", "bubbly"], describe: (v) => SOUND_PACK_LABELS[v] || v, hint: "The set of effect sounds. All are synthesized; none are recordings." },
+      { key: "soundtrack", label: "SOUNDTRACK", type: "enum", values: ["auto", "calm", "competitive", "intense", "off"], describe: describeSoundtrack, hint: "Auto plays calm in the menu, Casual and 40 Lines, and intense in Blitz. Or force one track." },
+      { key: "crossfadeDuration", label: "PLAYER CROSSFADE", type: "range", describe: describeCrossfade, hint: "Fade between songs in the music player that plays your own files." }
+    ] },
+    { id: "visual", label: "VISUAL", settings: [
+      { key: "blockSkin", label: "BLOCK SKIN", type: "enum", values: SKINS, describe: describeSkin, hint: "How the blocks are drawn." },
+      { key: "statsDisplay", label: "STATS DISPLAY", type: "enum", values: ["off", "time", "speed", "efficiency", "versus"], describe: describeStatsDisplay, hint: "Which numbers sit at the bottom left of the board." },
+      { key: "background", label: "BACKGROUND", type: "enum", values: ["on", "dim", "off"], describe: describeEnum, hint: "The pixel art scenery behind the game. Dim darkens it; off also silences scene sounds." },
+      { key: "casualScene", label: "CASUAL SCENE", type: "enum", values: ["cycle", ...CASUAL_SCENES], describe: describeScene, hint: "Which scene Casual shows. Cycle changes the scene every level." },
+      { key: "weather", label: "WEATHER", type: "enum", values: ["default", "cycle", ...VARIANTS], describe: describeWeather, hint: "Scene default gives each scene its own look. Cycle changes the weather every Casual level. Or pick one for every scene." },
+      { key: "ghostOpacity", label: "GHOST OPACITY", type: "range", describe: describeOpacity, hint: "How visible the ghost piece is, where the piece will land." },
+      { key: "showActionText", label: "CLEAR TEXT", type: "toggle", hint: "Show the name of each clear, T-spin and combo beside the board." }
+    ] },
+    { id: "effects", label: "FX", settings: [
+      { key: "boardBounce", label: "BOARD BOUNCE", type: "enum", values: LEVELS, describe: describeEnum, hint: "The board springs on hard drops, clears and wall bumps." },
+      { key: "placeImpact", label: "PLACE IMPACT", type: "enum", values: LEVELS, describe: describeEnum, hint: "Drop trail, landing flash and dust when a piece locks." },
+      { key: "clearEffects", label: "CLEAR EFFECTS", type: "enum", values: LEVELS, describe: describeEnum, hint: "Row flashes, bursts, T-spin spirals, sparkles and confetti." },
+      { key: "screenShake", label: "SCREEN SHAKE", type: "enum", values: LEVELS, describe: describeEnum, hint: "The board shakes on big clears." }
+    ] },
+    { id: "gameplay", label: "GAME", settings: [
+      { key: "gameStyle", label: "GAME STYLE", type: "enum", values: ["modern", "battle"], describe: describeGameStyle, hint: "Modern spawns the next piece at once. Battle pauses on line clears and adds an entry delay. Read when a game starts." },
+      { key: "nextPreviewCount", label: "NEXT PIECES", type: "range", describe: describePreviewCount, hint: "How many upcoming pieces are shown." },
+      { key: "lockDelay", label: "LOCK DELAY", type: "range", describe: describeLockDelay, hint: "How long a piece can rest on the stack before it locks." },
+      { key: "touchControls", label: "TOUCH CONTROLS", type: "enum", values: ["auto", "on", "off"], describe: describeEnum, hint: "On-screen buttons for phones and tablets. Auto shows them on touch devices." }
+    ] }
+  ];
+  function findSetting(key) {
+    for (const tab of SETTINGS_TABS) {
+      const def = tab.settings.find((s) => s.key === key);
+      if (def) return def;
+    }
+    return null;
   }
 
   // js/sound.js
@@ -5712,204 +5767,573 @@
   }
 
   // js/menu.js
-  function createMenuSystem(container) {
-    let currentScreen = null;
-    let onModeSelectCallback = null;
-    let onResumeCallback = null;
-    let onRestartCallback = null;
-    let onQuitCallback = null;
-    const screens = {};
-    const mainMenu = createElement("div", "menu-screen menu-main");
-    mainMenu.innerHTML = `
-        <div class="menu-content">
-            <h1 class="menu-title">
-                <span class="title-u">u</span><span class="title-lol">lol</span><span class="title-tris">Tris</span>
-            </h1>
-            <p class="menu-subtitle">A cozy block stacker</p>
-            <div class="menu-buttons">
-                <button class="menu-btn menu-btn-primary" data-action="play">PLAY</button>
-                <button class="menu-btn" data-action="settings">SETTINGS</button>
-            </div>
-            <div class="menu-footer">
-                <span class="menu-hint">Press any key or click PLAY to start</span>
-            </div>
-        </div>
-    `;
-    screens.main = mainMenu;
-    container.appendChild(mainMenu);
-    const modeSelect = createElement("div", "menu-screen menu-mode-select");
-    const modesHtml = [MODE_SPRINT, MODE_BLITZ, MODE_CLASSIC].map((id) => {
-      const info = MODE_INFO[id];
-      return `
-            <button class="mode-card" data-mode="${id}">
-                <div class="mode-icon">${info.icon}</div>
-                <div class="mode-card-text">
-                    <h3>${info.name}</h3>
-                    <span class="mode-subtitle">${info.subtitle}</span>
-                    <p>${info.description}</p>
-                </div>
-            </button>
-        `;
-    }).join("");
-    modeSelect.innerHTML = `
-        <div class="menu-content">
-            <h2 class="menu-heading">SELECT MODE</h2>
-            ${modesHtml}
-            <button class="menu-btn menu-btn-back" data-action="back">BACK</button>
-        </div>
-    `;
-    screens.modeSelect = modeSelect;
-    container.appendChild(modeSelect);
-    const pauseOverlay = createElement("div", "menu-screen menu-pause");
-    pauseOverlay.innerHTML = `
-        <div class="menu-content pause-content">
-            <h2 class="menu-heading">PAUSED</h2>
-            <div class="menu-buttons">
-                <button class="menu-btn menu-btn-primary" data-action="resume">RESUME</button>
-                <button class="menu-btn" data-action="restart">RESTART</button>
-                <button class="menu-btn" data-action="quit">QUIT TO MENU</button>
-            </div>
-            <span class="menu-hint">Press ESC to resume</span>
-        </div>
-    `;
-    screens.pause = pauseOverlay;
-    container.appendChild(pauseOverlay);
-    const resultsScreen = createElement("div", "menu-screen menu-results");
-    resultsScreen.innerHTML = `
-        <div class="menu-content">
-            <h2 class="results-title" id="results-title">GAME OVER</h2>
-            <div class="results-grid" id="results-grid"></div>
-            <div class="menu-buttons">
-                <button class="menu-btn menu-btn-primary" data-action="retry">RETRY</button>
-                <button class="menu-btn" data-action="quit">MENU</button>
+  var pad = (n) => String(n + 1).padStart(2, "0");
+  var esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+  var capital = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+  var MODE_DETAIL = {
+    [MODE_SPRINT]: { goal: "Clear 40 lines. Your time is your score.", scenery: "Midnight Circuit" },
+    [MODE_BLITZ]: { goal: "Score as much as you can in 2 minutes.", scenery: "Thunder Peak" },
+    [MODE_CLASSIC]: { goal: "Endless. Gravity rises every 10 lines.", scenery: "Changes every level" }
+  };
+  var CONTROL_ROWS = [
+    ["MOVE", "\u25C0 \u25B6"],
+    ["SOFT DROP", "\u25BC"],
+    ["HARD DROP", "SPACE"],
+    ["ROTATE RIGHT", "\u25B2 or X"],
+    ["ROTATE LEFT", "Z"],
+    ["HOLD", "C or SHIFT"],
+    ["PAUSE", "ESC"]
+  ];
+  function createMenuSystem(container, options) {
+    const { settings: settings2, tabs, setSetting, resetSettings: resetSettings2, openMusic, sound = {} } = options;
+    const cb = {};
+    const root = document.createElement("div");
+    root.className = "ac";
+    root.hidden = true;
+    root.innerHTML = `
+        <div class="ac-shade"></div>
+        <header class="ac-head">
+            <div class="ac-logo"><span class="title-u">u</span><span class="title-lol">lol</span><span class="title-tris">Tris</span></div>
+            <div class="ac-crumbs"></div>
+        </header>
+        <div class="ac-stage">
+            <nav class="ac-tabs" role="tablist"></nav>
+            <div class="ac-banner" hidden></div>
+            <div class="ac-body">
+                <section class="ac-list" role="list"></section>
+                <aside class="ac-info"></aside>
             </div>
         </div>
-    `;
-    screens.results = resultsScreen;
-    container.appendChild(resultsScreen);
-    Object.values(screens).forEach((s) => s.style.display = "none");
-    container.addEventListener("click", (e) => {
-      const btn = e.target.closest("[data-action]");
-      const modeCard = e.target.closest("[data-mode]");
-      if (modeCard) {
-        const modeId = modeCard.dataset.mode;
-        if (onModeSelectCallback) onModeSelectCallback(modeId);
+        <footer class="ac-foot"><div class="ac-keys"></div><div class="ac-scene"></div></footer>`;
+    container.appendChild(root);
+    const el = {
+      crumbs: root.querySelector(".ac-crumbs"),
+      tabs: root.querySelector(".ac-tabs"),
+      banner: root.querySelector(".ac-banner"),
+      list: root.querySelector(".ac-list"),
+      info: root.querySelector(".ac-info"),
+      keys: root.querySelector(".ac-keys"),
+      scene: root.querySelector(".ac-scene")
+    };
+    const state = {
+      screen: null,
+      // 'main' | 'pause' | 'results' | null (closed)
+      tab: 0,
+      focus: "list",
+      // 'row' (the tabs) or 'list'
+      levels: [],
+      // stack of { title, nodes, index }
+      banner: null,
+      // { text, sub, tone }
+      lines: null
+      // info panel lines that stay whatever is focused (results)
+    };
+    const level = () => state.levels[state.levels.length - 1];
+    const focusable = (n) => n.kind !== "info";
+    const firstFocusable = (nodes) => Math.max(0, nodes.findIndex(focusable));
+    function settingNode(key) {
+      const def = findSetting(key);
+      return { kind: def.type, label: def.label, def, info: { title: def.label, text: def.hint } };
+    }
+    const backNode = () => ({ kind: "action", label: "BACK", hint: "", run: back, info: { title: "BACK", text: "Go back one step." } });
+    function briefing(modeId) {
+      const info = MODE_INFO[modeId];
+      const nodes = [{
+        kind: "action",
+        label: "START",
+        hint: info.name,
+        info: { title: "START", text: `Begin ${info.name}.` },
+        run: () => {
+          hideAll();
+          cb.modeSelect?.(modeId);
+        }
+      }, settingNode("gameStyle")];
+      if (modeId === MODE_CLASSIC) nodes.push(settingNode("casualScene"));
+      nodes.push(settingNode("weather"), settingNode("nextPreviewCount"), backNode());
+      return nodes;
+    }
+    function modeNodes() {
+      return [MODE_SPRINT, MODE_BLITZ, MODE_CLASSIC].map((id) => {
+        const info = MODE_INFO[id];
+        return {
+          kind: "menu",
+          label: info.name,
+          hint: info.subtitle,
+          title: info.name,
+          info: {
+            title: info.name,
+            text: info.description,
+            lines: [
+              { label: "GOAL", value: MODE_DETAIL[id].goal },
+              { label: "MUSIC", value: capital(info.track) },
+              { label: "SCENERY", value: MODE_DETAIL[id].scenery }
+            ]
+          },
+          children: () => briefing(id)
+        };
+      });
+    }
+    function settingsNodes(withBack) {
+      const nodes = tabs.map((tab) => ({
+        kind: "menu",
+        label: tab.label,
+        hint: `${tab.settings.length} options`,
+        title: tab.label,
+        info: { title: tab.label, text: tab.settings.map((s) => s.label).join(" / ") },
+        children: () => [...tab.settings.map((s) => settingNode(s.key)), backNode()]
+      }));
+      nodes.push({
+        kind: "action",
+        label: "RESET DEFAULTS",
+        hint: "",
+        armable: true,
+        info: { title: "RESET DEFAULTS", text: "Put every setting back to its default. Press twice to confirm." },
+        run() {
+          resetSettings2();
+          render();
+        }
+      });
+      if (withBack) nodes.push(backNode());
+      return nodes;
+    }
+    function musicNodes() {
+      return [{
+        kind: "action",
+        label: "MUSIC PLAYER",
+        hint: "OPEN",
+        info: { title: "MUSIC PLAYER", text: "Drop your own songs on the player to play them instead of the soundtrack." },
+        run: () => openMusic()
+      }, settingNode("soundtrack"), settingNode("musicVolume"), settingNode("musicMuted")];
+    }
+    function controlNodes() {
+      const nodes = CONTROL_ROWS.map(([label, value]) => ({ kind: "info", label, value }));
+      nodes.push({ kind: "info", label: "TOUCH", value: "On-screen buttons" });
+      return nodes;
+    }
+    const MAIN_TABS = [
+      { label: "PLAY", info: { title: "PLAY", text: "Pick a mode, then set it up before you start." }, children: modeNodes },
+      { label: "SETTINGS", info: { title: "SETTINGS", text: "Handling, sound, visuals and game options. Changes save at once." }, children: () => settingsNodes(false) },
+      { label: "CONTROLS", info: { title: "CONTROLS", text: "How to play on a keyboard. On phones and tablets, use the on-screen buttons." }, children: controlNodes },
+      { label: "MUSIC", info: { title: "MUSIC", text: "Soundtrack options, and a player for your own music." }, children: musicNodes }
+    ];
+    function rootLevel(tabIndex) {
+      const tab = MAIN_TABS[tabIndex];
+      const nodes = tab.children();
+      return { title: tab.label, nodes, index: firstFocusable(nodes) };
+    }
+    function valueText(n) {
+      if (n.kind === "toggle") return settings2[n.def.key] ? "ON" : "OFF";
+      if (n.kind === "range" || n.kind === "enum") {
+        const v = settings2[n.def.key];
+        return n.def.describe ? n.def.describe(v) : String(v);
+      }
+      return n.value ?? n.hint ?? "";
+    }
+    function gaugePercent(n) {
+      const c = getConstraint(n.def.key);
+      return Math.max(0, Math.min(100, (settings2[n.def.key] - c.min) / (c.max - c.min) * 100));
+    }
+    function change(n, value) {
+      setSetting(n.def.key, value);
+      patchRow(level().nodes.indexOf(n));
+      renderInfo();
+    }
+    function adjust(n, dir, big = false) {
+      if (n.kind === "toggle") return change(n, !settings2[n.def.key]);
+      if (n.kind === "enum") {
+        const values = n.def.values;
+        const at = values.indexOf(settings2[n.def.key]);
+        return change(n, values[(at + dir + values.length) % values.length]);
+      }
+      if (n.kind === "range") {
+        const c = getConstraint(n.def.key);
+        const next = settings2[n.def.key] + dir * c.step * (big ? 5 : 1);
+        return change(n, Math.max(c.min, Math.min(c.max, Number(next.toFixed(3)))));
+      }
+    }
+    function setFromGauge(n, clientX, gauge) {
+      const c = getConstraint(n.def.key);
+      const rect2 = gauge.getBoundingClientRect();
+      const k = Math.max(0, Math.min(1, (clientX - rect2.left) / rect2.width));
+      const raw = c.min + k * (c.max - c.min);
+      const snapped = c.min + Math.round((raw - c.min) / c.step) * c.step;
+      const value = Math.max(c.min, Math.min(c.max, Number(snapped.toFixed(3))));
+      if (value !== settings2[n.def.key]) change(n, value);
+    }
+    function activate(n) {
+      if (n.kind === "menu") {
+        state.levels.push({ title: n.title || n.label, nodes: n.children(), index: 0 });
+        const lvl = level();
+        lvl.index = firstFocusable(lvl.nodes);
+        state.focus = "list";
+        sound.select?.();
+        render();
+      } else if (n.kind === "action") {
+        if (n.armable && !n.armed) {
+          n.armed = true;
+          n.label = "PRESS AGAIN TO CONFIRM";
+          sound.move?.();
+          return render();
+        }
+        sound.select?.();
+        n.run();
+      } else if (n.kind === "toggle" || n.kind === "enum") {
+        adjust(n, 1);
+        sound.move?.();
+      }
+    }
+    function back() {
+      if (state.levels.length > 1) {
+        state.levels.pop();
+        state.focus = "list";
+        sound.move?.();
+        render();
+      } else if (state.screen === "main" && state.focus === "list") {
+        state.focus = "row";
+        sound.move?.();
+        refreshFocus();
+      } else if (state.screen === "pause") {
+        hideAll();
+        cb.resume?.();
+      }
+    }
+    function selectTab(i) {
+      state.tab = (i + MAIN_TABS.length) % MAIN_TABS.length;
+      state.levels = [rootLevel(state.tab)];
+      render();
+    }
+    function move(dir) {
+      const lvl = level();
+      const count = lvl.nodes.length;
+      let i = lvl.index;
+      for (let step = 0; step < count; step++) {
+        i = (i + dir + count) % count;
+        if (focusable(lvl.nodes[i])) break;
+      }
+      if (i !== lvl.index) {
+        lvl.index = i;
+        sound.move?.();
+        refreshFocus();
+      }
+    }
+    function rowHtml(n, i) {
+      let right;
+      if (n.kind === "range") {
+        right = `<span class="ac-ctl"><button class="ac-step" data-step="-1" tabindex="-1" aria-label="Lower">\u25C0</button><span class="ac-gauge"><span class="ac-fill" style="width:${gaugePercent(n)}%"></span></span><button class="ac-step" data-step="1" tabindex="-1" aria-label="Raise">\u25B6</button></span><span class="ac-read">${esc(valueText(n))}</span>`;
+      } else if (n.kind === "toggle") {
+        right = `<span class="ac-switch${settings2[n.def.key] ? " on" : ""}"><i></i></span><span class="ac-read">${valueText(n)}</span>`;
+      } else if (n.kind === "enum") {
+        right = `<span class="ac-ctl"><button class="ac-step" data-step="-1" tabindex="-1" aria-label="Previous">\u25C0</button><button class="ac-step" data-step="1" tabindex="-1" aria-label="Next">\u25B6</button></span><span class="ac-read ac-wide">${esc(valueText(n))}</span>`;
+      } else if (n.kind === "menu") {
+        right = `<span class="ac-read">${esc(n.hint ?? "")}</span><span class="ac-arrow">\u25B6</span>`;
+      } else {
+        right = `<span class="ac-read">${esc(valueText(n))}</span>`;
+      }
+      return `<div class="ac-row ack-${n.kind}" role="listitem" data-i="${i}" style="--i:${i}"><span class="ac-num">${pad(i)}</span><span class="ac-label">${esc(n.label)}</span>${right}</div>`;
+    }
+    function patchRow(i) {
+      const n = level().nodes[i];
+      const row = el.list.querySelector(`[data-i="${i}"]`);
+      if (!n || !row) return;
+      const read = row.querySelector(".ac-read");
+      if (read) read.textContent = valueText(n);
+      if (n.kind === "range") row.querySelector(".ac-fill").style.width = `${gaugePercent(n)}%`;
+      if (n.kind === "toggle") row.querySelector(".ac-switch").classList.toggle("on", !!settings2[n.def.key]);
+    }
+    function renderTabs() {
+      el.tabs.innerHTML = MAIN_TABS.map((t, i) => `<button class="ac-tab${i === state.tab ? " on" : ""}" role="tab" data-tab="${i}" style="--i:${i}"><span class="ac-tab-num">${pad(i)}</span><span>${t.label}</span></button>`).join("");
+    }
+    function renderCrumbs() {
+      const parts = state.screen === "main" ? ["MAIN MENU", MAIN_TABS[state.tab].label, ...state.levels.slice(1).map((l) => l.title)] : state.levels.map((l) => l.title);
+      el.crumbs.innerHTML = parts.map((p, i) => i === parts.length - 1 ? `<b>${esc(p)}</b>` : esc(p)).join(" <em>//</em> ");
+    }
+    function renderInfo() {
+      const n = state.focus === "row" ? null : level().nodes[level().index];
+      const info = n ? n.info || { title: n.label } : MAIN_TABS[state.tab]?.info || {};
+      let html = "";
+      if (info.title) html += `<div class="ac-info-title">${esc(info.title)}</div>`;
+      if (n && (n.kind === "range" || n.kind === "toggle" || n.kind === "enum")) {
+        html += `<div class="ac-info-value">${esc(valueText(n))}</div>`;
+        if (n.kind === "range") html += `<div class="ac-meter"><i style="width:${gaugePercent(n)}%"></i></div>`;
+      }
+      if (info.text) html += `<p class="ac-info-text">${esc(info.text)}</p>`;
+      const lines = state.lines || info.lines;
+      if (lines) {
+        html += '<dl class="ac-lines">' + lines.map((l) => `<div${l.big ? ' class="big"' : ""}><dt>${esc(l.label)}</dt><dd>${esc(l.value)}</dd></div>`).join("") + "</dl>";
+      }
+      el.info.innerHTML = html;
+    }
+    function refreshFocus() {
+      const lvl = level();
+      el.list.classList.toggle("idle", state.focus === "row");
+      el.list.querySelectorAll(".ac-row").forEach((row, i) => row.classList.toggle("focus", state.focus === "list" && i === lvl.index));
+      el.tabs.querySelectorAll(".ac-tab").forEach((tab) => tab.classList.toggle("focus", state.focus === "row"));
+      root.querySelector(".ac-row.focus")?.scrollIntoView({ block: "nearest" });
+      renderKeys();
+      renderInfo();
+    }
+    function renderKeys() {
+      const k = (label) => `<kbd>${label}</kbd>`;
+      const onRow = state.focus === "row";
+      el.keys.innerHTML = onRow ? `${k("\u25C0")}${k("\u25B6")} CHOOSE &nbsp; ${k("\u25BC")} OPEN` : `${k("\u25B2")}${k("\u25BC")} SELECT &nbsp; ${k("\u25C0")}${k("\u25B6")} ADJUST &nbsp; ${k("ENTER")} CONFIRM &nbsp; ${k("ESC")} BACK`;
+    }
+    function render() {
+      const main = state.screen === "main";
+      root.classList.toggle("over", !main);
+      el.tabs.hidden = !main;
+      el.banner.hidden = main || !state.banner;
+      if (main) renderTabs();
+      else if (state.banner) {
+        el.banner.className = `ac-banner ${state.banner.tone || ""}`;
+        el.banner.innerHTML = `<span class="ac-banner-main">${esc(state.banner.text)}</span><span class="ac-banner-sub">${esc(state.banner.sub || "")}</span>`;
+      }
+      renderCrumbs();
+      el.list.innerHTML = level().nodes.map(rowHtml).join("");
+      refreshFocus();
+    }
+    function onKey(e) {
+      if (root.hidden || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (/^(INPUT|SELECT|TEXTAREA)$/.test(e.target?.tagName || "")) return;
+      const lvl = level();
+      const n = state.focus === "list" ? lvl.nodes[lvl.index] : null;
+      let handled = true;
+      switch (e.code) {
+        case "ArrowUp":
+          if (state.focus === "list" && state.screen === "main" && state.levels.length === 1 && lvl.index === firstFocusable(lvl.nodes)) {
+            state.focus = "row";
+            sound.move?.();
+            refreshFocus();
+          } else if (state.focus === "list") move(-1);
+          break;
+        case "ArrowDown":
+          if (state.focus === "row") {
+            state.focus = "list";
+            sound.move?.();
+            refreshFocus();
+          } else move(1);
+          break;
+        case "ArrowLeft":
+          if (state.focus === "row") {
+            selectTab(state.tab - 1);
+            sound.move?.();
+          } else if (n && ["range", "enum", "toggle"].includes(n.kind)) {
+            adjust(n, -1, e.shiftKey);
+            sound.move?.();
+          }
+          break;
+        case "ArrowRight":
+          if (state.focus === "row") {
+            selectTab(state.tab + 1);
+            sound.move?.();
+          } else if (n && ["range", "enum", "toggle"].includes(n.kind)) {
+            adjust(n, 1, e.shiftKey);
+            sound.move?.();
+          }
+          break;
+        case "Enter":
+        case "Space":
+        case "NumpadEnter":
+          if (state.focus === "row") {
+            state.focus = "list";
+            sound.select?.();
+            refreshFocus();
+          } else if (n) activate(n);
+          break;
+        case "Escape":
+        case "Backspace":
+          back();
+          break;
+        default:
+          handled = false;
+      }
+      if (handled) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    }
+    document.addEventListener("keydown", onKey, true);
+    root.addEventListener("click", (e) => {
+      const tab = e.target.closest(".ac-tab");
+      if (tab) {
+        state.focus = "row";
+        selectTab(Number(tab.dataset.tab));
+        sound.move?.();
         return;
       }
-      if (!btn) return;
-      const action = btn.dataset.action;
-      switch (action) {
-        case "play":
-          showScreen("modeSelect");
-          break;
-        case "settings":
-          document.dispatchEvent(new CustomEvent("uloltris-open-settings"));
-          break;
-        case "back":
-          showScreen("main");
-          break;
-        case "resume":
-          hideAll();
-          if (onResumeCallback) onResumeCallback();
-          break;
-        case "restart":
-          hideAll();
-          if (onRestartCallback) onRestartCallback();
-          break;
-        case "retry":
-          hideAll();
-          if (onRestartCallback) onRestartCallback();
-          break;
-        case "quit":
-          if (onQuitCallback) onQuitCallback();
-          showScreen("main");
-          break;
-      }
+      const rowEl = e.target.closest(".ac-row");
+      if (!rowEl) return;
+      const i = Number(rowEl.dataset.i);
+      const n = level().nodes[i];
+      if (!n || !focusable(n)) return;
+      level().index = i;
+      state.focus = "list";
+      const step = e.target.closest(".ac-step");
+      if (step) {
+        adjust(n, Number(step.dataset.step));
+        sound.move?.();
+        refreshFocus();
+      } else if (!e.target.closest(".ac-gauge")) {
+        refreshFocus();
+        activate(n);
+      } else refreshFocus();
     });
-    document.addEventListener("keydown", (e) => {
-      if (currentScreen === "main" && !e.repeat) {
-        if (e.code !== "Escape" && !e.code.startsWith("F")) {
-          showScreen("modeSelect");
-        }
-      }
+    root.addEventListener("pointerover", (e) => {
+      if (e.pointerType !== "mouse") return;
+      const rowEl = e.target.closest(".ac-row");
+      if (!rowEl) return;
+      const i = Number(rowEl.dataset.i);
+      const n = level().nodes[i];
+      if (!n || !focusable(n) || state.focus === "list" && level().index === i) return;
+      level().index = i;
+      state.focus = "list";
+      sound.move?.();
+      refreshFocus();
     });
-    function createElement(tag, className) {
-      const el = document.createElement(tag);
-      el.className = className;
-      return el;
-    }
-    function showScreen(name) {
-      hideAll();
-      if (screens[name]) {
-        screens[name].style.display = "flex";
-        currentScreen = name;
-      }
+    root.addEventListener("pointerdown", (e) => {
+      const gauge = e.target.closest(".ac-gauge");
+      if (!gauge) return;
+      const n = level().nodes[Number(gauge.closest(".ac-row").dataset.i)];
+      if (!n) return;
+      e.preventDefault();
+      level().index = level().nodes.indexOf(n);
+      state.focus = "list";
+      refreshFocus();
+      setFromGauge(n, e.clientX, gauge);
+      const drag = (ev) => setFromGauge(n, ev.clientX, gauge);
+      const stop = () => {
+        window.removeEventListener("pointermove", drag);
+        window.removeEventListener("pointerup", stop);
+        window.removeEventListener("pointercancel", stop);
+      };
+      window.addEventListener("pointermove", drag);
+      window.addEventListener("pointerup", stop);
+      window.addEventListener("pointercancel", stop);
+    });
+    function open() {
+      root.hidden = false;
+      document.body.classList.add("menu-open");
     }
     function hideAll() {
-      Object.values(screens).forEach((s) => s.style.display = "none");
-      currentScreen = null;
+      root.hidden = true;
+      state.screen = null;
+      document.body.classList.remove("menu-open");
+    }
+    function showScreen(name, data = {}) {
+      if (name === "modeSelect") return showScreen("main", { tab: 0, focus: "list" });
+      state.lines = null;
+      state.banner = null;
+      if (name === "main") {
+        state.screen = "main";
+        state.tab = data.tab ?? 0;
+        state.focus = data.focus ?? "row";
+        state.levels = [rootLevel(state.tab)];
+      } else if (name === "pause") {
+        state.screen = "pause";
+        state.focus = "list";
+        state.banner = { text: "PAUSED", sub: data.modeName || "", tone: "neutral" };
+        state.lines = CONTROL_ROWS.map(([label, value]) => ({ label, value }));
+        const nodes = [
+          { kind: "action", label: "RESUME", hint: "", info: { title: "RESUME", text: "Back to the game." }, run: () => {
+            hideAll();
+            cb.resume?.();
+          } },
+          { kind: "action", label: "RESTART", hint: "", info: { title: "RESTART", text: "Start this mode again from the beginning." }, run: () => {
+            hideAll();
+            cb.restart?.();
+          } },
+          { kind: "menu", label: "SETTINGS", hint: "", title: "SETTINGS", info: { title: "SETTINGS", text: "Change handling, sound and visuals without leaving the game." }, children: () => settingsNodes(true) },
+          { kind: "action", label: "QUIT TO MENU", hint: "", info: { title: "QUIT TO MENU", text: "Leave this game." }, run: () => {
+            cb.quit?.();
+            showScreen("main");
+          } }
+        ];
+        state.levels = [{ title: "PAUSED", nodes, index: 0 }];
+      }
+      open();
+      render();
     }
     function showResults(results) {
-      const titleEl = resultsScreen.querySelector("#results-title");
-      const gridEl = resultsScreen.querySelector("#results-grid");
-      if (results.completed) {
-        titleEl.textContent = results.modeId === "sprint" ? "SPRINT COMPLETE!" : "TIME'S UP!";
-        titleEl.className = "results-title results-complete";
-      } else {
-        titleEl.textContent = "GAME OVER";
-        titleEl.className = "results-title results-gameover";
+      state.screen = "results";
+      state.focus = "list";
+      const won = results.completed;
+      state.banner = {
+        text: won ? results.modeId === "sprint" ? "SPRINT COMPLETE" : "TIME'S UP" : "GAME OVER",
+        sub: results.modeName || "",
+        tone: won ? "ok" : "fail"
+      };
+      const lines = [];
+      if (results.modeId === "sprint") lines.push({ label: "TIME", value: results.finalTimePrecise || results.finalTime, big: true });
+      else lines.push({ label: "SCORE", value: results.score.toLocaleString(), big: true });
+      lines.push({ label: "LINES", value: results.linesCleared }, { label: "LEVEL", value: results.level }, { label: "PIECES", value: results.piecesPlaced });
+      if (results.tSpins > 0) lines.push({ label: "T-SPINS", value: results.tSpins });
+      if (results.tetrises > 0) lines.push({ label: "QUADS", value: results.tetrises });
+      if (results.maxCombo > 0) lines.push({ label: "MAX COMBO", value: results.maxCombo });
+      if (results.perfectClears > 0) lines.push({ label: "PERFECT CLEARS", value: results.perfectClears });
+      lines.push(
+        { label: "LINES SENT", value: results.linesSent },
+        { label: "APM", value: results.apm.toFixed(1) },
+        { label: "PPS", value: (results.pps ?? 0).toFixed(2) },
+        { label: "FINESSE", value: `${(results.finesse ?? 100).toFixed(1)}%` }
+      );
+      if (results.modeId !== "sprint") lines.push({ label: "TIME", value: results.finalTime });
+      state.lines = lines;
+      const nodes = [
+        { kind: "action", label: "RETRY", hint: "", info: { title: "RETRY", text: "Play this mode again." }, run: () => {
+          hideAll();
+          cb.restart?.();
+        } },
+        { kind: "action", label: "CHANGE MODE", hint: "", info: { title: "CHANGE MODE", text: "Pick another mode." }, run: () => {
+          cb.quit?.();
+          showScreen("main", { tab: 0, focus: "list" });
+        } },
+        { kind: "menu", label: "SETTINGS", hint: "", title: "SETTINGS", info: { title: "SETTINGS", text: "Adjust handling, sound and visuals." }, children: () => settingsNodes(true) },
+        { kind: "action", label: "MAIN MENU", hint: "", info: { title: "MAIN MENU", text: "Back to the title screen." }, run: () => {
+          cb.quit?.();
+          showScreen("main");
+        } }
+      ];
+      state.levels = [{ title: state.banner.text, nodes, index: 0 }];
+      open();
+      render();
+    }
+    function openSettings() {
+      if (root.hidden) showScreen("main", { tab: 1, focus: "list" });
+      else if (state.screen === "main") {
+        if (state.tab !== 1 || state.levels.length > 1) selectTab(1);
+        state.focus = "list";
+        refreshFocus();
+      } else if (!state.levels.some((l) => l.title === "SETTINGS")) {
+        const nodes = settingsNodes(true);
+        state.levels.push({ title: "SETTINGS", nodes, index: 0 });
+        state.focus = "list";
+        render();
       }
-      const stats = [];
-      if (results.modeId === "sprint") {
-        stats.push({ label: "TIME", value: results.finalTimePrecise || results.finalTime, highlight: true });
-      } else {
-        stats.push({ label: "SCORE", value: results.score.toLocaleString(), highlight: true });
-      }
-      stats.push({ label: "LINES", value: results.linesCleared });
-      stats.push({ label: "LEVEL", value: results.level });
-      stats.push({ label: "PIECES", value: results.piecesPlaced });
-      if (results.tSpins > 0) {
-        stats.push({ label: "T-SPINS", value: results.tSpins });
-      }
-      if (results.tetrises > 0) {
-        stats.push({ label: "QUADS", value: results.tetrises });
-      }
-      if (results.maxCombo > 0) {
-        stats.push({ label: "MAX COMBO", value: results.maxCombo });
-      }
-      if (results.perfectClears > 0) {
-        stats.push({ label: "PERFECT CLEARS", value: results.perfectClears });
-      }
-      stats.push({ label: "LINES SENT", value: results.linesSent });
-      stats.push({ label: "APM", value: results.apm.toFixed(1) });
-      stats.push({ label: "PPS", value: (results.pps ?? 0).toFixed(2) });
-      stats.push({ label: "FINESSE", value: `${(results.finesse ?? 100).toFixed(1)}%` });
-      if (results.modeId !== "sprint") {
-        stats.push({ label: "TIME", value: results.finalTime });
-      }
-      gridEl.innerHTML = stats.map((s) => `
-            <div class="results-stat ${s.highlight ? "results-stat-highlight" : ""}">
-                <span class="results-stat-label">${s.label}</span>
-                <span class="results-stat-value">${s.value}</span>
-            </div>
-        `).join("");
-      showScreen("results");
     }
     return {
       showScreen,
-      hideAll,
       showResults,
-      onModeSelect(callback) {
-        onModeSelectCallback = callback;
+      hideAll,
+      openSettings,
+      isOpen: () => !root.hidden,
+      /** Redraw after settings changed from outside (for example a reset). */
+      refresh() {
+        if (!root.hidden) render();
       },
-      onResume(callback) {
-        onResumeCallback = callback;
+      /** The line at the bottom right naming the scene and weather behind the menu. */
+      setSceneTag(text) {
+        el.scene.textContent = text;
       },
-      onRestart(callback) {
-        onRestartCallback = callback;
+      onModeSelect(fn) {
+        cb.modeSelect = fn;
       },
-      onQuit(callback) {
-        onQuitCallback = callback;
+      onResume(fn) {
+        cb.resume = fn;
+      },
+      onRestart(fn) {
+        cb.restart = fn;
+      },
+      onQuit(fn) {
+        cb.quit = fn;
       }
     };
   }
@@ -7734,14 +8158,13 @@
 
   // js/main.js
   var settings = loadSettings();
-  var settingsListenersBound = false;
   var currentGame = null;
   var soundEngine = null;
+  var menu = null;
+  var sceneTag = "";
   var gameContainer = document.getElementById("game-container");
   var menuContainer = document.getElementById("menu-container");
-  var settingsPanel = document.getElementById("settings-panel");
   var settingsToggle = document.getElementById("settings-toggle");
-  var settingsClose = document.getElementById("settings-close");
   var musicPlayerContainer = document.getElementById("music-player-container");
   var playfield = document.getElementById("playfield");
   var ambience = createAmbience(settings);
@@ -7750,7 +8173,11 @@
     document.getElementById("bg-layer"),
     settings,
     {
-      onScene: (info) => ambience.setScene(info.sounds),
+      onScene: (info) => {
+        ambience.setScene(info.sounds);
+        sceneTag = `${info.sceneName.toUpperCase()} / ${info.weatherName.toUpperCase()}`;
+        menu?.setSceneTag(sceneTag);
+      },
       onStrike: (strike) => ambience.strike(strike.distance)
     }
   );
@@ -7785,12 +8212,36 @@
   document.addEventListener("pointerdown", unlockAudio);
   document.addEventListener("keydown", unlockAudio);
   music.setTrack(menuTrack());
-  var menu = createMenuSystem(menuContainer);
+  function applySetting(key, value) {
+    settings[key] = value;
+    saveSettings(settings);
+    if (key === "soundtrack" && !currentGame?.isRunning()) music.setTrack(menuTrack());
+    if (key === "soundPack") soundEngine?.play("rotate");
+    if (key === "touchControls") fitGame();
+    if (key === "casualScene" || key === "weather") background.refresh();
+  }
+  function resetSettings() {
+    Object.assign(settings, DEFAULT_SETTINGS);
+    saveSettings(settings);
+    fitGame();
+    background.refresh();
+    if (!currentGame?.isRunning()) music.setTrack(menuTrack());
+  }
+  menu = createMenuSystem(menuContainer, {
+    settings,
+    tabs: SETTINGS_TABS,
+    setSetting: applySetting,
+    resetSettings,
+    openMusic: () => musicPlayer?.toggle(),
+    sound: {
+      move: () => soundEngine?.play("menuMove"),
+      select: () => soundEngine?.play("menuSelect")
+    }
+  });
+  menu.setSceneTag(sceneTag);
   menu.onModeSelect((modeId) => {
-    menu.hideAll();
     gameContainer.classList.remove("game-hidden");
     startNewGame(modeId);
-    if (soundEngine) soundEngine.play("menuSelect");
   });
   menu.onResume(() => {
     if (currentGame) {
@@ -7812,6 +8263,10 @@
     music.setTempoScale(1);
     music.setTrack(menuTrack());
     background.showMenu();
+  });
+  settingsToggle.addEventListener("click", () => {
+    if (currentGame?.isRunning() && !menu.isOpen()) currentGame.pause();
+    menu.openSettings();
   });
   var touchControls = createTouchControls(
     [document.getElementById("touch-controls"), document.getElementById("touch-pause")],
@@ -7850,7 +8305,7 @@
         menu.showResults(results);
       },
       onPause() {
-        menu.showScreen("pause");
+        menu.showScreen("pause", { modeName: MODE_INFO[modeId].name });
       },
       onLevelUp(level) {
         background.onLevel(modeId, level);
@@ -7859,198 +8314,11 @@
     currentGame._modeId = modeId;
     currentGame.start();
   }
-  var SOUND_PACK_LABELS = { ulol: "uloltris", arcade: "Arcade (Jstris-style)", bubbly: "Bubbly (PPT-style)" };
-  function describeSoundPack(val) {
-    return SOUND_PACK_LABELS[val] || val;
-  }
-  function buildSettingsUI() {
-    const tabContainer = settingsPanel.querySelector(".settings-tabs");
-    const contentContainer = settingsPanel.querySelector(".settings-tab-content");
-    if (!tabContainer || !contentContainer) return;
-    const tabs = [
-      { id: "handling", label: "HANDLING", settings: [
-        { key: "arr", label: "ARR", type: "range", describe: describeArr },
-        { key: "das", label: "DAS", type: "range", describe: describeFrames },
-        { key: "dcd", label: "DCD", type: "range", describe: describeDcd },
-        { key: "sdf", label: "SDF", type: "range", describe: describeSoftDrop },
-        { key: "cancelDasOnDirectionChange", label: "CANCEL DAS ON TURN", type: "toggle" },
-        { key: "preferSoftDrop", label: "PREFER SOFT DROP", type: "toggle" }
-      ] },
-      { id: "audio", label: "AUDIO", settings: [
-        { key: "masterVolume", label: "MASTER", type: "range", describe: describeVolume },
-        { key: "sfxVolume", label: "SFX", type: "range", describe: describeVolume },
-        { key: "musicVolume", label: "MUSIC", type: "range", describe: describeVolume },
-        { key: "sfxMuted", label: "MUTE SFX", type: "toggle" },
-        { key: "musicMuted", label: "MUTE MUSIC", type: "toggle" },
-        { key: "ambience", label: "SCENE SOUNDS", type: "toggle" },
-        { key: "ambienceVolume", label: "SCENE SOUND VOLUME", type: "range", describe: describeVolume },
-        { key: "soundPack", label: "SOUND PACK", type: "enum", values: ["ulol", "arcade", "bubbly"], describe: describeSoundPack },
-        { key: "soundtrack", label: "SOUNDTRACK", type: "enum", values: ["auto", "calm", "competitive", "intense", "off"], describe: describeSoundtrack },
-        { key: "crossfadeDuration", label: "CROSSFADE", type: "range", describe: describeCrossfade }
-      ] },
-      { id: "visual", label: "VISUAL", settings: [
-        { key: "blockSkin", label: "BLOCK SKIN", type: "enum", values: SKINS, describe: describeSkin },
-        { key: "statsDisplay", label: "STATS DISPLAY", type: "enum", values: ["off", "time", "speed", "efficiency", "versus"], describe: describeStatsDisplay },
-        { key: "background", label: "BACKGROUND", type: "enum", values: ["on", "dim", "off"], describe: describeEnum },
-        { key: "casualScene", label: "CASUAL SCENE", type: "enum", values: ["cycle", ...CASUAL_SCENES], describe: describeScene },
-        { key: "weather", label: "WEATHER", type: "enum", values: ["default", "cycle", "sunny", "cloudy", "sunset", "rain", "thunder", "night", "nightthunder"], describe: describeWeather },
-        { key: "ghostOpacity", label: "GHOST OPACITY", type: "range", describe: describeOpacity },
-        { key: "showActionText", label: "CLEAR TEXT", type: "toggle" }
-      ] },
-      { id: "effects", label: "FX", settings: [
-        { key: "boardBounce", label: "BOARD BOUNCE", type: "enum", values: ["off", "low", "medium", "high"], describe: describeEnum },
-        { key: "placeImpact", label: "PLACE IMPACT", type: "enum", values: ["off", "low", "medium", "high"], describe: describeEnum },
-        { key: "clearEffects", label: "CLEAR EFFECTS", type: "enum", values: ["off", "low", "medium", "high"], describe: describeEnum },
-        { key: "screenShake", label: "SCREEN SHAKE", type: "enum", values: ["off", "low", "medium", "high"], describe: describeEnum }
-      ] },
-      { id: "gameplay", label: "GAME", settings: [
-        { key: "gameStyle", label: "GAME STYLE", type: "enum", values: ["modern", "battle"], describe: describeGameStyle },
-        { key: "nextPreviewCount", label: "NEXT PIECES", type: "range", describe: describePreviewCount },
-        { key: "lockDelay", label: "LOCK DELAY", type: "range", describe: describeLockDelay },
-        { key: "touchControls", label: "TOUCH CONTROLS", type: "enum", values: ["auto", "on", "off"], describe: describeEnum }
-      ] }
-    ];
-    tabContainer.innerHTML = "";
-    tabs.forEach((tab, i) => {
-      const btn = document.createElement("button");
-      btn.className = `settings-tab-btn ${i === 0 ? "active" : ""}`;
-      btn.textContent = tab.label;
-      btn.dataset.tab = tab.id;
-      btn.type = "button";
-      tabContainer.appendChild(btn);
-    });
-    contentContainer.innerHTML = "";
-    tabs.forEach((tab, i) => {
-      const section = document.createElement("div");
-      section.className = `settings-tab-section ${i === 0 ? "active" : ""}`;
-      section.dataset.tab = tab.id;
-      for (const s of tab.settings) {
-        const row = document.createElement("label");
-        row.className = "setting-row";
-        if (s.type === "range") {
-          const c = getConstraint(s.key);
-          row.innerHTML = `
-                    <span class="setting-name">${s.label}</span>
-                    <input type="range" min="${c.min}" max="${c.max}" step="${c.step}" value="${settings[s.key]}" data-key="${s.key}">
-                    <span class="setting-readout" data-readout="${s.key}">${s.describe(settings[s.key])}</span>
-                `;
-        } else if (s.type === "toggle") {
-          row.innerHTML = `
-                    <span class="setting-name">${s.label}</span>
-                    <button type="button" class="setting-toggle ${settings[s.key] ? "on" : ""}" data-toggle="${s.key}">
-                        ${settings[s.key] ? "ON" : "OFF"}
-                    </button>
-                `;
-        } else if (s.type === "enum") {
-          const options = s.values.map(
-            (v) => `<option value="${v}" ${settings[s.key] === v ? "selected" : ""}>${s.describe(v)}</option>`
-          ).join("");
-          row.innerHTML = `
-                    <span class="setting-name">${s.label}</span>
-                    <select data-enum="${s.key}">${options}</select>
-                    <span class="setting-readout" data-readout="${s.key}">${s.describe(settings[s.key])}</span>
-                `;
-        }
-        section.appendChild(row);
-      }
-      contentContainer.appendChild(section);
-    });
-    const resetBtn = document.createElement("button");
-    resetBtn.className = "menu-btn settings-reset-btn";
-    resetBtn.textContent = "RESET DEFAULTS";
-    resetBtn.type = "button";
-    resetBtn.addEventListener("click", () => {
-      Object.assign(settings, DEFAULT_SETTINGS);
-      saveSettings(settings);
-      buildSettingsUI();
-      fitGame();
-    });
-    contentContainer.appendChild(resetBtn);
-    if (settingsListenersBound) return;
-    settingsListenersBound = true;
-    tabContainer.addEventListener("click", (e) => {
-      const btn = e.target.closest(".settings-tab-btn");
-      if (!btn) return;
-      tabContainer.querySelectorAll(".settings-tab-btn").forEach((b) => b.classList.remove("active"));
-      contentContainer.querySelectorAll(".settings-tab-section").forEach((s) => s.classList.remove("active"));
-      btn.classList.add("active");
-      const section = contentContainer.querySelector(`[data-tab="${btn.dataset.tab}"]`);
-      if (section) section.classList.add("active");
-      if (soundEngine) soundEngine.play("menuMove");
-    });
-    contentContainer.addEventListener("input", (e) => {
-      const input = e.target;
-      const key = input.dataset.key;
-      if (!key) return;
-      const tab = tabs.find((t) => t.settings.some((s) => s.key === key));
-      const settingDef = tab?.settings.find((s) => s.key === key);
-      if (!settingDef) return;
-      const val = Number(input.value);
-      settings[key] = val;
-      saveSettings(settings);
-      const readout = contentContainer.querySelector(`[data-readout="${key}"]`);
-      if (readout && settingDef.describe) {
-        readout.textContent = settingDef.describe(val);
-      }
-    });
-    contentContainer.addEventListener("click", (e) => {
-      const toggleBtn = e.target.closest("[data-toggle]");
-      if (toggleBtn) {
-        const key = toggleBtn.dataset.toggle;
-        settings[key] = !settings[key];
-        saveSettings(settings);
-        toggleBtn.classList.toggle("on", settings[key]);
-        toggleBtn.textContent = settings[key] ? "ON" : "OFF";
-        if (soundEngine) soundEngine.play("menuMove");
-      }
-    });
-    contentContainer.addEventListener("change", (e) => {
-      const select = e.target.closest("[data-enum]");
-      if (select) {
-        const key = select.dataset.enum;
-        settings[key] = select.value;
-        saveSettings(settings);
-        if (key === "soundtrack" && !currentGame?.isRunning()) music.setTrack(menuTrack());
-        if (key === "soundPack") soundEngine?.play("rotate");
-        if (key === "touchControls") fitGame();
-        if (key === "casualScene" || key === "weather") background.refresh();
-        const tab = tabs.find((t) => t.settings.some((s) => s.key === key));
-        const settingDef = tab?.settings.find((s) => s.key === key);
-        const readout = contentContainer.querySelector(`[data-readout="${key}"]`);
-        if (readout && settingDef?.describe) {
-          readout.textContent = settingDef.describe(select.value);
-        }
-        if (soundEngine) soundEngine.play("menuMove");
-      }
-    });
-  }
-  buildSettingsUI();
-  function setSettingsOpen(open) {
-    settingsPanel.classList.toggle("open", open);
-    settingsPanel.setAttribute("aria-hidden", String(!open));
-  }
-  settingsToggle.addEventListener("click", () => {
-    const isOpen = settingsPanel.classList.contains("open");
-    setSettingsOpen(!isOpen);
-    if (soundEngine) soundEngine.play("menuMove");
-  });
-  settingsClose.addEventListener("click", () => {
-    setSettingsOpen(false);
-  });
-  document.addEventListener("keydown", (e) => {
-    if (e.code === "Escape" && settingsPanel.classList.contains("open")) {
-      setSettingsOpen(false);
-      e.stopPropagation();
-    }
-  });
-  document.addEventListener("uloltris-open-settings", () => {
-    setSettingsOpen(true);
-  });
   var musicToggle = document.getElementById("music-toggle");
   if (musicToggle && musicPlayer) {
     musicToggle.addEventListener("click", () => {
       musicPlayer.toggle();
-      if (soundEngine) soundEngine.play("menuMove");
+      soundEngine?.play("menuMove");
     });
   }
 })();
