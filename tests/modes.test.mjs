@@ -16,32 +16,9 @@ function mode(id) {
     return m;
 }
 
-// Soundtrack by mode, and when it turns intense
-check('Casual plays calm, 40 Lines competitive, Blitz intense',
-    MODE_INFO.classic.track === 'calm' && MODE_INFO.sprint.track === 'competitive' && MODE_INFO.blitz.track === 'intense');
-{
-    const m = mode('sprint');
-    m.addLines(29);
-    const before = m.isHeated();
-    m.addLines(1);
-    check('Sprint never switches track mid-run', !before && !m.isHeated());
-}
-{
-    const m = mode('classic');
-    m.addLines(89);
-    const before = m.isHeated();
-    m.addLines(1);
-    check('Casual turns intense at level 10', !before && m.isHeated(), `level ${m.stats.level}`);
-}
-{
-    const m = mode('blitz');
-    clock = 89000;
-    m.updateTimer();
-    const before = m.isHeated();
-    clock = 90000;
-    m.updateTimer();
-    check('Blitz never switches track mid-run', !before && !m.isHeated());
-}
+// Soundtrack by mode: one track for the whole run
+check('Casual and 40 Lines play the casual playlist, Blitz the intense one',
+    MODE_INFO.classic.music === 'casual' && MODE_INFO.sprint.music === 'casual' && MODE_INFO.blitz.music === 'intense');
 
 // Attack stats
 {

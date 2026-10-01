@@ -61,6 +61,9 @@ function paintStack(ctx, board, x, cell, haze, hazeColor) {
 export default {
     id: 'ulol',
     name: 'ulol Night',
+    // Classic scenes keep their own look in every weather and play no scene sounds (see background.js)
+    quiet: true,
+    signature: 'sunny',
     create() {
         const base = layer();
         const b = base.ctx;

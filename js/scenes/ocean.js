@@ -1,24 +1,24 @@
 /**
- * ocean.js - Open sea on a bright day: shimmering waves, a sailboat, gulls and a
- * small palm island (Casual).
+ * ocean.js - Open sea with shimmering waves, a sailboat, gulls and a small palm
+ * island (Casual). Signature look: sunny. In a storm the waves run high and the boat
+ * pitches; at night its lantern is lit and the moon lays a path on the water.
  */
 
-import { W, H, rng, layer, rect, px, ditherGradient, disc, glow, cloud, wrap } from './pixel.js';
+import { W, H, rng, layer, rect, px, ditherGradient, disc, glow, wrap } from './pixel.js';
 
 const HORIZON = 106;
 
 export default {
     id: 'ocean',
     name: 'Open Sea',
-    create() {
-        const sky = layer();
-        ditherGradient(sky.ctx, 0, 0, W, HORIZON, ['#2b69be', '#4585d4', '#65a2e2', '#8cc0ee', '#bddff7', '#e6f4fc']);
-        glow(sky.ctx, 250, 32, 26, '#fff4c4', 0.6);
-        disc(sky.ctx, 250, 32, 11, '#fffbe6');
-
-        const clouds = layer(W * 2, HORIZON);
-        const cr = rng(61);
-        for (let i = 0; i < 8; i++) cloud(clouds.ctx, cr() * W * 2, 20 + cr() * 60, 5 + cr() * 7, '#ffffff', '#c8dff2', 500 + i);
+    signature: 'sunny',
+    horizon: HORIZON,
+    celestial: { sunX: 250, sunHighY: 30, sunLowY: 98, moonX: 250, moonY: 32 },
+    fog: [HORIZON - 14, HORIZON + 40],
+    rainBand: [HORIZON + 6, H - 6],
+    sounds: { always: { surf: 0.7 }, day: { gulls: 0.7 }, night: {} },
+    create(env) {
+        const sky = env.makeSky();
 
         const sea = layer();
         ditherGradient(sea.ctx, 0, HORIZON, W, H - HORIZON, ['#56afe0', '#3690c8', '#2676b0', '#1c5e96', '#154c7e']);
@@ -27,6 +27,14 @@ export default {
         for (let i = 0; i < 26; i++) {
             const h = Math.round(Math.sin((i / 26) * Math.PI) * 5);
             rect(sea.ctx, 60 + i, HORIZON - h, 1, h, '#5a86a8');
+        }
+        env.grade(sea.canvas);
+        // The sun's (or moon's) light spread over the water beneath it
+        const shine = layer();
+        const shineColor = { sunset: ['#ff9a50', 0.5], night: ['#8ab0ff', 0.3], sunny: ['#ffffff', 0.22] }[env.id];
+        if (env.sun.kind && shineColor) {
+            glow(shine.ctx, env.sun.x, HORIZON + 4, 46, shineColor[0], shineColor[1]);
+            shine.ctx.clearRect(0, 0, W, HORIZON + 1);
         }
 
         // Palm island in the foreground
@@ -59,68 +67,112 @@ export default {
         frond(-1, 14, 0.09, '#4fb04a'); frond(1, 15, 0.08, '#4fb04a');
         frond(1, 10, 0.18, '#3a9a40'); frond(-1, 9, 0.2, '#3a9a40');
         disc(s, topX, topY + 2, 2, '#6b4424');
+        env.grade(isle.canvas);
 
         const r = rng(19);
+        const choppy = 0.6 + env.wind * 1.1;
         const waves = [];
         for (let i = 0; i < 90; i++) {
             const depth = r();
             waves.push({
                 x: r() * W, y: HORIZON + 3 + Math.round(depth * depth * (H - HORIZON - 6)),
                 len: 2 + Math.round(depth * 8), speed: (4 + depth * 10) * (r() < 0.5 ? 1 : -1), p: r() * 6,
-                color: depth < 0.4 ? '#a8dcf6' : '#7fc2ea',
+                near: depth < 0.4,
             });
         }
+        const caps = Array.from({ length: 60 }, () => ({
+            x: r() * W, y: HORIZON + 6 + Math.round(r() * r() * (H - HORIZON - 10)), p: r() * 6, len: 2 + Math.floor(r() * 4),
+        }));
         const gulls = Array.from({ length: 3 }, (_, i) => ({ x: r() * W, y: 40 + r() * 30, speed: 7 + r() * 5, p: i }));
+
+        const waveNear = env.c('#a8dcf6');
+        const waveFar = env.c('#7fc2ea');
+        const white = env.c('#ffffff');
+        const hull = env.c('#7a3a28');
+        const hullDark = env.c('#5a2a1c');
+        const mast = env.c('#3a2a20');
+        const sailA = env.c('#f4f1e8');
+        const sailB = env.c('#dcd6c8');
+        const wake = env.rgba('#ffffff', 0.35);
+        const gull = env.c('#f4f6fa');
+        const gullTip = env.c('#aab4c4');
+        const glitterMain = env.sun.kind === 'moon' ? '#dfe8ff' : env.id === 'sunset' ? '#ffe0a8' : '#ffffff';
+        const glitter = env.rgba(glitterMain, env.sun.kind === 'moon' ? 0.7 : 1);
+        const showGulls = !env.night && !env.storm;
+        const pitch = 1 + env.wind * 2;
 
         return {
             draw(ctx, t) {
-                ctx.drawImage(sky.canvas, 0, 0);
-                const cx = Math.round(wrap(t * 2.5, W));
-                ctx.drawImage(clouds.canvas, -cx, 0);
-                ctx.drawImage(clouds.canvas, W * 2 - cx, 0);
+                sky.draw(ctx, t);
                 ctx.drawImage(sea.canvas, 0, 0);
+                ctx.drawImage(shine.canvas, 0, 0);
 
                 for (const w of waves) {
-                    const x = wrap(w.x + t * w.speed, W + 20) - 10;
+                    const x = wrap(w.x + t * w.speed * choppy, W + 20) - 10;
                     if (Math.sin(t * 1.2 + w.p) < -0.6) continue;
-                    rect(ctx, x, w.y, w.len, 1, w.color);
+                    ctx.fillStyle = w.near ? waveNear : waveFar;
+                    ctx.fillRect(Math.round(x), w.y, w.len, 1);
+                }
+                if (env.wind >= 0.9) {
+                    ctx.fillStyle = white;
+                    for (const c of caps) {
+                        const x = wrap(c.x + t * 9 * choppy, W + 10) - 5;
+                        if (Math.sin(t * 3 + c.p) > 0.2) ctx.fillRect(Math.round(x), c.y, c.len, 1);
+                    }
                 }
 
-                // Sun glints in a column below the sun
-                const gr = rng(Math.floor(t * 8));
-                for (let i = 0; i < 14; i++) {
-                    const y = HORIZON + 2 + Math.floor(gr() * 50);
-                    const spread = 4 + (y - HORIZON) * 0.4;
-                    px(ctx, 250 + Math.round((gr() - 0.5) * spread * 2), y, '#ffffff');
+                // Glitter in a column under the sun, or the moon
+                if (env.sun.kind) {
+                    const gr = rng(Math.floor(t * 8));
+                    ctx.fillStyle = glitter;
+                    for (let i = 0; i < 14; i++) {
+                        const y = HORIZON + 2 + Math.floor(gr() * 50);
+                        const spread = 4 + (y - HORIZON) * 0.4;
+                        ctx.fillRect(env.sun.x + Math.round((gr() - 0.5) * spread * 2), y, 1, 1);
+                    }
                 }
 
                 // Sailboat
                 const bx = Math.round(wrap(t * 4 + 40, W + 60) - 30);
-                const by = Math.round(HORIZON + 8 + Math.sin(t * 1.5));
-                rect(ctx, bx, by, 14, 2, '#7a3a28');
-                rect(ctx, bx + 1, by + 2, 12, 1, '#5a2a1c');
-                rect(ctx, bx + 6, by - 13, 1, 13, '#3a2a20');
+                const by = Math.round(HORIZON + 8 + Math.sin(t * 1.5) * pitch);
+                rect(ctx, bx, by, 14, 2, hull);
+                rect(ctx, bx + 1, by + 2, 12, 1, hullDark);
+                rect(ctx, bx + 6, by - 13, 1, 13, mast);
                 for (let i = 0; i < 11; i++) {
-                    rect(ctx, bx + 7, by - 12 + i, Math.round(i * 0.6), 1, '#f4f1e8');
-                    rect(ctx, bx + 5 - Math.round(i * 0.35), by - 10 + i, Math.round(i * 0.35), 1, '#dcd6c8');
+                    rect(ctx, bx + 7, by - 12 + i, Math.round(i * 0.6), 1, sailA);
+                    rect(ctx, bx + 5 - Math.round(i * 0.35), by - 10 + i, Math.round(i * 0.35), 1, sailB);
                 }
-                rect(ctx, bx - 2, by + 3, 18, 1, 'rgba(255,255,255,0.35)');
+                ctx.fillStyle = wake;
+                ctx.fillRect(bx - 2, by + 3, 18, 1);
+                if (env.lit > 0.05) {
+                    ctx.globalAlpha = env.lit;
+                    rect(ctx, bx + 6, by - 15, 2, 2, '#ffd27a');
+                    glow(ctx, bx + 7, by - 14, 8, '#ffb84a', 0.6);
+                    ctx.globalAlpha = 1;
+                }
 
-                for (const g of gulls) {
-                    const x = wrap(g.x + t * g.speed, W + 20) - 10;
-                    const y = Math.round(g.y + Math.sin(t * 0.8 + g.p) * 4);
-                    const up = Math.floor(t * 4 + g.p) % 2 === 0;
-                    px(ctx, x, y, '#f4f6fa');
-                    px(ctx, x - 1, y + (up ? -1 : 0), '#f4f6fa'); px(ctx, x + 1, y + (up ? -1 : 0), '#f4f6fa');
-                    px(ctx, x - 2, y + (up ? -1 : 1), '#aab4c4'); px(ctx, x + 2, y + (up ? -1 : 1), '#aab4c4');
+                if (showGulls) {
+                    for (const g of gulls) {
+                        const x = Math.round(wrap(g.x + t * g.speed, W + 20) - 10);
+                        const y = Math.round(g.y + Math.sin(t * 0.8 + g.p) * 4);
+                        const up = Math.floor(t * 4 + g.p) % 2 === 0;
+                        ctx.fillStyle = gull;
+                        ctx.fillRect(x, y, 1, 1);
+                        ctx.fillRect(x - 1, y + (up ? -1 : 0), 1, 1);
+                        ctx.fillRect(x + 1, y + (up ? -1 : 0), 1, 1);
+                        ctx.fillStyle = gullTip;
+                        ctx.fillRect(x - 2, y + (up ? -1 : 1), 1, 1);
+                        ctx.fillRect(x + 2, y + (up ? -1 : 1), 1, 1);
+                    }
                 }
 
                 ctx.drawImage(isle.canvas, 0, 0);
                 // Foam where the island meets the water
+                ctx.fillStyle = white;
                 for (let x = -10; x < 90; x += 3) {
                     const d = (x - 35) / 50;
                     const h = Math.max(0, Math.round((1 - d * d) * 16));
-                    if (h > 0 && h < 6 && Math.sin(t * 2 + x) > 0) px(ctx, x, H - h - 1, '#ffffff');
+                    if (h > 0 && h < 6 && Math.sin(t * 2 * choppy + x) > 0) ctx.fillRect(x, H - h - 1, 1, 1);
                 }
             },
         };

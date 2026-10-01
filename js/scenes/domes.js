@@ -134,6 +134,9 @@ function lamp(ctx, x) {
 export default {
     id: 'domes',
     name: 'Snow Domes',
+    // Classic scenes keep their own look in every weather and play no scene sounds (see background.js)
+    quiet: true,
+    signature: 'sunny',
     create() {
         const sky = layer();
         const s = sky.ctx;

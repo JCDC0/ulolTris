@@ -1,4 +1,755 @@
 (() => {
+  // js/tracks.js
+  var PC = { C: 0, "C#": 1, Db: 1, D: 2, "D#": 3, Eb: 3, E: 4, F: 5, "F#": 6, Gb: 6, G: 7, "G#": 8, Ab: 8, A: 9, "A#": 10, Bb: 10, B: 11 };
+  var NAMES = ["C", "Db", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"];
+  var MODES = { minor: [0, 2, 3, 5, 7, 8, 10], major: [0, 2, 4, 5, 7, 9, 11] };
+  var QUALITY = {
+    "": [0, 4, 7],
+    m: [0, 3, 7],
+    "7": [0, 4, 7, 10],
+    maj7: [0, 4, 7, 11],
+    m7: [0, 3, 7, 10],
+    m9: [0, 3, 7, 10, 14],
+    maj9: [0, 4, 7, 11, 14],
+    "13": [0, 4, 7, 10, 14, 21],
+    m7b5: [0, 3, 6, 10],
+    "7b9": [0, 4, 7, 10, 13],
+    "7#9": [0, 4, 7, 10, 15]
+  };
+  var PRIORITY = [1, 3, 4, 0, 2, 5];
+  function midi(name) {
+    const m = /^([A-G][#b]?)(-?\d)$/.exec(name);
+    if (!m) throw new Error(`bad note name: ${name}`);
+    return PC[m[1]] + 12 * (Number(m[2]) + 1);
+  }
+  function chordInfo(name, shift = 0) {
+    const m = /^([A-G][#b]?)(.*)$/.exec(name);
+    const tones = m && QUALITY[m[2]];
+    if (!tones) throw new Error(`unknown chord: ${name}`);
+    const root = (PC[m[1]] + shift + 120) % 12;
+    return { name, root, tones, pcs: tones.map((t) => (root + t) % 12) };
+  }
+  var nearest = (pc, center) => Math.round((center - pc) / 12) * 12 + pc;
+  function voicing(chord, center, count, rootless = false) {
+    const order = PRIORITY.filter((k) => k < chord.tones.length && !(rootless && k === 0));
+    const notes = order.slice(0, count).map((k) => nearest((chord.root + chord.tones[k]) % 12, center));
+    return [...new Set(notes)].sort((a, b) => a - b);
+  }
+  var bassNote = (chord, low) => low + ((chord.root - low) % 12 + 12) % 12;
+  function segments(spec, shift = 0) {
+    const list = Array.isArray(spec) ? spec : [spec];
+    const len = 16 / list.length;
+    return list.map((name, k) => ({ at: k * len, len, chord: chordInfo(name, shift) }));
+  }
+  function parseMelody(text2, shift = 0) {
+    return text2.trim().split("|").map((bar, b) => {
+      let s = 0;
+      const notes = [];
+      for (const token of bar.trim().split(/\s+/)) {
+        const [name, len] = token.split(":");
+        const l = Number(len);
+        if (name !== "r") notes.push({ s, l, n: midi(name) + shift });
+        s += l;
+      }
+      if (s !== 16) throw new Error(`melody bar ${b + 1} adds up to ${s} steps: ${bar.trim()}`);
+      return notes;
+    });
+  }
+  function scalePcs(key, shift = 0) {
+    return MODES[key.mode].map((iv) => (PC[key.root] + shift + iv) % 12);
+  }
+  function thirdBelow(n, scale) {
+    if (!scale.includes(n % 12)) return null;
+    let m = n;
+    for (let steps = 0; steps < 2; ) {
+      m--;
+      if (scale.includes((m % 12 + 12) % 12)) steps++;
+    }
+    return m;
+  }
+  var ev = (s, l, v, n, g) => ({ s, l, v, n, g });
+  var drum = (v, steps, g) => steps.map((s) => ev(s, 1, v, null, g));
+  var steps16 = Array.from({ length: 16 }, (_, i) => i);
+  function lofi() {
+    return ({ segs, i, bar, name, energy }) => {
+      const e = [];
+      for (const seg of segs) {
+        const keys = voicing(seg.chord, 58, 4);
+        const first = Math.min(9, seg.len - 1);
+        keys.forEach((n, k) => e.push(ev(seg.at + (k >= 3 ? 1 : 0), first, "lofikeys", n, 0.17)));
+        if (seg.len === 16) keys.forEach((n, k) => e.push(ev(10 + (k >= 3 ? 1 : 0), 5, "lofikeys", n, 0.1)));
+        const root = bassNote(seg.chord, 33);
+        e.push(ev(seg.at, seg.len === 16 ? 8 : seg.len - 1, "sub", root, 0.5));
+        if (seg.len === 16) e.push(ev(10, 4, "sub", root + (i % 2 ? 7 : 0), 0.38));
+        if (energy > 0.75) for (const n of voicing(seg.chord, 70, 3, true)) e.push(ev(seg.at, seg.len, "warmpad", n, 0.05));
+      }
+      if (name !== "intro") {
+        e.push(...drum("lofikick", i % 2 ? [0, 6, 10] : [0, 7, 10], 0.6));
+        e.push(...drum("softsnare", [4, 12], 0.42));
+        for (let s = 0; s < 16; s += 2) e.push(ev(s, 1, "hatc", null, s % 4 === 0 ? 0.22 : 0.13));
+        if (i % 4 === 3) e.push(ev(15, 1, "hatc", null, 0.15));
+      }
+      for (const s of [1, 5, 9, 13]) if ((bar * 5 + s * 3) % 7 < 2) e.push(ev(s, 1, "tick", null, 0.25));
+      return e;
+    };
+  }
+  function jazz() {
+    let prev = 43;
+    const near = (pc, ref) => {
+      let n = nearest(pc, ref);
+      while (n < 36) n += 12;
+      while (n > 55) n -= 12;
+      return n;
+    };
+    return ({ segs, next, i, bar, name, energy }) => {
+      const e = [];
+      segs.forEach((seg, si) => {
+        const c = seg.chord;
+        const beats = seg.len / 4;
+        const pattern = [c.root, (c.root + c.tones[1]) % 12, (c.root + c.tones[2]) % 12, (c.root + (c.tones[3] ?? c.tones[2])) % 12];
+        const target = (si + 1 < segs.length ? segs[si + 1].chord : next).root;
+        for (let b = 0; b < beats; b++) {
+          let note;
+          if (b === beats - 1) {
+            const up = near((target + 1) % 12, prev), down = near((target + 11) % 12, prev);
+            note = Math.abs(up - prev) <= Math.abs(down - prev) ? up : down;
+          } else if (b === 0) note = near(c.root, prev);
+          else note = near(pattern[(b === 1 ? 1 : 2) + i % 2], prev);
+          prev = note;
+          e.push(ev(seg.at + b * 4, 3, "upright", note, b === 0 ? 0.5 : 0.42));
+        }
+        const shell = voicing(c, 63, 3, true);
+        const hits = seg.len === 16 ? [[[0, 5], [6, 3]], [[0, 3], [6, 2], [12, 3]], [[2, 3], [8, 5]]][bar % 3] : [[0, 3], [6, 2]];
+        for (const n of shell) for (const [s, l] of hits) e.push(ev(seg.at + s, l, "rhodes", n, name === "intro" ? 0.11 : 0.15));
+      });
+      if (name !== "intro") {
+        for (const s of [0, 4, 6, 8, 12, 14]) e.push(ev(s, 2, "ride", null, s % 8 === 0 ? 0.3 : s % 4 === 0 ? 0.26 : 0.18));
+        e.push(...drum("pedal", [4, 12], 0.22));
+        e.push(...drum("softkick", [0, 4, 8, 12], 0.14));
+        e.push(...drum("brushsnare", bar % 2 ? [3, 11] : [7, 15], energy > 0.8 ? 0.16 : 0.11));
+      }
+      return e;
+    };
+  }
+  function bossa() {
+    return ({ segs, name, i }) => {
+      const e = [];
+      for (const seg of segs) {
+        const c = seg.chord;
+        const root = bassNote(c, 36);
+        const bass = seg.len === 16 ? [[0, root], [6, root + 7], [8, root], [14, root + 7]] : [[0, root], [6, root + 7]];
+        for (const [s, n] of bass) e.push(ev(seg.at + s, Math.min(4, seg.len - s), "upright", n, s % 8 === 0 ? 0.45 : 0.36));
+        const chord = voicing(c, 60, 4);
+        const hits = seg.len === 16 ? [3, 6, 10, 13] : [3, 6];
+        for (const s of hits) for (const n of chord) e.push(ev(seg.at + s, 3, "nylon", n, 0.12));
+        if (seg.len === 16 && i % 4 === 0) for (const n of chord) e.push(ev(seg.at, 3, "nylon", n, 0.1));
+      }
+      if (name !== "intro") {
+        e.push(...drum("xstick", [0, 3, 6, 10, 13], 0.16));
+        e.push(...drum("softkick", [0, 6, 8, 14], 0.3));
+        for (const s of steps16) e.push(ev(s, 1, "shaker", null, s % 2 === 0 ? 0.11 : 0.06));
+      }
+      return e;
+    };
+  }
+  function synthwave() {
+    return ({ segs, name, energy, first, last }) => {
+      const e = [];
+      const intro = name === "intro";
+      for (const seg of segs) {
+        const root = bassNote(seg.chord, 33);
+        for (let s = 0; s < seg.len; s += 2) e.push(ev(seg.at + s, 2, "synthbass", root + (s % 8 === 6 ? 12 : 0), 0.36));
+        const tones = voicing(seg.chord, 67, 4);
+        const up = [0, 1, 2, 3, 2, 1];
+        for (let s = 0; s < seg.len; s++) e.push(ev(seg.at + s, 1, "sawpluck", tones[up[s % up.length] % tones.length], intro ? 0.08 : 0.13));
+        for (const n of voicing(seg.chord, 62, 3)) e.push(ev(seg.at, seg.len, "superpad", n, 0.06));
+      }
+      if (!intro) {
+        e.push(...drum("kick", energy > 0.85 ? [0, 4, 8, 12] : [0, 8, 10], 0.8));
+        e.push(...drum("gsnare", [4, 12], 0.5));
+        for (const s of [2, 6, 10, 14]) e.push(ev(s, 1, "hat", null, 0.22));
+        for (const s of [1, 3, 5, 7, 9, 11, 13, 15]) e.push(ev(s, 1, "hat", null, 0.07));
+        if (first) e.push(ev(0, 1, "crash", null, 0.3));
+        if (last) [[12, 52], [13, 50], [14, 48], [15, 45]].forEach(([s, n]) => e.push(ev(s, 1, "tom", n, 0.6)));
+      }
+      return e;
+    };
+  }
+  function house() {
+    return ({ segs, i, name, energy }) => {
+      const e = [];
+      const breakdown = name === "B" && i < 4;
+      const intro = name === "intro";
+      for (const seg of segs) {
+        for (const n of voicing(seg.chord, 64, 4)) e.push(ev(seg.at, seg.len, "superpad", n, 0.07));
+        if (!breakdown && !intro) {
+          const root = bassNote(seg.chord, 31);
+          for (const s of [2, 6, 10, 14]) if (s < seg.len) e.push(ev(seg.at + s, 2, "rollbass", root + (s === 10 ? 12 : 0), 0.34));
+        }
+        if (!breakdown && !intro && energy >= 0.6) {
+          for (const s of [0, 3, 6, 10]) if (s < seg.len) for (const n of voicing(seg.chord, 66, 3)) e.push(ev(seg.at + s, 2, "stab", n, 0.11));
+        }
+        if (energy >= 0.9 && !breakdown) {
+          const tones = voicing(seg.chord, 72, 3);
+          for (let s = 0; s < seg.len; s++) e.push(ev(seg.at + s, 1, "sawpluck", tones[s % tones.length], 0.08));
+        }
+      }
+      if (!breakdown) {
+        e.push(...drum("kick", [0, 4, 8, 12], intro ? 0.6 : 0.75));
+        if (!intro) {
+          e.push(...drum("clap", [4, 12], 0.5));
+          e.push(...drum("openhat", [2, 6, 10, 14], 0.26));
+          e.push(...drum("hatc", [1, 3, 5, 7, 9, 11, 13, 15], 0.09));
+        }
+      } else if (i === 3) {
+        e.push(ev(0, 16, "riser", null, 0.3));
+        for (let s = 8; s < 16; s++) e.push(ev(s, 1, "clap", null, 0.25 + (s - 8) * 0.05));
+      }
+      return e;
+    };
+  }
+  function funk() {
+    return ({ segs, name, last, first }) => {
+      const e = [];
+      for (const seg of segs) {
+        const c = seg.chord;
+        const root = bassNote(c, 33);
+        const seventh = root + (c.tones[3] === 10 ? 10 : 11);
+        const line = [[0, root, 2], [3, root + 12, 1], [5, root, 1], [8, root, 2], [10, root + 7, 1], [11, seventh, 1], [13, root, 1], [14, root + 12, 1]];
+        for (const [s, n, l] of line) if (s < seg.len) e.push(ev(seg.at + s, l, "funkbass", n, s % 8 === 0 ? 0.4 : 0.32));
+        for (const s of [2, 5, 7, 10, 13]) if (s < seg.len) for (const n of voicing(c, 64, 3)) e.push(ev(seg.at + s, 1, "clav", n, 0.1));
+        for (const n of voicing(c, 66, 4)) e.push(ev(seg.at, seg.len, "strings", n, 0.055));
+      }
+      if (name !== "intro") {
+        e.push(...drum("kick", [0, 4, 8, 12], 0.72));
+        e.push(...drum("clap", [4, 12], 0.5));
+        e.push(...drum("openhat", [2, 6, 10, 14], 0.22));
+        e.push(...drum("hatc", [1, 3, 5, 7, 9, 11, 13, 15], 0.09));
+        if (first) e.push(ev(0, 1, "crash", null, 0.25));
+        if (last) e.push(...drum("clap", [12, 13, 14, 15], 0.4));
+      }
+      return e;
+    };
+  }
+  function dnb() {
+    return ({ segs, i, name, first, last }) => {
+      const e = [];
+      const breakdown = name === "B" && i < 4;
+      const intro = name === "intro";
+      for (const seg of segs) {
+        for (const n of voicing(seg.chord, 62, 3)) e.push(ev(seg.at, seg.len, "superpad", n, 0.07));
+        if (!breakdown) {
+          const root = bassNote(seg.chord, 28);
+          e.push(ev(seg.at, seg.len === 16 ? 10 : seg.len, "reese", root, intro ? 0.3 : 0.42));
+          if (seg.len === 16) {
+            e.push(ev(seg.at + 10, 4, "reese", root + 7, 0.36));
+            e.push(ev(seg.at + 14, 2, "reese", root, 0.36));
+          }
+        }
+        if (!breakdown && !intro) {
+          for (const s of [3, 11]) if (s < seg.len) for (const n of voicing(seg.chord, 66, 3)) e.push(ev(seg.at + s, 1, "stab", n, 0.1));
+        }
+      }
+      if (!breakdown && !intro) {
+        e.push(...drum("kick", [0, 10], 0.85));
+        e.push(...drum("dnbsnare", [4, 12], 0.75));
+        if (i % 2) e.push(...drum("dnbsnare", [7, 15], 0.2));
+        for (let s = 0; s < 16; s += 2) e.push(ev(s, 1, "hat", null, 0.16));
+        for (const s of [5, 13]) e.push(ev(s, 1, "hatc", null, 0.08));
+        if (first) e.push(ev(0, 1, "crash", null, 0.32));
+        if (last) for (const s of [10, 11, 12, 13, 14, 15]) e.push(ev(s, 1, "dnbsnare", null, 0.3 + (s - 10) * 0.08));
+      } else if (breakdown && i === 3) {
+        e.push(ev(0, 16, "riser", null, 0.3));
+      }
+      return e;
+    };
+  }
+  function trance() {
+    return ({ segs, i, name, first }) => {
+      const e = [];
+      const breakdown = name === "B" && i < 4;
+      const intro = name === "intro";
+      for (const seg of segs) {
+        for (const n of voicing(seg.chord, 64, 4)) e.push(ev(seg.at, seg.len, "superpad", n, 0.075));
+        if (!breakdown && !intro) {
+          const root = bassNote(seg.chord, 31);
+          for (let s = 0; s < seg.len; s++) if (s % 4 !== 0) e.push(ev(seg.at + s, 1, "rollbass", root + (s % 8 === 6 ? 12 : 0), 0.3));
+          const tones = voicing(seg.chord, 71, 3);
+          const gate = [1, 1, 0, 1, 1, 0, 1, 1];
+          for (let s = 0; s < seg.len; s++) if (gate[s % 8]) e.push(ev(seg.at + s, 1, "sawpluck", tones[s % tones.length], 0.09));
+        }
+      }
+      if (!breakdown) {
+        e.push(...drum("hardkick", [0, 4, 8, 12], intro ? 0.6 : 0.85));
+        if (!intro) {
+          e.push(...drum("clap", [4, 12], 0.55));
+          e.push(...drum("openhat", [2, 6, 10, 14], 0.3));
+          e.push(...drum("hatc", [1, 3, 5, 7, 9, 11, 13, 15], 0.1));
+          if (first) e.push(ev(0, 1, "crash", null, 0.3));
+        }
+      } else if (i === 3) {
+        e.push(ev(0, 16, "riser", null, 0.3));
+        for (let s = 0; s < 16; s += 2) e.push(ev(s, 1, "clap", null, 0.2 + s * 0.03));
+        for (let s = 12; s < 16; s++) e.push(ev(s, 1, "clap", null, 0.5));
+      }
+      return e;
+    };
+  }
+  function bassMusic() {
+    return ({ segs, i, name, first, last }) => {
+      const e = [];
+      const drop = name === "B" || name === "B2";
+      const intro = name === "intro";
+      for (const seg of segs) {
+        for (const n of voicing(seg.chord, 62, 3)) e.push(ev(seg.at, seg.len, "superpad", n, drop ? 0.05 : 0.07));
+        const root = bassNote(seg.chord, 28);
+        if (!intro) e.push(ev(seg.at, seg.len, "sub", root, 0.5));
+        if (drop) {
+          const low = bassNote(seg.chord, 31);
+          const riff = i % 2 ? [[0, 4, low], [6, 2, low + 12], [8, 2, low], [12, 4, low + 7]] : [[0, 6, low], [8, 2, low], [10, 2, low + 12], [12, 4, low]];
+          for (const [s, l, n] of riff) if (s < seg.len) e.push(ev(seg.at + s, l, "wobble", n, 0.34));
+        } else if (!intro) {
+          const tones = voicing(seg.chord, 69, 2);
+          for (const s of [0, 6, 10]) if (s < seg.len) e.push(ev(seg.at + s, 1, "sawpluck", tones[s % tones.length], 0.1));
+        }
+      }
+      if (!intro) {
+        e.push(...drum("hardkick", drop ? [0, 10] : [0], 0.85));
+        e.push(...drum("snare", [8], drop ? 0.8 : 0.6));
+        if (drop) e.push(...drum("clap", [8], 0.55));
+        for (let s = 0; s < 16; s += 2) e.push(ev(s, 1, "hat", null, 0.13));
+        if (first && drop) e.push(ev(0, 1, "crash", null, 0.32));
+        if (last) [[12, 55], [13, 52], [14, 48], [15, 45]].forEach(([s, n]) => e.push(ev(s, 1, "tom", n, 0.6)));
+      }
+      return e;
+    };
+  }
+  var FORM = [
+    { name: "intro", part: "A", bars: 4, energy: 0.3, melody: null },
+    { name: "A", part: "A", bars: 8, energy: 0.6, melody: "A" },
+    { name: "B", part: "B", bars: 8, energy: 0.9, melody: "B" },
+    { name: "A2", part: "A", bars: 8, energy: 1, melody: "A", harmony: true },
+    { name: "B2", part: "B", bars: 8, energy: 0.85, melody: "B", harmony: true }
+  ];
+  var LOOP_START = FORM[0].bars;
+  function compose(spec) {
+    const shift = spec.transpose || 0;
+    const scale = scalePcs(spec.key, shift);
+    const melodies = { A: parseMelody(spec.melody.A, shift), B: parseMelody(spec.melody.B, shift) };
+    const plan = [];
+    for (const sec of FORM) {
+      for (let i = 0; i < sec.bars; i++) plan.push({ sec, i, segs: segments(spec.chords[sec.part][i], shift) });
+    }
+    const groove = spec.groove();
+    return plan.map((p, idx) => {
+      const after = plan[idx + 1] || plan[LOOP_START];
+      const events = groove({
+        segs: p.segs,
+        next: after.segs[0].chord,
+        i: p.i,
+        bar: idx,
+        name: p.sec.name,
+        energy: p.sec.energy,
+        first: p.i === 0,
+        last: p.i === p.sec.bars - 1
+      });
+      if (p.sec.melody) {
+        const notes = melodies[p.sec.melody][p.i];
+        for (const n of notes) events.push(ev(n.s, n.l, spec.voice, n.n, spec.vel));
+        if (p.sec.harmony) {
+          for (const n of notes) {
+            const h = thirdBelow(n.n, scale);
+            if (h !== null) events.push(ev(n.s, n.l, spec.voice, h, spec.vel * 0.5));
+          }
+        }
+      }
+      return events;
+    });
+  }
+  var SPECS = [
+    {
+      id: "rainy-window",
+      name: "Rainy Window",
+      genre: "Lo-fi",
+      category: "casual",
+      bpm: 76,
+      swing: 0.42,
+      delay: 0.22,
+      verb: 0.24,
+      pump: 0,
+      gain: 0.99,
+      blurb: "Dusty keys, a boom-bap beat and a vibraphone, for a grey afternoon.",
+      art: "rain",
+      key: { root: "F", mode: "minor" },
+      voice: "vibes",
+      vel: 0.58,
+      groove: lofi,
+      chords: {
+        A: ["Fm9", "Dbmaj7", "Ebmaj7", "Cm7", "Fm9", "Dbmaj7", "Bbm9", "C7b9"],
+        B: ["Abmaj7", "Ebmaj7", "Dbmaj7", "Bbm9", "Abmaj7", "Ebmaj7", "Gm7b5", "C7b9"]
+      },
+      melody: {
+        A: `C5:3 Eb5:1 F5:4 r:2 Eb5:2 C5:4 | Db5:4 C5:2 Ab4:2 r:2 Bb4:2 C5:4 | Bb4:4 G4:2 Bb4:2 Eb5:6 r:2 | C5:2 Bb4:2 Ab4:2 G4:2 r:4 C5:4 |
+                C5:3 Eb5:1 F5:4 r:2 Ab5:2 G5:4 | F5:4 Eb5:2 C5:2 r:2 Db5:2 C5:4 | Bb4:4 Db5:4 F5:4 Eb5:2 Db5:2 | E5:4 Db5:4 C5:8`,
+        B: `Eb5:4 C5:2 Eb5:2 Ab5:6 r:2 | G5:4 Eb5:2 Bb4:2 r:2 D5:2 Eb5:4 | F5:3 Ab5:1 F5:4 Db5:4 C5:4 | Bb4:2 C5:2 Db5:4 F5:4 Eb5:2 Db5:2 |
+                Eb5:4 C5:2 Eb5:2 Ab5:4 Bb5:2 C6:2 | Bb5:4 G5:2 Eb5:2 G5:4 Bb4:4 | G5:4 F5:2 Db5:2 Bb4:4 G4:4 | E5:2 G5:2 Bb5:4 Ab5:4 G5:4`
+      }
+    },
+    {
+      id: "midnight-blue",
+      name: "Midnight Blue",
+      genre: "Jazz",
+      category: "casual",
+      bpm: 92,
+      swing: 0.58,
+      delay: 0.12,
+      verb: 0.26,
+      pump: 0,
+      gain: 1.19,
+      blurb: "A slow swing: walking bass, brushes and a vibraphone over ii-V-I changes.",
+      art: "moon",
+      key: { root: "F", mode: "major" },
+      voice: "vibes",
+      vel: 0.42,
+      groove: jazz,
+      chords: {
+        A: ["Fmaj9", "Dm9", "Gm9", "C13", "Am7", "D7b9", "Gm7", "C7b9"],
+        B: ["Bbmaj9", "Bbm7", "Am7", "D7#9", "Gm7", "C7", "Fmaj7", ["Gm7", "C7"]]
+      },
+      melody: {
+        A: `A4:4 C5:2 E5:2 G5:6 F5:2 | F5:3 D5:1 A4:4 r:2 C5:2 D5:4 | Bb4:4 D5:2 F5:2 A5:4 G5:4 | E5:4 G5:2 A5:2 G5:4 E5:4 |
+                C5:4 E5:2 G5:2 E5:4 C5:4 | F#4:4 A4:2 C5:2 Eb5:4 D5:4 | D5:4 Bb4:2 G4:2 F5:4 D5:4 | E5:4 G5:2 Bb5:2 G5:4 E5:4`,
+        B: `D5:4 F5:2 A5:2 F5:4 D5:4 | Db5:4 F5:2 Ab5:2 F5:4 Db5:4 | E5:4 G5:2 A5:2 G5:4 E5:4 | F#5:4 A5:2 C6:2 A5:4 F5:4 |
+                D5:4 F5:2 G5:2 F5:4 D5:4 | E5:4 G5:2 Bb5:2 G5:4 E5:4 | A5:6 G5:2 F5:4 C5:4 | Bb4:4 D5:4 E5:4 G5:4`
+      }
+    },
+    {
+      id: "corner-cafe",
+      name: "Corner Cafe",
+      genre: "Cafe bossa",
+      category: "casual",
+      bpm: 112,
+      swing: 0,
+      delay: 0.18,
+      verb: 0.22,
+      pump: 0,
+      gain: 1.08,
+      blurb: "Nylon guitar on a bossa nova clave, a soft bass and a breathy flute.",
+      art: "cup",
+      key: { root: "A", mode: "minor" },
+      voice: "flute",
+      vel: 0.32,
+      groove: bossa,
+      chords: {
+        A: ["Am9", "Dm9", "G13", "Cmaj9", "Fmaj7", "Bm7b5", "E7b9", "Am9"],
+        B: ["Cmaj9", "Am9", "Dm9", "G13", "Em7", "A7b9", "Dm9", "E7b9"]
+      },
+      melody: {
+        A: `E5:4 A5:2 G5:2 E5:4 C5:4 | D5:3 F5:1 A5:4 G5:2 F5:2 E5:4 | B4:4 D5:2 F5:2 E5:4 D5:4 | E5:4 G5:2 B4:2 D5:4 C5:4 |
+                A4:4 C5:2 E5:2 F5:4 A5:4 | B4:4 D5:2 F5:2 A5:4 F5:4 | G#4:4 B4:2 D5:2 F5:4 E5:4 | E5:6 C5:2 A4:8`,
+        B: `G5:4 E5:2 C5:2 E5:4 G5:4 | A5:4 G5:2 E5:2 C5:4 E5:4 | F5:4 A5:2 C6:2 A5:4 F5:4 | D5:4 F5:2 B4:2 D5:4 G4:4 |
+                B4:4 D5:2 E5:2 G5:4 E5:4 | C#5:4 E5:2 G5:2 Bb5:4 A5:4 | F5:4 E5:2 D5:2 C5:4 A4:4 | G#4:4 B4:4 D5:4 E5:4`
+      }
+    },
+    {
+      id: "neon-circuit",
+      name: "Neon Circuit",
+      genre: "Synthwave",
+      category: "competitive",
+      bpm: 118,
+      swing: 0,
+      delay: 0.28,
+      verb: 0.22,
+      pump: 0.3,
+      gain: 0.97,
+      transpose: 5,
+      blurb: "Arpeggios, gated snares and a big lead, written for a night drive.",
+      art: "sun",
+      key: { root: "A", mode: "minor" },
+      voice: "lead",
+      vel: 0.48,
+      groove: synthwave,
+      chords: {
+        A: ["Am", "F", "C", "G", "Am", "F", "Dm", "E"],
+        B: ["F", "G", "Am", "C", "F", "G", "Am", "E"]
+      },
+      melody: {
+        A: `A5:3 G5:1 E5:4 r:2 C5:2 E5:4 | A5:3 F5:1 C5:4 r:2 A4:2 C5:4 | G5:3 E5:1 C5:4 r:2 E5:2 G5:4 | B5:3 G5:1 D5:4 r:2 B4:2 D5:4 |
+                A5:3 G5:1 E5:4 r:2 C6:2 B5:4 | A5:3 F5:1 C5:4 r:2 F5:2 A5:4 | F5:4 A5:4 D6:4 C6:2 A5:2 | B5:4 G#5:4 E5:4 G#5:2 B5:2`,
+        B: `C6:4 A5:4 F5:8 | D6:4 B5:4 G5:8 | E6:4 C6:4 A5:8 | G5:4 E5:4 C5:4 E5:4 |
+                C6:4 A5:4 C6:4 A5:4 | D6:4 B5:4 D6:4 B5:4 | C6:4 E6:4 A5:8 | B5:2 G#5:2 E5:4 G#5:2 B5:2 E6:4`
+      }
+    },
+    {
+      id: "pulse-driver",
+      name: "Pulse Driver",
+      genre: "Melodic house",
+      category: "competitive",
+      bpm: 126,
+      swing: 0,
+      delay: 0.22,
+      verb: 0.18,
+      pump: 0.5,
+      gain: 1.5,
+      blurb: "Four on the floor, off-beat bass and a bright pluck lead, with a breakdown that builds back in.",
+      art: "beam",
+      key: { root: "G", mode: "minor" },
+      voice: "supersaw",
+      vel: 0.32,
+      groove: house,
+      chords: {
+        A: ["Gm", "Eb", "Bb", "F", "Gm", "Eb", "Cm", "D"],
+        B: ["Eb", "Bb", "F", "Gm", "Eb", "Bb", "F", "D"]
+      },
+      melody: {
+        A: `D5:2 G5:2 Bb5:4 A5:2 G5:2 D5:4 | Eb5:2 G5:2 Bb5:4 G5:2 Eb5:2 Bb4:4 | D5:2 F5:2 Bb5:4 A5:2 F5:2 D5:4 | C5:2 F5:2 A5:4 G5:2 F5:2 C5:4 |
+                D5:2 G5:2 Bb5:4 D6:2 C6:2 Bb5:4 | Eb5:2 G5:2 Bb5:4 C6:2 Bb5:2 G5:4 | C5:2 Eb5:2 G5:4 Bb5:2 G5:2 Eb5:4 | F#5:4 A5:4 D6:4 C6:2 A5:2`,
+        B: `G5:4 Bb5:4 Eb6:8 | F5:4 Bb5:4 D6:8 | A5:4 C6:4 F6:8 | Bb5:4 D6:4 G5:8 |
+                G5:4 Bb5:4 Eb6:4 D6:4 | F5:4 Bb5:4 D6:4 C6:4 | A5:4 C6:4 A5:4 F5:4 | F#5:4 A5:4 C6:2 A5:2 F#5:4`
+      }
+    },
+    {
+      id: "night-shift",
+      name: "Night Shift",
+      genre: "Future funk",
+      category: "competitive",
+      bpm: 112,
+      swing: 0,
+      delay: 0.14,
+      verb: 0.15,
+      pump: 0.25,
+      gain: 1.06,
+      blurb: "A slap bass, a choppy clav and strings over a disco beat, after midnight.",
+      art: "disco",
+      key: { root: "B", mode: "minor" },
+      voice: "lead",
+      vel: 0.36,
+      groove: funk,
+      chords: {
+        A: ["Bm9", "Em9", "A13", "Dmaj9", "Gmaj9", "F#m7", "Em9", "F#7b9"],
+        B: ["Gmaj9", "A13", "Bm9", "F#m7", "Gmaj9", "A13", "Dmaj9", "F#7b9"]
+      },
+      melody: {
+        A: `F#5:3 A5:1 B5:4 r:2 A5:2 F#5:4 | G5:3 B5:1 D6:4 r:2 B5:2 G5:4 | E5:3 G5:1 A5:4 r:2 G5:2 E5:4 | F#5:3 A5:1 C#6:4 r:2 A5:2 F#5:4 |
+                D5:3 G5:1 B5:4 r:2 A5:2 G5:4 | C#5:3 E5:1 F#5:4 r:2 E5:2 C#5:4 | G5:4 B5:4 A5:4 F#5:4 | A#5:4 C#6:4 G5:4 F#5:4`,
+        B: `B4:2 D5:2 G5:4 F#5:2 D5:2 B4:4 | C#5:2 E5:2 A5:4 G5:2 E5:2 C#5:4 | D5:2 F#5:2 B5:4 A5:2 F#5:2 D5:4 | C#5:2 E5:2 F#5:4 A5:2 F#5:2 E5:4 |
+                B4:2 D5:2 G5:4 A5:2 B5:2 D6:4 | C#5:2 E5:2 G5:4 A5:2 G5:2 E5:4 | F#5:4 A5:4 C#6:4 A5:4 | A#4:2 C#5:2 F#5:4 G5:2 F#5:2 C#5:4`
+      }
+    },
+    {
+      id: "redline",
+      name: "Redline",
+      genre: "Drum and bass",
+      category: "intense",
+      bpm: 174,
+      swing: 0,
+      delay: 0.1,
+      verb: 0.12,
+      pump: 0.3,
+      gain: 1,
+      blurb: "A two-step break and a growling reese bass, with a breakdown that drops back in.",
+      art: "wave",
+      key: { root: "E", mode: "minor" },
+      voice: "lead",
+      vel: 0.38,
+      groove: dnb,
+      chords: {
+        A: ["Em", "C", "G", "D", "Em", "C", "Am", "B7"],
+        B: ["C", "D", "Em", "G", "C", "D", "Em", "B7"]
+      },
+      melody: {
+        A: `B4:2 E5:2 G5:4 F#5:2 E5:2 B4:4 | C5:2 E5:2 G5:4 E5:2 C5:2 G4:4 | D5:2 G5:2 B5:4 A5:2 G5:2 D5:4 | D5:2 F#5:2 A5:4 F#5:2 D5:2 A4:4 |
+                B4:2 E5:2 G5:4 B5:2 A5:2 G5:4 | C5:2 E5:2 G5:4 C6:2 B5:2 G5:4 | A4:2 C5:2 E5:4 A5:2 G5:2 E5:4 | D#5:4 F#5:4 B5:4 A5:2 F#5:2`,
+        B: `G5:8 E5:8 | A5:8 F#5:8 | B5:8 G5:8 | D6:8 B5:8 |
+                G5:4 E5:4 C5:4 E5:4 | A5:4 F#5:4 D5:4 F#5:4 | G5:4 B5:4 E6:4 B5:4 | D#5:2 F#5:2 B5:4 A5:4 F#5:4`
+      }
+    },
+    {
+      id: "overclock",
+      name: "Overclock",
+      genre: "Hard trance",
+      category: "intense",
+      bpm: 140,
+      swing: 0,
+      delay: 0.16,
+      verb: 0.14,
+      pump: 0.55,
+      gain: 1.18,
+      transpose: 3,
+      blurb: "A hard kick, rolling 16th bass, wide supersaws and a hoover lead that swoops in.",
+      art: "star",
+      key: { root: "A", mode: "minor" },
+      voice: "hoover",
+      vel: 0.4,
+      groove: trance,
+      chords: {
+        A: ["Am", "G", "F", "E", "Am", "G", "F", "E"],
+        B: ["F", "C", "G", "Am", "F", "C", "G", "E"]
+      },
+      melody: {
+        A: `E5:2 A5:2 C6:4 B5:2 A5:2 E5:4 | D5:2 G5:2 B5:4 A5:2 G5:2 D5:4 | C5:2 F5:2 A5:4 G5:2 F5:2 C5:4 | B4:2 E5:2 G#5:4 B5:2 G#5:2 E5:4 |
+                E5:2 A5:2 C6:4 E6:4 D6:4 | D5:2 G5:2 B5:4 D6:4 C6:4 | C5:2 F5:2 A5:4 C6:4 B5:4 | B4:2 E5:2 G#5:4 B5:4 E6:4`,
+        B: `C6:8 A5:8 | E6:8 C6:8 | D6:8 B5:8 | C6:4 B5:4 A5:8 |
+                A5:4 C6:4 F6:8 | G5:4 E6:4 C6:8 | D6:4 B5:4 G5:4 B5:4 | G#5:2 B5:2 E6:4 D6:4 B5:4`
+      }
+    },
+    {
+      id: "static-storm",
+      name: "Static Storm",
+      genre: "Bass music",
+      category: "intense",
+      bpm: 140,
+      swing: 0,
+      delay: 0.14,
+      verb: 0.16,
+      pump: 0.35,
+      gain: 0.95,
+      transpose: 4,
+      blurb: "Half-time drums, a dark verse and a wobble bass drop.",
+      art: "bolt",
+      key: { root: "A", mode: "minor" },
+      voice: "lead",
+      vel: 0.44,
+      groove: bassMusic,
+      chords: {
+        A: ["Am", "Am", "F", "F", "Am", "Am", "G", "E"],
+        B: ["Am", "Am", "Am", "Am", "F", "F", "G", "G"]
+      },
+      melody: {
+        A: `E5:8 r:2 C5:2 E5:4 | A5:6 r:2 G5:4 E5:4 | C5:8 A4:4 C5:4 | F5:8 E5:4 C5:4 |
+                E5:8 r:2 C5:2 E5:4 | A5:6 r:2 B5:4 C6:4 | B5:8 D6:4 B5:4 | G#5:8 B5:4 G#5:4`,
+        B: `A5:2 r:2 A5:2 C6:2 r:2 E6:2 D6:2 C6:2 | A5:2 r:2 A5:2 C6:2 r:2 B5:2 A5:2 G5:2 | A5:2 r:2 A5:2 C6:2 r:2 E6:2 D6:2 C6:2 | E6:4 D6:2 C6:2 B5:4 A5:4 |
+                F5:2 r:2 F5:2 A5:2 r:2 C6:2 B5:2 A5:2 | F5:2 r:2 F5:2 A5:2 r:2 G5:2 F5:2 E5:2 | G5:2 r:2 G5:2 B5:2 r:2 D6:2 C6:2 B5:2 | D6:4 B5:4 G5:4 A5:4`
+      }
+    }
+  ];
+  var CHIP_KEY = { root: "A", mode: "minor" };
+  var CHIP_A = ["Am", "Am", "E", "Am", "Dm", "C", "E", "Am"];
+  var CHIP_B = ["Am", "G", "F", "E", "Am", "G", "Am", "E"];
+  var CHIP_CHORDS = {
+    Am: { c: [57, 60, 64], r: 45 },
+    E: { c: [52, 56, 59], r: 40 },
+    Dm: { c: [50, 53, 57], r: 38 },
+    C: { c: [48, 52, 55, 60], r: 36 },
+    G: { c: [55, 59, 62], r: 43 },
+    F: { c: [53, 57, 60], r: 41 }
+  };
+  var CHIP_MELODY = {
+    A: `E5:4 B4:2 C5:2 D5:4 C5:2 B4:2 | A4:4 A4:2 C5:2 E5:4 D5:2 C5:2 | B4:6 C5:2 D5:4 E5:4 | C5:4 A4:4 A4:4 r:4 |
+        r:2 D5:4 F5:2 A5:4 G5:2 F5:2 | E5:6 C5:2 E5:4 D5:2 C5:2 | B4:4 B4:2 C5:2 D5:4 E5:4 | C5:4 A4:4 A4:4 r:4`,
+    B: `E5:8 C5:8 | D5:8 B4:8 | C5:8 A4:8 | G#4:8 B4:8 | E5:8 C5:8 | D5:8 B4:8 | C5:4 E5:4 A5:8 | G#5:16`
+  };
+  var CHIP_FILL = "r:12 E5:1 D5:1 C5:1 B4:1";
+  var chipNotes = (notes, voice, vel, shift = 0) => notes.map((n) => ev(n.s, n.l, voice, n.n + shift, vel));
+  function chipBacking(name, { arp = false, drums = "none", fill = false } = {}) {
+    const { c: tones, r: root } = CHIP_CHORDS[name];
+    const e = [];
+    for (let s = 0; s < 16; s += 2) e.push(ev(s, 2, "chipBass", root + (s % 4 === 2 ? 12 : 0), 0.52));
+    if (arp) {
+      for (let s = 0; s < 16; s++) e.push(ev(s, 1, "chipHarm", tones[s % tones.length] + 12, 0.09));
+    } else {
+      for (let s = 2; s < 16; s += 4) for (const n of tones.slice(1, 3)) e.push(ev(s, 1, "chipHarm", n + 12, 0.09));
+    }
+    if (drums !== "none") {
+      e.push(...drum("chipKick", drums === "full" ? [0, 4, 8, 12] : [0, 8], 0.55));
+      e.push(...drum("chipSnare", fill ? [4, 12, 13, 14, 15] : [4, 12], 0.34));
+      e.push(...drum("chipHat", drums === "full" ? [2, 6, 10, 14] : [], 0.18));
+    }
+    return e;
+  }
+  function buildChip() {
+    const melodyA = parseMelody(CHIP_MELODY.A);
+    const melodyB = parseMelody(CHIP_MELODY.B);
+    const fill = parseMelody(CHIP_FILL)[0];
+    const scale = scalePcs(CHIP_KEY);
+    const bars = [];
+    for (let i = 0; i < 8; i++) bars.push([...chipBacking(CHIP_A[i]), ...chipNotes(melodyA[i], "chipLead", 0.35)]);
+    for (let i = 0; i < 8; i++) {
+      const harm = melodyA[i].map((n) => ({ ...n, n: thirdBelow(n.n, scale) })).filter((n) => n.n !== null);
+      bars.push([
+        ...chipBacking(CHIP_A[i], { drums: "beat", fill: i === 7 }).filter((e) => e.v !== "chipHarm"),
+        ...chipNotes(melodyA[i], "chipLead", 0.35),
+        ...chipNotes(harm, "chipHarm", 0.13)
+      ]);
+    }
+    for (let i = 0; i < 8; i++) {
+      bars.push([...chipBacking(CHIP_B[i], { arp: true, drums: "beat", fill: i === 7 }), ...chipNotes(melodyB[i], "chipLead", 0.35)]);
+    }
+    for (let i = 0; i < 8; i++) {
+      const mel = chipNotes(melodyA[i], "chipLead", 0.3, 12);
+      if (i === 3 || i === 7) mel.push(...chipNotes(fill, "chipLead", 0.23, 12));
+      bars.push([...chipBacking(CHIP_A[i], { drums: "full", fill: i === 7 }), ...mel]);
+    }
+    return bars;
+  }
+  var CHIP_SPEC = {
+    id: "chip",
+    name: "Chiptune",
+    genre: "8-bit",
+    category: "chip",
+    bpm: 150,
+    swing: 0,
+    delay: 0,
+    verb: 0,
+    pump: 0,
+    gain: 1,
+    blurb: "Korobeiniki for two pulse channels, a triangle bass and noise drums, like an 8-bit console. The music of Classic.",
+    art: "chip",
+    key: CHIP_KEY
+  };
+  var TRACK_INFO = Object.fromEntries([...SPECS, CHIP_SPEC].map((s) => {
+    const shift = s.transpose || 0;
+    return [s.id, {
+      id: s.id,
+      name: s.name,
+      genre: s.genre,
+      category: s.category,
+      bpm: s.bpm,
+      blurb: s.blurb,
+      art: s.art,
+      key: `${NAMES[(PC[s.key.root] + shift) % 12]} ${s.key.mode}`
+    }];
+  }));
+  var TRACK_IDS = [...SPECS.map((s) => s.id), CHIP_SPEC.id];
+  var CATEGORIES = {
+    casual: { label: "Casual", blurb: "Lo-fi, jazz and cafe music for calm play." },
+    competitive: { label: "Competitive", blurb: "Synthwave, house and funk with some drive." },
+    intense: { label: "Intense", blurb: "Drum and bass, trance and bass music for when it counts." }
+  };
+  for (const id of Object.keys(CATEGORIES)) CATEGORIES[id].tracks = SPECS.filter((s) => s.category === id).map((s) => s.id);
+  CATEGORIES.chip = { label: "Classic", blurb: "The 8-bit arrangement that plays in Classic.", tracks: [CHIP_SPEC.id] };
+  var built = /* @__PURE__ */ new Map();
+  function getTrack(id) {
+    if (!built.has(id)) {
+      if (id === CHIP_SPEC.id) {
+        const { bpm, swing, delay, verb, pump, gain } = CHIP_SPEC;
+        built.set(id, { id, bpm, swing, delay, verb, pump, gain, loopStart: 0, bars: buildChip() });
+      } else {
+        const spec = SPECS.find((s) => s.id === id);
+        if (!spec) return void 0;
+        built.set(id, {
+          id,
+          bpm: spec.bpm,
+          swing: spec.swing,
+          delay: spec.delay,
+          verb: spec.verb,
+          pump: spec.pump,
+          gain: spec.gain,
+          loopStart: LOOP_START,
+          bars: compose(spec)
+        });
+      }
+    }
+    return built.get(id);
+  }
+  function musicPlan(settings2, category) {
+    const choice = settings2.soundtrack || "auto";
+    if (choice === "off") return { off: true };
+    if (settings2.track && settings2.track !== "auto" && TRACK_INFO[settings2.track]) return { track: settings2.track };
+    const list = CATEGORIES[choice === "auto" ? category : choice] || CATEGORIES.casual;
+    return { playlist: list.tracks };
+  }
+
   // js/settings.js
   var STORAGE_KEY = "uloltris-settings";
   var FRAME_MS = 1e3 / 60;
@@ -24,7 +775,12 @@
     musicMuted: false,
     crossfadeDuration: 2,
     soundtrack: "auto",
-    // 'auto', 'calm', 'competitive', 'intense', 'chip', 'off'
+    // 'auto' (by mode), 'casual', 'competitive', 'intense', 'chip', 'off'
+    track: "auto",
+    // 'auto' (play the playlist) or the id of one track to loop
+    ambience: true,
+    // background sounds that match the scene (rain, birds, wind)
+    ambienceVolume: 60,
     // Visual
     screenShake: "medium",
     // 'off', 'low', 'medium', 'high'
@@ -44,6 +800,8 @@
     // 'cycle' (by level) or one of CLASSIC_SCENES
     classicFont: "og",
     // Classic HUD font: 'og' (8-bit pixel font) or 'ulol' (the uloltris fonts)
+    weather: "default",
+    // 'default' (each scene's own look), 'cycle' (by level), or one of VARIANTS
     ghostOpacity: 40,
     // 0-100
     showActionText: true,
@@ -58,8 +816,10 @@
     // ms
     gameStyle: "modern",
     // 'modern' (TETR.IO, Jstris) or 'battle' (Tetris 99, PPT)
-    classicStartLevel: 0
+    classicStartLevel: 0,
     // Classic mode: level to begin on, 0-19
+    touchControls: "auto"
+    // on-screen buttons: 'auto' (touch devices), 'on', 'off'
   };
   var CONSTRAINTS = {
     arr: { min: 0, max: 5, step: 0.1 },
@@ -69,6 +829,7 @@
     masterVolume: { min: 0, max: 100, step: 1 },
     sfxVolume: { min: 0, max: 100, step: 1 },
     musicVolume: { min: 0, max: 100, step: 1 },
+    ambienceVolume: { min: 0, max: 100, step: 1 },
     crossfadeDuration: { min: 0, max: 5, step: 0.5 },
     ghostOpacity: { min: 0, max: 100, step: 5 },
     nextPreviewCount: { min: 1, max: 6, step: 1 },
@@ -82,13 +843,16 @@
     clearEffects: ["off", "low", "medium", "high"],
     statsDisplay: ["off", "time", "speed", "efficiency", "versus"],
     background: ["on", "dim", "off"],
-    casualScene: ["cycle", "bamboo", "wheat", "village", "castle", "ocean", "neon"],
+    casualScene: ["cycle", "bamboo", "wheat", "sakura", "village", "falls", "castle", "ocean", "aurora", "neon"],
     classicScene: ["cycle", "blocks", "ulol", "domes"],
     classicFont: ["og", "ulol"],
-    soundtrack: ["auto", "calm", "competitive", "intense", "chip", "off"],
+    weather: ["default", "cycle", "sunny", "cloudy", "sunset", "rain", "thunder", "night", "nightthunder"],
+    soundtrack: ["auto", "casual", "competitive", "intense", "chip", "off"],
+    track: ["auto", ...TRACK_IDS],
     gameStyle: ["modern", "battle"],
     blockSkin: ["ulol", "classic", "glossy", "flat", "neon"],
-    soundPack: ["ulol", "arcade", "bubbly", "nes"]
+    soundPack: ["ulol", "arcade", "bubbly", "nes"],
+    touchControls: ["auto", "on", "off"]
   };
   function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
@@ -107,8 +871,10 @@
         result[key] = source[key];
       }
     }
+    if (source.soundtrack === "calm") result.soundtrack = "casual";
     if (typeof source.sfxMuted === "boolean") result.sfxMuted = source.sfxMuted;
     if (typeof source.musicMuted === "boolean") result.musicMuted = source.musicMuted;
+    if (typeof source.ambience === "boolean") result.ambience = source.ambience;
     if (typeof source.showActionText === "boolean") result.showActionText = source.showActionText;
     if (typeof source.cancelDasOnDirectionChange === "boolean") result.cancelDasOnDirectionChange = source.cancelDasOnDirectionChange;
     if (typeof source.preferSoftDrop === "boolean") result.preferSoftDrop = source.preferSoftDrop;
@@ -351,14 +1117,14 @@
     return (lines - first) % 10 / 10;
   }
   var NES_ORDER = ["T", "J", "Z", "O", "S", "L", "I"];
-  function nextClassicPiece(prev, rand = Math.random) {
-    let i = Math.floor(rand() * 8);
-    if (i === 7 || NES_ORDER[i] === prev) i = Math.floor(rand() * 7);
+  function nextClassicPiece(prev, rand2 = Math.random) {
+    let i = Math.floor(rand2() * 8);
+    if (i === 7 || NES_ORDER[i] === prev) i = Math.floor(rand2() * 7);
     return NES_ORDER[i];
   }
-  function fillClassicQueue(queue, last = null, minSize = 7, rand = Math.random) {
+  function fillClassicQueue(queue, last = null, minSize = 7, rand2 = Math.random) {
     while (queue.length < minSize) {
-      queue.push(nextClassicPiece(queue.length ? queue[queue.length - 1] : last, rand));
+      queue.push(nextClassicPiece(queue.length ? queue[queue.length - 1] : last, rand2));
     }
   }
   var rotate180 = (m) => rotateMatrix(rotateMatrix(m, 1), 1);
@@ -480,8 +1246,8 @@
     const [r, g, b] = hexToRgb(hex);
     const t = amount > 0 ? 255 : 0;
     const k = Math.abs(amount);
-    const mix2 = (c) => Math.round(c + (t - c) * k);
-    return `rgb(${mix2(r)}, ${mix2(g)}, ${mix2(b)})`;
+    const mix3 = (c) => Math.round(c + (t - c) * k);
+    return `rgb(${mix3(r)}, ${mix3(g)}, ${mix3(b)})`;
   }
   var PAINTERS = {
     /** Pixel bevel with an inset square, sized in whole pixels so it stays crisp. */
@@ -524,10 +1290,10 @@
     /** Rounded candy block with a vertical gradient and a specular highlight. */
     glossy(ctx, s, color) {
       const r = s * 0.22;
-      const pad = Math.max(1, s * 0.03);
+      const pad2 = Math.max(1, s * 0.03);
       const path = () => {
         ctx.beginPath();
-        ctx.roundRect(pad, pad, s - pad * 2, s - pad * 2, r);
+        ctx.roundRect(pad2, pad2, s - pad2 * 2, s - pad2 * 2, r);
       };
       const g = ctx.createLinearGradient(0, 0, 0, s);
       g.addColorStop(0, shade(color, 0.3));
@@ -539,7 +1305,7 @@
       ctx.lineWidth = Math.max(1, s * 0.05);
       ctx.strokeStyle = shade(color, -0.5);
       ctx.stroke();
-      const hl = ctx.createLinearGradient(0, pad, 0, s * 0.5);
+      const hl = ctx.createLinearGradient(0, pad2, 0, s * 0.5);
       hl.addColorStop(0, "rgba(255,255,255,0.75)");
       hl.addColorStop(1, "rgba(255,255,255,0)");
       ctx.beginPath();
@@ -612,12 +1378,12 @@
     };
   }
   function layer(w = W, h = H) {
-    const canvas = document.createElement("canvas");
-    canvas.width = w;
-    canvas.height = h;
-    const ctx = canvas.getContext("2d");
+    const canvas2 = document.createElement("canvas");
+    canvas2.width = w;
+    canvas2.height = h;
+    const ctx = canvas2.getContext("2d");
     ctx.imageSmoothingEnabled = false;
-    return { canvas, ctx };
+    return { canvas: canvas2, ctx };
   }
   function rect(ctx, x, y, w, h, color) {
     ctx.fillStyle = color;
@@ -634,13 +1400,13 @@
     [15, 7, 13, 5]
   ];
   function ditherGradient(ctx, x, y, w, h, colors) {
-    const bands = colors.length - 1;
+    const bands2 = colors.length - 1;
     const rgb = colors.map(parseColor);
     const img = ctx.createImageData(w, h);
     const d = img.data;
     for (let row = 0; row < h; row++) {
-      const pos = row / Math.max(1, h - 1) * bands;
-      const i = Math.min(bands - 1, Math.floor(pos));
+      const pos = row / Math.max(1, h - 1) * bands2;
+      const i = Math.min(bands2 - 1, Math.floor(pos));
       const frac = pos - i;
       for (let col = 0; col < w; col++) {
         const c = frac > (BAYER[y + row & 3][x + col & 3] + 0.5) / 16 ? rgb[i + 1] : rgb[i];
@@ -737,14 +1503,474 @@
     return (v % span + span) % span;
   }
 
+  // js/scenes/atmosphere.js
+  var VARIANTS = ["sunny", "cloudy", "sunset", "rain", "thunder", "night", "nightthunder"];
+  var CYCLE_ORDER = ["sunny", "cloudy", "rain", "thunder", "sunset", "night", "nightthunder"];
+  var VARIANT_INFO = {
+    sunny: {
+      name: "Sunny",
+      sky: ["#2f7fd0", "#4a97dc", "#6cb0e6", "#93c8ee", "#bfe0f4", "#e2f2f8"],
+      lit: 0,
+      stars: 0,
+      rain: 0,
+      storm: false,
+      wind: 0.3,
+      grade: { sat: 1.04, bright: 1, mul: [1, 1, 1], tint: [255, 240, 200], mix: 0.03 },
+      clouds: {
+        far: { count: 4, size: [3, 6], light: "#ffffff", dark: "#d5e6f4", y: [40, 100], speed: 1.2 },
+        near: { count: 5, size: [5, 10], light: "#ffffff", dark: "#c8dff2", y: [14, 80], speed: 2.5 }
+      },
+      fog: null
+    },
+    cloudy: {
+      name: "Cloudy",
+      sky: ["#76889e", "#8797ab", "#9aa9b9", "#adb9c6", "#c0cad3", "#d2d9de"],
+      lit: 0.1,
+      stars: 0,
+      rain: 0,
+      storm: false,
+      wind: 0.5,
+      grade: { sat: 0.72, bright: 0.9, mul: [0.97, 1, 1.03], tint: [160, 172, 190], mix: 0.08 },
+      clouds: {
+        far: { count: 9, size: [8, 14], light: "#dfe4e8", dark: "#b3bdc7", y: [4, 75], speed: 3 },
+        near: { count: 8, size: [10, 18], light: "#c9d0d6", dark: "#94a0ad", y: [8, 90], speed: 5 }
+      },
+      fog: { color: "#c8d0d8", alpha: 0.22, density: 0.6 }
+    },
+    sunset: {
+      name: "Sunset",
+      sky: ["#2a1b40", "#4e2a5a", "#8c3b5f", "#cc5d5b", "#ec935d", "#f7c374"],
+      lit: 0.55,
+      stars: 0.15,
+      rain: 0,
+      storm: false,
+      wind: 0.3,
+      grade: { sat: 1.05, bright: 0.84, mul: [1.08, 0.86, 0.74], tint: [255, 130, 70], mix: 0.1 },
+      clouds: {
+        far: { count: 5, size: [3, 6], light: "#e0a0a0", dark: "#a86a80", y: [40, 100], speed: 1.2 },
+        near: { count: 8, size: [5, 10], light: "#f8bf9c", dark: "#c97c80", y: [12, 80], speed: 2.5 }
+      },
+      fog: { color: "#f0a070", alpha: 0.25, density: 0.7 }
+    },
+    rain: {
+      name: "Cloudy (Rain)",
+      sky: ["#3d4856", "#4a5664", "#5a6673", "#6b7783", "#7d8892", "#8f9aa3"],
+      lit: 0.25,
+      stars: 0,
+      rain: 0.55,
+      storm: false,
+      wind: 0.6,
+      grade: { sat: 0.55, bright: 0.72, mul: [0.92, 0.98, 1.05], tint: [130, 150, 175], mix: 0.14 },
+      clouds: {
+        far: { count: 12, size: [10, 18], light: "#8b96a1", dark: "#66717d", y: [0, 60], speed: 4 },
+        near: { count: 12, size: [12, 20], light: "#727d89", dark: "#4d5762", y: [0, 70], speed: 7 }
+      },
+      fog: { color: "#a9b7c2", alpha: 0.32, density: 0.85 }
+    },
+    thunder: {
+      name: "Thunderstorm",
+      sky: ["#1a202c", "#252d3b", "#323b4a", "#414b5a", "#535d6b", "#667080"],
+      lit: 0.45,
+      stars: 0,
+      rain: 1,
+      storm: true,
+      wind: 1.4,
+      grade: { sat: 0.42, bright: 0.5, mul: [0.9, 0.96, 1.08], tint: [90, 110, 145], mix: 0.18 },
+      clouds: {
+        far: { count: 14, size: [10, 18], light: "#3c4554", dark: "#262d3a", y: [0, 60], speed: 6 },
+        near: { count: 12, size: [12, 22], light: "#2b3240", dark: "#1b202b", y: [0, 70], speed: 12 }
+      },
+      fog: { color: "#6c7886", alpha: 0.36, density: 0.9 }
+    },
+    night: {
+      name: "Night",
+      sky: ["#050818", "#0a1030", "#101a44", "#182658", "#22336a", "#2e4078"],
+      lit: 1,
+      stars: 1,
+      rain: 0,
+      storm: false,
+      wind: 0.3,
+      grade: { sat: 0.55, bright: 0.34, mul: [0.62, 0.74, 1.18], tint: [40, 60, 120], mix: 0.12 },
+      clouds: {
+        far: null,
+        near: { count: 6, size: [5, 10], light: "#3a4a7e", dark: "#232e5a", y: [14, 80], speed: 2 }
+      },
+      fog: { color: "#3a4a7a", alpha: 0.25, density: 0.7 }
+    },
+    nightthunder: {
+      name: "Night Thunderstorm",
+      sky: ["#04050c", "#080b16", "#0d121f", "#141a28", "#1c2333", "#262e40"],
+      lit: 1,
+      stars: 0,
+      rain: 1,
+      storm: true,
+      wind: 1.4,
+      grade: { sat: 0.4, bright: 0.24, mul: [0.65, 0.75, 1.15], tint: [30, 45, 90], mix: 0.14 },
+      clouds: {
+        far: { count: 12, size: [10, 18], light: "#20263a", dark: "#131722", y: [0, 60], speed: 6 },
+        near: { count: 10, size: [12, 20], light: "#171b28", dark: "#0d0f17", y: [0, 70], speed: 12 }
+      },
+      fog: { color: "#2a3348", alpha: 0.3, density: 0.8 }
+    }
+  };
+  var STRIKE_PERIOD = { thunder: 6.5, nightthunder: 5.5 };
+  var FLASH_S = 0.5;
+  function describeWeather(id) {
+    if (id === "default") return "Scene default";
+    if (id === "cycle") return "Cycle by level";
+    return VARIANT_INFO[id]?.name || id;
+  }
+  function cycleVariant(level) {
+    return CYCLE_ORDER[(Math.max(1, level) - 1) % CYCLE_ORDER.length];
+  }
+  function ambienceFor(scene, variantId) {
+    const v = VARIANT_INFO[variantId];
+    const s = scene.sounds || {};
+    const out = { ...s.always };
+    const wet = v.rain > 0;
+    const hush = v.storm ? 0 : wet ? 0.25 : 1;
+    for (const [name, level] of Object.entries((v.lit >= 0.7 ? s.night : s.day) || {})) {
+      if (level * hush > 0) out[name] = Math.max(out[name] || 0, level * hush);
+    }
+    if (wet && scene.precip !== "snow") out[v.storm ? "storm" : "rain"] = v.storm ? 1 : 0.9;
+    if (v.storm) {
+      out.thunder = 1;
+      out.gale = 0.4;
+    }
+    const wind = Math.min(1, (out.wind || 0) + v.wind * (v.storm ? 0.2 : 0.5));
+    if (wind > 0.05) out.wind = wind;
+    if (out.wheat) out.wheat *= 0.55 + 0.45 * Math.min(1, v.wind);
+    return out;
+  }
+  function makeGrade({ sat, bright, mul, tint, mix: mix3 }) {
+    if (sat === 1 && bright === 1 && mix3 === 0 && mul.every((m) => m === 1)) return null;
+    return (r, g, b) => {
+      const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+      const out = [r, g, b];
+      for (let i = 0; i < 3; i++) {
+        let v = lum + (out[i] - lum) * sat;
+        v += (tint[i] - v) * mix3;
+        out[i] = Math.max(0, Math.min(255, Math.round(v * mul[i] * bright)));
+      }
+      return out;
+    };
+  }
+  function drawBolt(ctx, seed, x0, groundY, color) {
+    const r = rng(seed);
+    let x = x0;
+    let y = 0;
+    const paths = [];
+    while (y < groundY) {
+      const nx = x + (r() - 0.5) * 12;
+      const ny = y + 4 + r() * 8;
+      paths.push([x, y, nx, ny]);
+      if (r() < 0.18) {
+        let bx = nx, by = ny;
+        const dir = r() < 0.5 ? -1 : 1;
+        for (let k = 0; k < 4; k++) {
+          const ex = bx + dir * (3 + r() * 6), ey = by + 3 + r() * 5;
+          paths.push([bx, by, ex, ey, true]);
+          bx = ex;
+          by = ey;
+        }
+      }
+      x = nx;
+      y = ny;
+    }
+    for (const [x0p, y0p, x1p, y1p, branch2] of paths) {
+      const steps = Math.ceil(Math.max(Math.abs(x1p - x0p), Math.abs(y1p - y0p)));
+      for (let i = 0; i <= steps; i++) {
+        const bx = x0p + (x1p - x0p) * (i / steps);
+        const by = y0p + (y1p - y0p) * (i / steps);
+        if (!branch2) px(ctx, bx - 1, by, "#7fa8ff");
+        px(ctx, bx, by, branch2 ? "#b8d0ff" : color);
+      }
+    }
+  }
+  function createEnv(variantId, meta = {}) {
+    const info = VARIANT_INFO[variantId];
+    const horizon = meta.horizon ?? 118;
+    const cel = { sunX: 232, sunHighY: 34, sunLowY: horizon - 18, moonX: 70, moonY: 34, ...meta.celestial };
+    const gradeFn = makeGrade(info.grade);
+    const colors = /* @__PURE__ */ new Map();
+    const period = STRIKE_PERIOD[variantId] || 0;
+    const snow = meta.precip === "snow";
+    function strike(n) {
+      const r = rng(n * 7919 + 13);
+      return { time: n * period + r() * period * 0.7, distance: 0.08 + r() * 0.75, seed: n * 7 + 1, x: 30 + r() * 260 };
+    }
+    function flashAt(t) {
+      if (!period) return { flash: 0, bolt: null };
+      let flash = 0;
+      let bolt = null;
+      const n = Math.floor(t / period);
+      for (const k of [n - 1, n]) {
+        const s = strike(k);
+        const since = t - s.time;
+        if (since < 0 || since >= FLASH_S) continue;
+        const f = (1 - since / FLASH_S) * (Math.sin(since * 60) > -0.3 ? 1 : 0.4) * (1 - s.distance * 0.6);
+        if (f > flash) flash = f;
+        if (since < 0.25 && s.distance < 0.6) bolt = s;
+      }
+      return { flash, bolt };
+    }
+    const env = {
+      id: variantId,
+      info,
+      meta,
+      lit: info.lit,
+      rain: info.rain,
+      storm: info.storm,
+      wind: info.wind,
+      night: info.lit >= 0.7,
+      /** Where the sun or moon is: { x, y, kind: 'sun' | 'moon' | null }. Set by makeSky(). */
+      sun: { x: cel.sunX, y: cel.sunHighY, kind: null },
+      /** Grade RGBA pixel data in place (ImageData.data) and return it. */
+      gradeData(d) {
+        if (!gradeFn) return d;
+        for (let i = 0; i < d.length; i += 4) {
+          if (d[i + 3] === 0) continue;
+          const [r, g, b] = gradeFn(d[i], d[i + 1], d[i + 2]);
+          d[i] = r;
+          d[i + 1] = g;
+          d[i + 2] = b;
+        }
+        return d;
+      },
+      /** Grade a layer's canvas in place and return it. */
+      grade(canvas2) {
+        if (!gradeFn) return canvas2;
+        const ctx = canvas2.getContext("2d");
+        const img = ctx.getImageData(0, 0, canvas2.width, canvas2.height);
+        env.gradeData(img.data);
+        ctx.putImageData(img, 0, 0);
+        return canvas2;
+      },
+      /** A '#rrggbb' color as graded [r, g, b], for things drawn every frame. */
+      rgb(hex) {
+        const c = parseColor(hex);
+        return gradeFn ? gradeFn(c[0], c[1], c[2]) : c;
+      },
+      /** A '#rrggbb' color graded, as a CSS rgba() string with the given alpha. */
+      rgba(hex, alpha) {
+        const [r, g, b] = env.rgb(hex);
+        return `rgba(${r},${g},${b},${alpha})`;
+      },
+      /** A '#rrggbb' color graded, as a CSS string. */
+      c(hex) {
+        let v = colors.get(hex);
+        if (!v) {
+          const [r, g, b] = env.rgb(hex);
+          v = `rgb(${r},${g},${b})`;
+          colors.set(hex, v);
+        }
+        return v;
+      },
+      /**
+       * The sky: gradient, sun or moon, stars, clouds and lightning.
+       * @param {Object} [o] - { horizon, palette, noSun }
+       * @returns {{ canvas: HTMLCanvasElement, draw: (ctx, t) => void }} `canvas` is the
+       *   still sky (no clouds), which reflections can copy.
+       */
+      makeSky(o = {}) {
+        const hor = o.horizon ?? horizon;
+        const still = layer();
+        const s = still.ctx;
+        ditherGradient(s, 0, 0, W, hor + 4, o.palette || info.sky);
+        if (!o.noSun) {
+          if (variantId === "sunny") {
+            env.sun = { x: cel.sunX, y: cel.sunHighY, kind: "sun" };
+            glow(s, cel.sunX, cel.sunHighY, 38, "#f4fbff", 0.5);
+            disc(s, cel.sunX, cel.sunHighY, 11, "#fffbe0");
+            disc(s, cel.sunX, cel.sunHighY, 9, "#ffffff");
+          } else if (variantId === "sunset") {
+            env.sun = { x: cel.sunX, y: cel.sunLowY, kind: "sun" };
+            glow(s, cel.sunX, cel.sunLowY, 48, "#f5a36d", 0.55);
+            disc(s, cel.sunX, cel.sunLowY, 15, "#f7b070");
+            disc(s, cel.sunX, cel.sunLowY, 12, "#ffd79a");
+          } else if (variantId === "cloudy") {
+            glow(s, cel.sunX, cel.sunHighY + 10, 42, "#f4f6f8", 0.4);
+          } else if (variantId === "night") {
+            env.sun = { x: cel.moonX, y: cel.moonY, kind: "moon" };
+            glow(s, cel.moonX, cel.moonY, 28, "#2a3a70", 0.7);
+            disc(s, cel.moonX, cel.moonY, 11, "#f2ecd0");
+            px(s, cel.moonX - 4, cel.moonY - 3, "#d9d0ac");
+            rect(s, cel.moonX + 2, cel.moonY + 1, 2, 2, "#d9d0ac");
+            px(s, cel.moonX + 5, cel.moonY - 5, "#d9d0ac");
+            rect(s, cel.moonX - 5, cel.moonY + 3, 2, 1, "#d9d0ac");
+          } else if (variantId === "nightthunder") {
+            glow(s, cel.moonX, cel.moonY, 30, "#2c3446", 0.4);
+          }
+        }
+        const haze = variantId === "sunny" ? "#e2f2f8" : info.sky[info.sky.length - 1];
+        hazeBand(s, hor - 22, hor + 4, haze, 0.45, 0.9);
+        const rs = rng(4321);
+        const stars = info.stars > 0 ? Array.from({ length: Math.round(80 * info.stars) }, () => ({ x: Math.floor(rs() * W), y: Math.floor(rs() * hor * 0.8), p: rs() * 10, big: rs() < 0.1 })) : [];
+        const strips = [];
+        for (const spec of [info.clouds.far, info.clouds.near]) {
+          if (!spec) continue;
+          const strip = layer(W * 2, hor);
+          const cr = rng(spec.count * 131 + spec.size[1]);
+          for (let i = 0; i < spec.count; i++) {
+            const y = Math.min(hor - 12, spec.y[0] + cr() * (spec.y[1] - spec.y[0]));
+            cloud(strip.ctx, cr() * W * 2, y, spec.size[0] + cr() * (spec.size[1] - spec.size[0]), spec.light, spec.dark, 700 + i * 13);
+          }
+          strips.push({ canvas: strip.canvas, speed: spec.speed });
+        }
+        return {
+          canvas: still.canvas,
+          draw(ctx, t) {
+            ctx.drawImage(still.canvas, 0, 0);
+            for (const st of stars) {
+              const tw = Math.sin(t * 1.5 + st.p);
+              if (tw < -0.4) continue;
+              px(ctx, st.x, st.y, tw > 0.6 ? "#ffffff" : "#8f9fe0");
+              if (st.big && tw > 0.5) {
+                px(ctx, st.x - 1, st.y, "#6f7fc0");
+                px(ctx, st.x + 1, st.y, "#6f7fc0");
+                px(ctx, st.x, st.y - 1, "#6f7fc0");
+                px(ctx, st.x, st.y + 1, "#6f7fc0");
+              }
+            }
+            const { flash, bolt } = flashAt(t);
+            strips.forEach((st, i) => {
+              if (i === strips.length - 1 && bolt) drawBolt(ctx, bolt.seed, bolt.x, hor - 6, "#ffffff");
+              const x = Math.round(wrap(t * st.speed, W * 2));
+              ctx.drawImage(st.canvas, -x, 0);
+              ctx.drawImage(st.canvas, W * 2 - x, 0);
+            });
+            if (flash > 0) {
+              ctx.fillStyle = `rgba(210, 225, 255, ${flash * 0.4})`;
+              ctx.fillRect(0, 0, W, hor + 4);
+            }
+          }
+        };
+      },
+      /**
+       * Report lightning strikes that have just happened.
+       * @param {number} t - scene time in seconds
+       * @param {(strike: { distance: number }) => void} fire
+       */
+      poll(t, fire) {
+        if (!period) return;
+        const n = Math.floor(t / period);
+        for (const k of [n - 1, n]) {
+          if (k <= lastFired) continue;
+          const s = strike(k);
+          if (t < s.time) continue;
+          lastFired = k;
+          if (t - s.time < 0.6) fire({ distance: s.distance });
+        }
+      },
+      /** Weather in front of the scene: fog, rain or snow, splashes and the lightning flash. */
+      overlay(ctx, t) {
+        if (fogLayer) {
+          ctx.drawImage(fogLayer, Math.round(Math.sin(t * 0.07) * 8), 0);
+        }
+        if (particles.length) {
+          const slant = info.storm ? 0.5 : 0.25;
+          if (snow) {
+            for (const p of particles) {
+              const y = wrap(p.y + t * p.speed, H + 6) - 3;
+              const x = wrap(p.x + Math.sin(t * 0.8 + p.phase) * 6 - t * info.wind * 22, W + 6) - 3;
+              ctx.fillStyle = env.c("#eef4ff");
+              ctx.globalAlpha = p.alpha;
+              ctx.fillRect(Math.round(x), Math.round(y), p.size, p.size);
+            }
+            ctx.globalAlpha = 1;
+          } else {
+            for (const bright of [false, true]) {
+              ctx.fillStyle = bright ? dropBright : dropDim;
+              for (const p of particles) {
+                if (p.bright !== bright) continue;
+                const y = wrap(p.y + t * p.speed, H + 10) - 5;
+                const x = wrap(p.x - y * slant - t * 4, W + 80) - 40;
+                for (let k = 0; k < p.len; k++) ctx.fillRect(Math.round(x + k * slant), Math.round(y - k), 1, 1);
+              }
+            }
+            const [y0, y1] = meta.rainBand || [H - 16, H - 2];
+            const sr = rng(Math.floor(t * 10));
+            const rings = Math.round(info.rain * 26);
+            ctx.fillStyle = splash;
+            for (let i = 0; i < rings; i++) {
+              const sx = Math.floor(sr() * W);
+              const sy = Math.floor(y0 + sr() * (y1 - y0));
+              ctx.fillRect(sx - 1, sy, 1, 1);
+              ctx.fillRect(sx + 1, sy, 1, 1);
+              ctx.fillRect(sx, sy - 1, 1, 1);
+            }
+          }
+        }
+        if (period) {
+          const { flash } = flashAt(t);
+          if (flash > 0) {
+            ctx.globalCompositeOperation = "lighter";
+            ctx.fillStyle = `rgba(110, 130, 180, ${flash * 0.2})`;
+            ctx.fillRect(0, 0, W, H);
+            ctx.globalCompositeOperation = "source-over";
+          }
+        }
+      }
+    };
+    let lastFired = Math.floor(0 / (period || 1)) - 2;
+    let fogLayer = null;
+    if (info.fog && meta.fog) {
+      const f = layer();
+      hazeBand(f.ctx, meta.fog[0], meta.fog[1], info.fog.color, info.fog.alpha, info.fog.density);
+      fogLayer = f.canvas;
+    }
+    const particles = [];
+    const dropDim = env.night ? "rgba(120, 145, 190, 0.35)" : "rgba(170, 210, 220, 0.35)";
+    const dropBright = env.night ? "rgba(170, 190, 230, 0.5)" : "rgba(220, 240, 245, 0.55)";
+    const splash = env.night ? "rgba(150, 175, 215, 0.55)" : "rgba(200, 230, 235, 0.6)";
+    if (info.rain > 0) {
+      const pr = rng(99);
+      const count = snow ? Math.round(50 + info.rain * 130) : Math.round(60 + info.rain * 240);
+      for (let i = 0; i < count; i++) {
+        particles.push(snow ? { x: pr() * W, y: pr() * H, speed: (10 + pr() * 22) * (0.5 + info.rain), phase: pr() * 6, size: pr() < 0.25 ? 2 : 1, alpha: 0.5 + pr() * 0.5 } : {
+          x: pr() * (W + 80),
+          y: pr() * H,
+          speed: (info.storm ? 260 : 150) + pr() * 90,
+          len: 3 + Math.floor(pr() * (info.storm ? 6 : 4)),
+          bright: pr() < 0.3
+        });
+      }
+    }
+    return env;
+  }
+
   // js/scenes/bamboo.js
-  function stalk(ctx, r, x, w, colors) {
+  var VANISH = { x: 160, y: 96 };
+  var CLEARING = {
+    sunny: ["#fff4c8", "#ffffff"],
+    cloudy: ["#e6ecea", "#f4f8f6"],
+    sunset: ["#ffb070", "#ffd9a0"],
+    rain: ["#a8c4b4", "#cfe8d8"],
+    thunder: ["#788890", "#98a8b0"],
+    night: ["#3a5a8a", "#6a8ac0"],
+    nightthunder: ["#202a3a", "#303c50"]
+  };
+  var MIST = {
+    sunny: ["#f4fff4", 0.12, 0.8],
+    cloudy: ["#dfeee6", 0.28, 0.9],
+    sunset: ["#ffc090", 0.22, 0.9],
+    rain: ["#96bea8", 0.38, 1],
+    thunder: ["#788e86", 0.42, 1],
+    night: ["#5a7aa0", 0.28, 0.9],
+    nightthunder: ["#3a4a5a", 0.32, 0.9]
+  };
+  var BEAMS = { sunny: [255, 244, 190, 0.13], sunset: [255, 190, 120, 0.11], night: [150, 180, 255, 0.06] };
+  function pathHalf(y) {
+    const k = Math.max(0, (y - VANISH.y) / (H - VANISH.y));
+    return 4 + k * k * 58 + k * 14;
+  }
+  function stalk(ctx, r, x, w, bottom, colors) {
     const top = -2;
-    rect(ctx, x, top, w, H, colors.body);
-    if (w >= 3) rect(ctx, x, top, 1, H, colors.light);
-    if (w >= 6) rect(ctx, x + w - 1, top, 1, H, colors.dark);
+    rect(ctx, x, top, w, bottom - top, colors.body);
+    if (w >= 3) rect(ctx, x, top, 1, bottom - top, colors.light);
+    if (w >= 6) rect(ctx, x + w - 1, top, 1, bottom - top, colors.dark);
     let y = 6 + r() * 14;
-    while (y < H) {
+    while (y < bottom) {
       rect(ctx, x - 1, y, w + 2, 1, colors.node);
       if (w >= 5) rect(ctx, x, y + 1, w, 1, colors.light);
       y += 14 + r() * 10;
@@ -764,181 +1990,442 @@
       }
     }
   }
-  function forestLayer(seed, count, widths, colors, leafColors, leafScale) {
-    const { canvas, ctx } = layer();
+  function forestLayer(env, seed, count, widths, floor, colors, leafColors, leafScale) {
+    const { canvas: canvas2, ctx } = layer();
     const r = rng(seed);
     for (let i = 0; i < count; i++) {
       const x = Math.round((i + r() * 0.8) * (W / count));
       const w = widths[0] + Math.floor(r() * (widths[1] - widths[0] + 1));
-      stalk(ctx, r, x, w, colors);
-      let y = 10 + r() * 30;
-      while (y < H - 30) {
-        leafCluster(ctx, r, x + (r() < 0.5 ? 0 : w), y, leafColors[0], leafColors[1], 2 + Math.floor(r() * 3), leafScale);
-        y += 22 + r() * 30;
+      const bottom = Math.round(floor[0] + r() * (floor[1] - floor[0]));
+      const leaves = [];
+      for (let y = 10 + r() * 30; y < bottom - 24; y += 22 + r() * 30) leaves.push([y, r() < 0.5 ? 0 : w]);
+      if (Math.abs(x + w / 2 - VANISH.x) < pathHalf(bottom) + w + 3) continue;
+      stalk(ctx, r, x, w, bottom, colors);
+      for (const [y, side] of leaves) {
+        leafCluster(ctx, r, x + side, y, leafColors[0], leafColors[1], 2 + Math.floor(r() * 3), leafScale);
       }
     }
-    return canvas;
+    return env.grade(canvas2);
   }
-  function mistLayer(y0, y1, color, alpha, density) {
-    const { canvas, ctx } = layer();
-    hazeBand(ctx, y0, y1, color, alpha, density);
-    return canvas;
+  function mistLayer(env, y0, y1, scale) {
+    const [color, alpha, density] = MIST[env.id];
+    const { canvas: canvas2, ctx } = layer();
+    hazeBand(ctx, y0, y1, color, alpha * scale, density);
+    return canvas2;
+  }
+  function lantern(ctx, x, base) {
+    const stone = "#8a968c", dark = "#4c5850", lit = "#b8c4b8";
+    rect(ctx, x - 4, base - 2, 9, 2, dark);
+    rect(ctx, x - 1, base - 9, 3, 7, stone);
+    px(ctx, x - 1, base - 9, lit);
+    rect(ctx, x - 3, base - 11, 7, 2, stone);
+    rect(ctx, x - 3, base - 16, 7, 5, dark);
+    rect(ctx, x - 5, base - 18, 11, 2, stone);
+    rect(ctx, x - 5, base - 18, 11, 1, lit);
+    rect(ctx, x - 3, base - 20, 7, 2, stone);
+    rect(ctx, x - 1, base - 22, 3, 2, stone);
+    return { x, y: base - 14 };
   }
   var bamboo_default = {
     id: "bamboo",
-    name: "Bamboo Rain",
-    create() {
-      const sky = layer();
-      ditherGradient(sky.ctx, 0, 0, W, H, ["#132226", "#1b302f", "#26413a", "#355848", "#4a7058"]);
+    name: "Bamboo Path",
+    signature: "rain",
+    horizon: 160,
+    celestial: { sunX: 210, sunHighY: 20, sunLowY: 64, moonX: 210, moonY: 26 },
+    fog: [70, 176],
+    rainBand: [H - 22, H - 4],
+    sounds: { always: {}, day: { birds: 0.5 }, night: { crickets: 0.5, owl: 0.3 } },
+    create(env) {
+      const sky = env.makeSky();
+      const [wide, core] = CLEARING[env.id];
+      const sc = sky.canvas.getContext("2d");
+      glow(sc, VANISH.x, VANISH.y - 16, 46, wide, 0.5);
+      glow(sc, VANISH.x, VANISH.y - 10, 24, core, 0.6);
+      const floor = layer();
+      const f = floor.ctx;
+      ditherGradient(f, 0, VANISH.y, W, H - VANISH.y, ["#4f8a5a", "#3d7448", "#2e5a38", "#22452b", "#183520"]);
+      const path = layer();
+      ditherGradient(path.ctx, 0, VANISH.y, W, H - VANISH.y, ["#d0dcc8", "#a8bca4", "#889c84", "#6e8068", "#5a6a52"]);
+      const fr = rng(5);
+      for (let y = VANISH.y; y < H; y++) {
+        const half = pathHalf(y);
+        const bend = Math.sin((y - VANISH.y) * 0.045) * 5;
+        const left = Math.round(VANISH.x + bend - half);
+        const width = Math.round(half * 2);
+        f.drawImage(path.canvas, left, y, width, 1, left, y, width, 1);
+        px(f, left - 1, y, "#2e5a3a");
+        px(f, left + width, y, "#2e5a3a");
+        const depth = (y - VANISH.y) / (H - VANISH.y);
+        if (Math.floor(Math.pow(depth, 0.55) * 22) !== Math.floor(Math.pow((y + 1 - VANISH.y) / (H - VANISH.y), 0.55) * 22)) {
+          rect(f, left + 1, y, width - 2, 1, "#6a7c66");
+        }
+        for (let x = left; x < left + width; x++) if (fr() < 0.05) px(f, x, y, fr() < 0.5 ? "#b0c4ac" : "#5f7060");
+      }
+      for (let i = 0; i < 420; i++) {
+        const y = VANISH.y + 3 + Math.floor(fr() * (H - VANISH.y - 3));
+        const x = Math.floor(fr() * W);
+        if (Math.abs(x - VANISH.x) < pathHalf(y) + 6) continue;
+        px(f, x, y, fr() < 0.4 ? "#66a05a" : "#265030");
+      }
+      env.grade(floor.canvas);
+      for (const [cx, cy, rx] of [[150, 128, 7], [172, 146, 10], [138, 166, 13], [181, 172, 9]]) {
+        for (let dy = -2; dy <= 2; dy++) {
+          const half = Math.round(rx * Math.sqrt(1 - dy * dy / 6.5));
+          rect(f, cx - half, cy + dy, half * 2, 1, dy < 0 ? env.info.sky[4] : env.info.sky[3]);
+        }
+      }
       const far = forestLayer(
+        env,
         11,
-        26,
+        30,
         [2, 2],
-        { body: "#557d63", light: "#63907a", dark: "#4a6f57", node: "#46694f" },
-        ["#5f8a6c", "#79a283"],
+        [VANISH.y + 1, VANISH.y + 10],
+        { body: "#6d9f78", light: "#84b590", dark: "#5d8a68", node: "#547c5f" },
+        ["#78ab82", "#98c79a"],
         1
       );
-      const mistFar = mistLayer(60, 170, "#96bea8", 0.35, 1);
+      const mistFar = mistLayer(env, 60, 170, 1);
       const mid = forestLayer(
+        env,
         23,
-        14,
+        18,
         [3, 4],
-        { body: "#2f5a37", light: "#4b7f4d", dark: "#244a2b", node: "#1f3f25" },
-        ["#3d7440", "#63a058"],
+        [VANISH.y + 14, VANISH.y + 44],
+        { body: "#3d7a44", light: "#5f9c5a", dark: "#2f6238", node: "#295530" },
+        ["#4f9450", "#7cc068"],
         1.5
       );
-      const mistNear = mistLayer(120, 200, "#78a08c", 0.28, 0.9);
+      const mistNear = mistLayer(env, 120, 200, 0.8);
       const near = forestLayer(
+        env,
         37,
-        5,
+        7,
         [7, 9],
-        { body: "#14291a", light: "#23422a", dark: "#0d1d11", node: "#0a170d" },
-        ["#18351e", "#2a5230"],
+        [H + 4, H + 4],
+        { body: "#1f4a2a", light: "#34703a", dark: "#173820", node: "#132d19" },
+        ["#256335", "#3f8a48"],
         2.2
       );
-      const ground = layer();
-      rect(ground.ctx, 0, H - 8, W, 8, "#0c170f");
-      const gr = rng(5);
+      const front = layer();
+      const light = lantern(front.ctx, 108, 158);
+      const gr = rng(6);
       for (let x = 0; x < W; x += 2) {
-        const h = 1 + Math.floor(gr() * 4);
-        rect(ground.ctx, x, H - 8 - h, 1, h, gr() < 0.5 ? "#16301c" : "#1f3d24");
+        if (Math.abs(x - VANISH.x) < pathHalf(H) - 6) continue;
+        const h = 2 + Math.floor(gr() * 6);
+        rect(front.ctx, x, H - h, 1, h, gr() < 0.5 ? "#2a5a30" : "#357040");
       }
+      env.grade(front.canvas);
       const r = rng(99);
-      const drops = Array.from({ length: 190 }, () => ({
-        x: r() * (W + 60),
-        y: r() * H,
-        speed: 110 + r() * 70,
-        len: 3 + Math.floor(r() * 4),
-        color: r() < 0.3 ? "rgba(220, 240, 245, 0.55)" : "rgba(170, 210, 220, 0.35)"
-      }));
       const leaves = Array.from({ length: 7 }, () => ({ x: r() * W, y: r() * H, speed: 6 + r() * 6, phase: r() * 6 }));
+      const beamSpec = BEAMS[env.id];
+      const beams = beamSpec ? Array.from({ length: 6 }, (_, i) => ({ x: 90 + i * 32 + r() * 14, w: 8 + r() * 8, ph: r() * 6 })) : [];
+      const flies = Array.from({ length: 12 }, () => ({ x: 90 + r() * 140, y: 110 + r() * 60, p: r() * 10 }));
+      const leafA = env.c("#7fb068");
+      const leafB = env.c("#5e9150");
+      const ring = env.rgba("#e1f5f0", 0.8);
+      const ringOld = env.rgba("#c8e6e1", 0.4);
+      const wind = 0.4 + env.wind;
       return {
         draw(ctx, t) {
-          ctx.drawImage(sky.canvas, 0, 0);
+          sky.draw(ctx, t);
+          ctx.drawImage(floor.canvas, 0, 0);
           ctx.drawImage(far, 0, 0);
           ctx.drawImage(mistFar, Math.round(Math.sin(t * 0.05) * 6), 0);
           ctx.drawImage(mid, 0, 0);
+          if (env.rain > 0) {
+            const slot = Math.floor(t * 6);
+            for (let i = 0; i < 16; i++) {
+              const sr = rng(slot - i % 3 + i * 131);
+              const y = VANISH.y + 8 + Math.floor(sr() * (H - VANISH.y - 8));
+              const x = Math.round(VANISH.x + (sr() - 0.5) * 2 * (pathHalf(y) - 3));
+              const age = i % 3;
+              ctx.fillStyle = age === 0 ? ring : ringOld;
+              if (age === 0) ctx.fillRect(x, y - 1, 1, 1);
+              ctx.fillRect(x - 1 - age, y, 1, 1);
+              ctx.fillRect(x + 1 + age, y, 1, 1);
+            }
+          }
           for (const l of leaves) {
-            const y = wrap(l.y + t * l.speed, H + 10) - 5;
-            const x = wrap(l.x + Math.sin(t * 0.8 + l.phase) * 10 - t * 2, W);
-            rect(ctx, x, y, 2, 1, "#7fb068");
-            px(ctx, x + (Math.sin(t * 3 + l.phase) > 0 ? 2 : -1), y + 1, "#5e9150");
+            const y = wrap(l.y + t * l.speed * wind, H + 10) - 5;
+            const x = wrap(l.x + Math.sin(t * 0.8 + l.phase) * 10 - t * 2 * wind, W);
+            ctx.fillStyle = leafA;
+            ctx.fillRect(Math.round(x), Math.round(y), 2, 1);
+            ctx.fillStyle = leafB;
+            ctx.fillRect(Math.round(x + (Math.sin(t * 3 + l.phase) > 0 ? 2 : -1)), Math.round(y + 1), 1, 1);
           }
           ctx.drawImage(mistNear, Math.round(Math.sin(t * 0.08 + 1) * 10), 0);
+          if (beamSpec) {
+            const [br, bg, bb, strength] = beamSpec;
+            ctx.globalCompositeOperation = "lighter";
+            for (const b of beams) {
+              const x0 = b.x + Math.sin(t * 0.15 + b.ph) * 6;
+              const pulse = 0.65 + 0.35 * Math.sin(t * 0.4 + b.ph * 2);
+              for (let band = 0; band < 6; band++) {
+                ctx.fillStyle = `rgba(${br},${bg},${bb},${(strength * pulse * (1 - band * 0.13)).toFixed(3)})`;
+                for (let y = band * 30; y < band * 30 + 30; y++) ctx.fillRect(Math.round(x0 + y * 0.4), y, Math.round(b.w), 1);
+              }
+            }
+            ctx.globalCompositeOperation = "source-over";
+          }
+          ctx.drawImage(front.canvas, 0, 0);
+          if (env.lit > 0.05) {
+            ctx.globalAlpha = env.lit;
+            const flick = Math.sin(t * 9) * Math.sin(t * 5.3) > 0.2;
+            rect(ctx, light.x - 2, light.y - 1, 5, 3, flick ? "#ffd27a" : "#f4b85a");
+            px(ctx, light.x, light.y, "#fff2c0");
+            glow(ctx, light.x, light.y, 14, "#ffb84a", 0.5);
+            ctx.globalAlpha = 1;
+          }
+          if (env.night && env.rain === 0) {
+            for (const fl of flies) {
+              const on = Math.sin(t * 2.2 + fl.p);
+              if (on < 0.1) continue;
+              ctx.fillStyle = on > 0.7 ? "#eaff9a" : "#a8d85a";
+              ctx.fillRect(Math.round(fl.x + Math.sin(t * 0.6 + fl.p) * 14), Math.round(fl.y + Math.sin(t * 1.3 + fl.p * 2) * 5), 1, 1);
+            }
+          }
           ctx.drawImage(near, 0, 0);
-          ctx.drawImage(ground.canvas, 0, 0);
-          for (const d of drops) {
-            const y = wrap(d.y + t * d.speed, H + 10) - 5;
-            const x = wrap(d.x - y * 0.25 - t * 4, W + 60) - 30;
-            ctx.fillStyle = d.color;
-            for (let k = 0; k < d.len; k++) ctx.fillRect(Math.round(x + k * 0.25), Math.round(y - k), 1, 1);
-          }
-          const sr = rng(Math.floor(t * 12));
-          for (let i = 0; i < 10; i++) {
-            const sx = Math.floor(sr() * W);
-            px(ctx, sx - 1, H - 9, "rgba(200, 230, 235, 0.6)");
-            px(ctx, sx + 1, H - 9, "rgba(200, 230, 235, 0.6)");
-            px(ctx, sx, H - 10, "rgba(200, 230, 235, 0.4)");
-          }
         }
       };
     }
   };
 
   // js/scenes/wheat.js
-  var HORIZON = 118;
+  var HORIZON = 112;
+  var LEANS = 4;
+  var FAR = { kernel: "#d39a44", light: "#e8b85e", shade: "#ad7834", awn: "#e2b563", stem: "#a8793a" };
+  var MID = { kernel: "#c98d3a", light: "#e6b65a", shade: "#93622a", awn: "#d9a851", stem: "#8f6a2c" };
+  var NEAR = { kernel: "#e9b44c", light: "#ffe9a0", shade: "#a36a26", awn: "#f3d384", stem: "#b98a36", leaf: "#9c8a34" };
+  var SIZES = [
+    { kw: 1, kh: 1, pairs: 3, awn: 1, stem: 6, colors: FAR, bend: 2 },
+    { kw: 1, kh: 2, pairs: 3, awn: 2, stem: 11, colors: FAR, bend: 3 },
+    { kw: 2, kh: 2, pairs: 4, awn: 3, stem: 18, colors: MID, bend: 5 },
+    { kw: 2, kh: 3, pairs: 6, awn: 5, stem: 27, colors: NEAR, bend: 8, leaves: true }
+  ];
+  function stalkGrid(size) {
+    const { kw, kh, pairs, awn, stem, colors, bend } = size;
+    const earH = pairs * kh + kh + Math.ceil(kh / 2);
+    const h = awn + earH + stem;
+    const pad2 = bend + awn + kw + 2;
+    const w = pad2 * 2 + 1;
+    const grid = layer(w, h);
+    const g = grid.ctx;
+    const cx = pad2;
+    const earTop = awn;
+    rect(g, cx, earTop + kh, 1, h - earTop - kh, colors.stem);
+    if (size.leaves) {
+      for (const [dir, from, len] of [[-1, 0.45, 9], [1, 0.62, 7]]) {
+        const ly = Math.round(earTop + earH + stem * from);
+        for (let k = 1; k <= len; k++) {
+          const droop = Math.round((k - len * 0.45) ** 2 * 0.09 - 2);
+          px(g, cx + dir * k, ly + droop, k > len - 2 ? colors.shade : colors.leaf);
+        }
+      }
+    }
+    const kernel = (x, y, side, bristle) => {
+      rect(g, x, y, kw, kh, colors.kernel);
+      px(g, side < 0 ? x : x + kw - 1, y, colors.light);
+      if (kh > 1) rect(g, x, y + kh - 1, kw, 1, colors.shade);
+      if (!bristle) return;
+      const tipX = side < 0 ? x : x + kw - 1;
+      for (let j = 1; j <= awn; j++) px(g, tipX + side * Math.round(j * 0.45), y - j, colors.awn);
+    };
+    rect(g, cx, earTop, 1, kh, colors.light);
+    for (let j = 1; j <= awn; j++) px(g, cx, earTop - j, colors.awn);
+    for (let i = 0; i < pairs; i++) {
+      const y = earTop + kh + i * kh;
+      kernel(cx - kw, y, -1, i < 2);
+      kernel(cx + 1, y + Math.ceil(kh / 2), 1, i < 2);
+    }
+    return { data: g.getImageData(0, 0, w, h).data, w, h };
+  }
+  function leanedStalk(env, grid, size, lean) {
+    const { data, w, h } = grid;
+    const out = layer(w, h);
+    const img = out.ctx.createImageData(w, h);
+    const amount = lean / LEANS * size.bend;
+    for (let y = 0; y < h; y++) {
+      const up = (h - y) / h;
+      const shift = Math.round(amount * up * up);
+      for (let x = 0; x < w; x++) {
+        const nx = x + shift;
+        if (nx < 0 || nx >= w) continue;
+        const from = (y * w + x) * 4;
+        const to = (y * w + nx) * 4;
+        img.data[to] = data[from];
+        img.data[to + 1] = data[from + 1];
+        img.data[to + 2] = data[from + 2];
+        img.data[to + 3] = data[from + 3];
+      }
+    }
+    env.gradeData(img.data);
+    out.ctx.putImageData(img, 0, 0);
+    return out.canvas;
+  }
+  function windmill(ctx, x, y) {
+    const wall3 = "#8a7a68", dark = "#5e5044";
+    for (let i = 0; i < 12; i++) {
+      const half = 2 + Math.floor(i / 4);
+      rect(ctx, x - half, y - 12 + i, half * 2, 1, i % 4 === 0 ? dark : wall3);
+    }
+    rect(ctx, x - 3, y - 15, 6, 3, dark);
+    rect(ctx, x - 2, y - 17, 4, 2, "#7a3a34");
+    rect(ctx, x - 1, y - 7, 3, 5, "#3a2c22");
+  }
+  function scarecrow(ctx, x, base) {
+    const wood = "#6b4a2a", shirt = "#8a4a3a", shirtDark = "#6a3428", hat = "#c9a04a", straw = "#f0d078";
+    rect(ctx, x, base - 24, 2, 24, wood);
+    rect(ctx, x - 9, base - 19, 20, 2, wood);
+    rect(ctx, x - 3, base - 20, 8, 10, shirt);
+    rect(ctx, x + 3, base - 20, 2, 10, shirtDark);
+    rect(ctx, x - 1, base - 16, 3, 3, "#4a6a8a");
+    rect(ctx, x - 2, base - 26, 6, 5, "#d8c090");
+    px(ctx, x - 1, base - 25, "#3a2a1a");
+    px(ctx, x + 2, base - 25, "#3a2a1a");
+    rect(ctx, x - 4, base - 28, 10, 2, hat);
+    rect(ctx, x - 2, base - 31, 6, 3, hat);
+    for (const ax of [x - 11, x + 11]) rect(ctx, ax, base - 20, 2, 3, straw);
+    for (let k = 0; k < 5; k++) px(ctx, x - 3 + k * 2, base - 10 + k % 2, straw);
+  }
   var wheat_default = {
     id: "wheat",
     name: "Golden Field",
-    create() {
-      const sky = layer();
-      ditherGradient(sky.ctx, 0, 0, W, HORIZON + 4, ["#2a1b40", "#4e2a5a", "#8c3b5f", "#cc5d5b", "#ec935d", "#f7c374"]);
-      glow(sky.ctx, 232, 100, 34, "#fbd98f", 0.55);
-      disc(sky.ctx, 232, 100, 15, "#ffe9ad");
-      disc(sky.ctx, 232, 100, 12, "#fff3cc");
-      const clouds = layer(W * 2, 90);
-      const cr = rng(7);
-      for (let i = 0; i < 9; i++) {
-        cloud(clouds.ctx, cr() * W * 2, 18 + cr() * 50, 6 + cr() * 7, "#f8bf9c", "#c97c80", 100 + i);
-      }
+    signature: "sunset",
+    horizon: HORIZON,
+    celestial: { sunX: 232, sunHighY: 30, sunLowY: 96, moonX: 90, moonY: 32 },
+    fog: [HORIZON - 6, HORIZON + 34],
+    rainBand: [HORIZON + 30, H - 2],
+    sounds: { always: { wheat: 1, wind: 0.3 }, day: { birds: 0.5 }, night: { crickets: 0.8 } },
+    create(env) {
+      const sky = env.makeSky();
       const hills = layer();
-      ridge(hills.ctx, HORIZON - 2, 5, "#7a3c5a", 3, { freq: 0.018 });
-      ridge(hills.ctx, HORIZON + 4, 3, "#5a2e4c", 8, { freq: 0.03 });
+      ridge(hills.ctx, HORIZON - 4, 6, "#7ea18c", 3, { freq: 0.018 });
+      ridge(hills.ctx, HORIZON + 1, 3, "#5f8c6c", 8, { freq: 0.03 });
       const tr = rng(12);
-      for (let i = 0; i < 14; i++) {
+      for (let i = 0; i < 12; i++) {
         const x = tr() * W;
-        const y = HORIZON - 1 + tr() * 3;
-        rect(hills.ctx, x, y - 3, 3, 3, "#4a2440");
-        rect(hills.ctx, x + 1, y - 5, 1, 2, "#4a2440");
+        const y = HORIZON - 1 + tr() * 2;
+        disc(hills.ctx, x, y - 3, 2, "#3f6a48");
+        rect(hills.ctx, x, y - 1, 1, 2, "#3f6a48");
       }
+      const MILL = { x: 58, y: HORIZON - 2 };
+      windmill(hills.ctx, MILL.x, MILL.y);
+      env.grade(hills.canvas);
       const field = layer();
-      ditherGradient(field.ctx, 0, HORIZON + 2, W, H - HORIZON - 2, ["#9c6530", "#b67a36", "#cd913d", "#bf853a", "#a86f30"]);
-      const rows = [];
-      for (let i = 0; i < 16; i++) {
-        const depth = i / 15;
-        rows.push({
-          y: HORIZON + 6 + Math.pow(depth, 1.35) * (H - HORIZON - 2),
-          spacing: depth < 0.3 ? 2 : depth < 0.7 ? 3 : 4,
-          head: 1 + Math.round(depth * 4),
-          stem: 2 + Math.round(depth * 10),
-          amp: 0.4 + depth * 2.2,
-          offset: i * 1.7
-        });
+      ditherGradient(field.ctx, 0, HORIZON + 1, W, H - HORIZON - 1, ["#d9a04a", "#dfab4c", "#c98a3c", "#9c672c", "#62401f"]);
+      const fr = rng(44);
+      for (let y = HORIZON + 2; y < HORIZON + 26; y++) {
+        const depth = (y - HORIZON) / 26;
+        for (let x = 0; x < W; x++) {
+          const v = fr();
+          if (v < 0.22) px(field.ctx, x, y, "#f2cb70");
+          else if (v < 0.4) rect(field.ctx, x, y, 1, 1 + Math.round(depth * 2), "#a8722e");
+        }
       }
-      const r = rng(31);
-      const birds = Array.from({ length: 4 }, (_, i) => ({ x: r() * W, y: 26 + r() * 40, speed: 9 + r() * 6, phase: i }));
-      const motes = Array.from({ length: 24 }, () => ({ x: r() * W, y: HORIZON + r() * 60, s: 2 + r() * 3, p: r() * 6 }));
+      env.grade(field.canvas);
+      const sprites2 = SIZES.map((size) => {
+        const grid = stalkGrid(size);
+        const byLean = [];
+        for (let lean = -LEANS; lean <= LEANS; lean++) byLean.push(leanedStalk(env, grid, size, lean));
+        return byLean;
+      });
+      const spriteOx = SIZES.map((size) => size.bend + size.awn + size.kw + 2);
+      const crow = layer(40, 40);
+      scarecrow(crow.ctx, 20, 38);
+      env.grade(crow.canvas);
+      const CROW = { x: 244, base: HORIZON + 58 };
+      const sr = rng(31);
+      const rows = [
+        { size: 0, y: HORIZON + 22, gap: 3 },
+        { size: 0, y: HORIZON + 27, gap: 3 },
+        { size: 1, y: HORIZON + 35, gap: 4 },
+        { size: 1, y: HORIZON + 42, gap: 5 },
+        { size: 2, y: HORIZON + 54, gap: 7 },
+        { size: 2, y: HORIZON + 64, gap: 8 },
+        { size: 3, y: H + 8, gap: 15 },
+        { size: 3, y: H + 18, gap: 13 }
+      ].map((row, i) => {
+        const stalks = [];
+        for (let x = -4; x < W + 4; x += row.gap) {
+          stalks.push({ x: Math.round(x + sr() * row.gap), dy: Math.round(sr() * (2 + row.size * 2)), phase: sr() * 1.2 });
+        }
+        return { ...row, stalks, offset: i * 1.3 };
+      });
+      const birds = Array.from({ length: 4 }, (_, i) => ({ x: sr() * W, y: 26 + sr() * 40, speed: 9 + sr() * 6, phase: i }));
+      const motes = Array.from({ length: 24 }, () => ({ x: sr() * W, y: HORIZON + sr() * 60, s: 2 + sr() * 3, p: sr() * 6 }));
+      const flies = Array.from({ length: 16 }, () => ({ x: sr() * W, y: HORIZON + 24 + sr() * 60, p: sr() * 10 }));
+      const ripples = Array.from({ length: 40 }, () => ({ x: sr() * W, y: HORIZON + 3 + Math.floor(sr() * 20), len: 3 + sr() * 8, p: sr() * 6 }));
+      const bird = env.c("#2a2030");
+      const streak = env.c("#f6d684");
+      const mote = env.c("#fff1b8");
+      const beam = env.c("#4a3a30");
+      const cloth = env.c("#e8dcc0");
+      const windScale = 0.45 + env.wind * 0.75;
+      const showBirds = !env.night && env.rain === 0;
+      const fast = 1.2 + env.wind;
+      const sailSpeed = 0.3 + env.wind * 0.9;
       return {
         draw(ctx, t) {
-          ctx.drawImage(sky.canvas, 0, 0);
-          ctx.drawImage(clouds.canvas, -Math.round(wrap(t * 2, W)), 0);
-          ctx.drawImage(clouds.canvas, W * 2 - Math.round(wrap(t * 2, W)), 0);
+          sky.draw(ctx, t);
           ctx.drawImage(hills.canvas, 0, 0);
-          for (const b of birds) {
-            const x = wrap(b.x - t * b.speed, W + 20) - 10;
-            const y = Math.round(b.y + Math.sin(t * 0.7 + b.phase) * 3);
-            const up = Math.floor(t * 5 + b.phase) % 2 === 0;
-            px(ctx, x, y, "#3a1c38");
-            px(ctx, x - 1, y + (up ? -1 : 1), "#3a1c38");
-            px(ctx, x + 1, y + (up ? -1 : 1), "#3a1c38");
-            px(ctx, x - 2, y + (up ? -1 : 1), "#3a1c38");
-            px(ctx, x + 2, y + (up ? -1 : 1), "#3a1c38");
-          }
-          ctx.drawImage(field.canvas, 0, 0);
-          for (const row of rows) {
-            const gust = Math.sin(t * 0.35) * 0.5 + 0.5;
-            for (let x = (row.offset | 0) % row.spacing; x < W; x += row.spacing) {
-              const sway = Math.round(Math.sin(t * 1.6 - x * 0.045 + row.offset) * row.amp * (0.6 + gust * 0.6));
-              const top = Math.round(row.y - row.stem);
-              rect(ctx, x + Math.round(sway / 2), top + row.head, 1, row.stem - row.head, "#9a6a2c");
-              rect(ctx, x + sway, top, row.head > 3 ? 2 : 1, row.head, "#efc15a");
-              px(ctx, x + sway, top - 1, "#ffe39a");
+          for (let k = 0; k < 4; k++) {
+            const a = t * sailSpeed + k * Math.PI / 2;
+            for (let d = 1; d <= 9; d++) {
+              const sx = MILL.x + Math.cos(a) * d;
+              const sy = MILL.y - 16 + Math.sin(a) * d;
+              px(ctx, sx, sy, beam);
+              if (d > 3) px(ctx, sx - Math.sin(a), sy + Math.cos(a), cloth);
             }
           }
-          for (const m of motes) {
-            const y = wrap(m.y - t * m.s, 70) + HORIZON - 10;
-            const x = wrap(m.x + Math.sin(t + m.p) * 6 + t * 3, W);
-            if (Math.sin(t * 2 + m.p) > -0.2) px(ctx, x, y, "#fff1b8");
+          if (env.lit > 0.05) {
+            ctx.globalAlpha = env.lit;
+            rect(ctx, MILL.x - 1, MILL.y - 11, 2, 2, "#ffcf6b");
+            ctx.globalAlpha = 1;
+          }
+          if (showBirds) {
+            ctx.fillStyle = bird;
+            for (const b of birds) {
+              const x = Math.round(wrap(b.x - t * b.speed, W + 20) - 10);
+              const y = Math.round(b.y + Math.sin(t * 0.7 + b.phase) * 3);
+              const up = Math.floor(t * 5 + b.phase) % 2 === 0 ? -1 : 1;
+              ctx.fillRect(x, y, 1, 1);
+              for (const dx of [-2, -1, 1, 2]) ctx.fillRect(x + dx, y + up, 1, 1);
+            }
+          }
+          ctx.drawImage(field.canvas, 0, 0);
+          ctx.fillStyle = streak;
+          for (const r of ripples) {
+            const x = wrap(r.x + t * 14 * fast, W + 20) - 10;
+            if (Math.sin(t * 0.9 + r.p) > 0.1) ctx.fillRect(Math.round(x), r.y, Math.round(r.len), 1);
+          }
+          const gust = 0.55 + 0.45 * Math.sin(t * 0.35);
+          rows.forEach((row, index) => {
+            if (index === 6) ctx.drawImage(crow.canvas, CROW.x - 20, CROW.base - 38);
+            const set = sprites2[row.size];
+            for (const s of row.stalks) {
+              const wave = Math.sin(t * fast * 1.25 - s.x * 0.035 + row.offset + s.phase);
+              const lean = Math.round((0.35 + wave * 0.65) * gust * windScale * LEANS);
+              const sprite = set[Math.max(-LEANS, Math.min(LEANS, lean)) + LEANS];
+              ctx.drawImage(sprite, s.x - spriteOx[row.size], row.y + s.dy - sprite.height);
+            }
+          });
+          if (env.rain === 0 && !env.night) {
+            ctx.fillStyle = mote;
+            for (const m of motes) {
+              const y = wrap(m.y - t * m.s, 70) + HORIZON - 10;
+              const x = wrap(m.x + Math.sin(t + m.p) * 6 + t * 3, W);
+              if (Math.sin(t * 2 + m.p) > -0.2) ctx.fillRect(Math.round(x), Math.round(y), 1, 1);
+            }
+          }
+          if (env.night && env.rain === 0) {
+            for (const f of flies) {
+              const on = Math.sin(t * 2.2 + f.p);
+              if (on < 0.1) continue;
+              const x = f.x + Math.sin(t * 0.6 + f.p) * 18;
+              const y = f.y + Math.sin(t * 1.3 + f.p * 2) * 5;
+              ctx.fillStyle = on > 0.7 ? "#eaff9a" : "#a8d85a";
+              ctx.fillRect(Math.round(x), Math.round(y), 1, 1);
+            }
           }
         }
       };
@@ -947,16 +2434,18 @@
 
   // js/scenes/village.js
   var GROUND = 150;
-  function pine(ctx, x, base, h, color) {
+  var GLASS = "#3f5070";
+  function pine(ctx, x, base, h, color, lit) {
     for (let i = 0; i < h; i++) {
       const half = Math.floor(i / h * (h * 0.4)) + (i % 3 === 0 ? 0 : 1);
       rect(ctx, x - half, base - h + i, half * 2 + 1, 1, color);
+      if (lit && half > 0) px(ctx, x - half, base - h + i, lit);
     }
     rect(ctx, x, base, 1, 2, color);
   }
-  function house(ctx, x, w, h, wall2, wallDark, roof, roofDark, r, windows, chimneys) {
+  function house2(ctx, x, w, h, wall3, wallDark, roof, roofDark, r, windows, chimneys) {
     const top = GROUND - h;
-    rect(ctx, x, top, w, h, wall2);
+    rect(ctx, x, top, w, h, wall3);
     rect(ctx, x + w - 2, top, 2, h, wallDark);
     for (let y = top + 3; y < GROUND; y += 4) rect(ctx, x, y, w - 2, 1, wallDark);
     const roofH = Math.round(w * 0.45);
@@ -967,99 +2456,101 @@
     if (r() < 0.8) {
       const cx = x + Math.round(w * (0.2 + r() * 0.5));
       const cTop = top - Math.round(roofH * 0.7) - 4;
-      rect(ctx, cx, cTop, 3, 8, "#3a2e34");
-      rect(ctx, cx - 1, cTop, 5, 1, "#2a2026");
+      rect(ctx, cx, cTop, 3, 8, "#6a5a58");
+      rect(ctx, cx - 1, cTop, 5, 1, "#4a3c3c");
       chimneys.push({ x: cx + 1, y: cTop - 1, phase: r() * 10 });
     }
-    rect(ctx, x + Math.round(w / 2) - 2, GROUND - 7, 4, 7, "#2a1c16");
+    rect(ctx, x + Math.round(w / 2) - 2, GROUND - 7, 4, 7, "#4a2c20");
     const winY = top + 4;
     for (let wx = x + 3; wx + 4 < x + w - 2; wx += 8) {
       if (Math.abs(wx + 2 - (x + w / 2)) < 4 && h < 20) continue;
-      rect(ctx, wx - 1, winY - 1, 6, 6, "#3a2a22");
+      rect(ctx, wx - 1, winY - 1, 6, 6, "#4a3a2c");
+      rect(ctx, wx, winY, 4, 4, GLASS);
+      px(ctx, wx, winY, "#6a86a8");
       windows.push({ x: wx, y: winY, seed: r() });
     }
   }
   var village_default = {
     id: "village",
     name: "Night Village",
-    create() {
+    signature: "night",
+    horizon: 135,
+    celestial: { sunX: 250, sunHighY: 30, sunLowY: 112, moonX: 58, moonY: 34 },
+    fog: [110, 176],
+    rainBand: [GROUND + 14, H - 3],
+    sounds: { always: {}, day: { birds: 0.7 }, night: { crickets: 1, owl: 0.4 } },
+    create(env) {
+      const sky = env.makeSky();
       const base = layer();
       const b = base.ctx;
-      ditherGradient(b, 0, 0, W, 135, ["#060919", "#0b112e", "#131b42", "#1d2756", "#2b3466"]);
-      glow(b, 58, 34, 22, "#1e2a58", 0.7);
-      disc(b, 58, 34, 11, "#f2ecd0");
-      px(b, 54, 31, "#d9d0ac");
-      rect(b, 60, 36, 2, 2, "#d9d0ac");
-      px(b, 63, 30, "#d9d0ac");
-      rect(b, 55, 38, 2, 1, "#d9d0ac");
-      ridge(b, 122, 12, "#121937", 21, { freq: 0.013, jag: 3 });
-      ridge(b, 134, 5, "#18203f", 22, { freq: 0.025 });
+      ridge(b, 122, 12, "#6f9a86", 21, { freq: 0.013, jag: 3 });
+      ridge(b, 134, 5, "#5a8a6c", 22, { freq: 0.025 });
       const tr = rng(4);
-      for (let i = 0; i < 26; i++) pine(b, Math.round(tr() * W), 136 + Math.round(tr() * 6), 7 + Math.round(tr() * 7), "#0e1530");
-      rect(b, 0, GROUND, W, H - GROUND, "#171b2a");
-      ditherGradient(b, 0, GROUND, W, H - GROUND, ["#1a1f30", "#141824"]);
+      for (let i = 0; i < 26; i++) pine(b, Math.round(tr() * W), 136 + Math.round(tr() * 6), 7 + Math.round(tr() * 7), "#2f5a3a", "#4a8a52");
+      rect(b, 0, GROUND, W, H - GROUND, "#5f8f4a");
+      ditherGradient(b, 0, GROUND, W, H - GROUND, ["#6b9a52", "#557f42"]);
       for (let x2 = 0; x2 < W; x2++) {
         const y = GROUND + 12 + Math.round(Math.sin(x2 * 0.03) * 3);
-        rect(b, x2, y, 1, 6, (x2 >> 2) % 2 ? "#2a2c3c" : "#262838");
+        rect(b, x2, y, 1, 6, (x2 >> 2) % 2 ? "#c9b48a" : "#bba67c");
       }
       const r = rng(8);
       const windows = [];
       const chimneys = [];
-      const walls = [["#6b4a3a", "#57392c"], ["#7a5d47", "#624a38"], ["#5c4a5a", "#4a3a48"], ["#6d5c49", "#584a3a"]];
-      const roofs = [["#7a2f38", "#5e2129"], ["#34467a", "#26345c"], ["#5b3a2a", "#462a1e"], ["#2f5a4a", "#224438"]];
+      const walls = [["#c99a76", "#a87c5a"], ["#d9b78e", "#b89670"], ["#b8909e", "#96727f"], ["#cdb894", "#a99878"]];
+      const roofs = [["#a83c46", "#7a2830"], ["#4a64a8", "#364a80"], ["#8a5a3a", "#684228"], ["#3f7a5e", "#2c5a44"]];
       let x = 8;
       while (x < W - 20) {
         const w = 22 + Math.floor(r() * 12);
         const h = 15 + Math.floor(r() * 10);
-        const [wall2, wallDark] = walls[Math.floor(r() * walls.length)];
+        const [wall3, wallDark] = walls[Math.floor(r() * walls.length)];
         const [roof, roofDark] = roofs[Math.floor(r() * roofs.length)];
-        house(b, x, w, h, wall2, wallDark, roof, roofDark, r, windows, chimneys);
+        house2(b, x, w, h, wall3, wallDark, roof, roofDark, r, windows, chimneys);
         x += w + 10 + Math.floor(r() * 16);
       }
       const lamps = [52, 150, 262].map((lx) => ({ x: lx, y: GROUND - 14 }));
       for (const l of lamps) {
-        glow(b, l.x, l.y, 10, "#4a3f46", 1.6);
-        glow(b, l.x, l.y, 6, "#8a6a44", 1.4);
-        rect(b, l.x, l.y, 1, 14, "#1e1a22");
-        rect(b, l.x - 1, l.y - 3, 3, 3, "#ffe08a");
+        rect(b, l.x, l.y, 1, 14, "#3a3440");
+        rect(b, l.x - 1, l.y - 3, 3, 3, "#9a8a6a");
       }
+      env.grade(base.canvas);
       const sr = rng(77);
-      const stars = Array.from({ length: 70 }, () => ({ x: Math.floor(sr() * W), y: Math.floor(sr() * 100), p: sr() * 10, big: sr() < 0.1 }));
       const flies = Array.from({ length: 12 }, () => ({ x: sr() * W, y: GROUND - 6 + sr() * 14, p: sr() * 10 }));
+      const smoke = env.rgb("#c8ccd8");
+      const wind = 4 + env.wind * 10;
       return {
         draw(ctx, t) {
+          sky.draw(ctx, t);
           ctx.drawImage(base.canvas, 0, 0);
-          for (const s of stars) {
-            const tw = Math.sin(t * 1.5 + s.p);
-            if (tw < -0.4) continue;
-            const c = tw > 0.6 ? "#ffffff" : "#8f9fe0";
-            px(ctx, s.x, s.y, c);
-            if (s.big && tw > 0.5) {
-              px(ctx, s.x - 1, s.y, "#6f7fc0");
-              px(ctx, s.x + 1, s.y, "#6f7fc0");
-              px(ctx, s.x, s.y - 1, "#6f7fc0");
-              px(ctx, s.x, s.y + 1, "#6f7fc0");
+          if (env.lit > 0.05) {
+            ctx.globalAlpha = env.lit;
+            for (const w of windows) {
+              const off = Math.sin(Math.floor(t / 4) * 13.7 + w.seed * 91) > 0.82;
+              if (off) continue;
+              const flicker = Math.sin(t * 7 + w.seed * 50) > 0.92;
+              rect(ctx, w.x, w.y, 4, 4, flicker ? "#ffe7a4" : "#ffc75e");
+              rect(ctx, w.x, w.y + 2, 4, 1, "#e8a646");
             }
-          }
-          for (const w of windows) {
-            const off = Math.sin(Math.floor(t / 4) * 13.7 + w.seed * 91) > 0.82;
-            const flicker = Math.sin(t * 7 + w.seed * 50) > 0.92;
-            rect(ctx, w.x, w.y, 4, 4, off ? "#1c1a2a" : flicker ? "#ffe7a4" : "#ffc75e");
-            if (!off) rect(ctx, w.x, w.y + 2, 4, 1, "#e8a646");
+            for (const l of lamps) {
+              glow(ctx, l.x, l.y, 10, "#8a6a44", 1.2);
+              rect(ctx, l.x - 1, l.y - 3, 3, 3, "#ffe08a");
+            }
+            ctx.globalAlpha = 1;
           }
           for (const c of chimneys) {
             for (let k = 0; k < 7; k++) {
               const age = wrap(t * 0.35 + k / 7 + c.phase, 1);
-              const sx = Math.round(c.x + Math.sin(age * 5 + k) * 2 + age * 10);
+              const sx = Math.round(c.x + Math.sin(age * 5 + k) * 2 + age * wind);
               const sy = Math.round(c.y - age * 30);
               const size = 1 + Math.round(age * 3);
-              ctx.fillStyle = `rgba(150, 156, 184, ${(1 - age) * 0.55})`;
+              ctx.fillStyle = `rgba(${smoke[0]}, ${smoke[1]}, ${smoke[2]}, ${((1 - age) * 0.55).toFixed(2)})`;
               ctx.fillRect(sx, sy, size, size);
             }
           }
-          for (const f of flies) {
-            if (Math.sin(t * 2.5 + f.p) < 0.2) continue;
-            px(ctx, f.x + Math.sin(t * 0.6 + f.p) * 18, f.y + Math.sin(t * 1.3 + f.p * 2) * 5, "#d8ff7a");
+          if (env.night && env.rain === 0) {
+            for (const f of flies) {
+              if (Math.sin(t * 2.5 + f.p) < 0.2) continue;
+              px(ctx, f.x + Math.sin(t * 0.6 + f.p) * 18, f.y + Math.sin(t * 1.3 + f.p * 2) * 5, "#d8ff7a");
+            }
           }
         }
       };
@@ -1067,105 +2558,347 @@
   };
 
   // js/scenes/castle.js
-  var STONE = "#5e5c7c";
-  var STONE_DARK = "#48466a";
-  var STONE_LIGHT = "#77759a";
-  var ROOF = "#7c2b4c";
-  var ROOF_DARK = "#5e1f3a";
-  function stoneBlock(ctx, x, y, w, h) {
-    rect(ctx, x, y, w, h, STONE);
-    rect(ctx, x, y, 1, h, STONE_LIGHT);
-    rect(ctx, x + w - 1, y, 1, h, STONE_DARK);
-    for (let row = y + 3, n = 0; row < y + h; row += 3, n++) {
-      rect(ctx, x, row, w, 1, STONE_DARK);
-      for (let bx = x + (n % 2 ? 2 : 4); bx < x + w - 1; bx += 5) px(ctx, bx, row - 1, STONE_DARK);
+  var SHORE = 146;
+  var STONE = "#9b98ae";
+  var STONE_LIT = "#cfc5c3";
+  var STONE_HI = "#f2e6d8";
+  var STONE_DARK = "#6b6885";
+  var STONE_DEEP = "#525070";
+  var ROOF = "#a63c3c";
+  var ROOF_LIT = "#d86058";
+  var ROOF_DARK = "#75262c";
+  var GLASS2 = "#3a4a6a";
+  var WARM = "#ffcf6b";
+  var ROCK = "#7a7484";
+  var ROCK_LIT = "#b09a9a";
+  var ROCK_DARK = "#524e60";
+  var PINE = "#2c5a38";
+  function cragTop(x) {
+    let y;
+    if (x < 126) return H;
+    if (x < 152) {
+      const k = (x - 126) / 26;
+      y = SHORE + 2 - k * k * (3 - 2 * k) * 34;
+    } else if (x <= 276) {
+      y = 114 + Math.sin(x * 0.11) * 1.5;
+    } else {
+      y = 114 + (x - 276) * 0.62;
     }
+    return Math.round(y);
+  }
+  function wall(ctx, x, top, w, ground) {
+    for (let cx = x; cx < x + w; cx++) {
+      const base = ground(cx);
+      const edge = cx - x;
+      const color = edge === 0 ? STONE_HI : edge < Math.max(2, w * 0.22) ? STONE_LIT : edge >= w - 2 ? STONE_DARK : STONE;
+      rect(ctx, cx, top, 1, base - top + 1, color);
+    }
+    for (let row = top + 3, n = 0; row < H; row += 4, n++) {
+      for (let cx = x + 1; cx < x + w - 1; cx++) {
+        if (row >= ground(cx)) continue;
+        if ((cx + n * 3) % 6 === 0) px(ctx, cx, row - 1, STONE_DARK);
+        if ((cx * 7 + n * 5) % 11 < 7) px(ctx, cx, row, STONE_DARK);
+      }
+    }
+  }
+  function roundTower(ctx, x, top, w, ground, roof, flags, lights) {
+    for (let cx = x; cx < x + w; cx++) {
+      const k = (cx - x) / (w - 1);
+      const color = k < 0.12 ? STONE_HI : k < 0.38 ? STONE_LIT : k < 0.7 ? STONE : k < 0.9 ? STONE_DARK : STONE_DEEP;
+      rect(ctx, cx, top, 1, ground(cx) - top + 1, color);
+    }
+    for (let row = top + 4, n = 0; row < H; row += 4, n++) {
+      for (let cx = x + 1; cx < x + w - 1; cx++) {
+        if (row < ground(cx) && (cx + n * 2) % 3 !== 0) px(ctx, cx, row, STONE_DARK);
+      }
+    }
+    rect(ctx, x - 1, top, w + 2, 2, STONE);
+    rect(ctx, x - 1, top, 2, 2, STONE_HI);
+    rect(ctx, x + w - 1, top, 2, 2, STONE_DARK);
+    if (roof) {
+      const roofH = Math.round(w * 1.25);
+      for (let i = 0; i < roofH; i++) {
+        const half = (i + 1) / roofH * (w / 2 + 2);
+        const left = Math.round(x + w / 2 - half);
+        const width = Math.round(half * 2);
+        rect(ctx, left, top - roofH + i, width, 1, ROOF);
+        rect(ctx, left, top - roofH + i, Math.max(1, Math.round(width * 0.3)), 1, ROOF_LIT);
+        rect(ctx, left + Math.round(width * 0.72), top - roofH + i, width - Math.round(width * 0.72), 1, ROOF_DARK);
+      }
+      flags.push({ x: x + Math.floor(w / 2), y: top - roofH - 7 });
+    } else {
+      crenels(ctx, x - 1, top, w + 2);
+    }
+    const mid = x + Math.floor(w / 2);
+    for (let wy = top + 7; wy < ground(mid) - 8; wy += 11) slit(ctx, mid, wy, lights);
   }
   function crenels(ctx, x, y, w) {
-    for (let cx = x; cx < x + w; cx += 3) rect(ctx, cx, y - 2, 2, 2, STONE);
-  }
-  function tower(ctx, x, top, w, base, flags) {
-    stoneBlock(ctx, x, top, w, base - top);
-    const roofH = Math.round(w * 1.3);
-    for (let i = 0; i < roofH; i++) {
-      const half = Math.round(i / roofH * (w / 2 + 2));
-      rect(ctx, x + w / 2 - half, top - roofH + i, half * 2, 1, i % 4 === 0 ? ROOF_DARK : ROOF);
+    for (let cx = x; cx < x + w; cx += 4) {
+      rect(ctx, cx, y - 3, 2, 3, cx - x < w * 0.25 ? STONE_LIT : STONE);
+      px(ctx, cx, y - 3, STONE_HI);
     }
-    rect(ctx, x + Math.round(w / 2) - 1, top + 6, 2, 3, "#ffcf6b");
-    rect(ctx, x + Math.round(w / 2) - 1, top + 16, 2, 3, "#ffcf6b");
-    flags.push({ x: x + Math.round(w / 2), y: top - roofH - 6 });
   }
+  function slit(ctx, x, y, lights) {
+    rect(ctx, x, y, 1, 3, GLASS2);
+    px(ctx, x - 1, y + 1, STONE_DARK);
+    px(ctx, x + 1, y + 1, STONE_DARK);
+    lights.push({ x, y, w: 1, h: 3 });
+  }
+  function arch(ctx, x, y, w, h, color) {
+    rect(ctx, x, y + w / 2, w, h - w / 2, color);
+    for (let i = 0; i < w / 2; i++) {
+      const half = Math.round(Math.sqrt((w / 2) ** 2 - (w / 2 - i - 0.5) ** 2));
+      rect(ctx, x + w / 2 - half, y + i, half * 2, 1, color);
+    }
+  }
+  function pine2(ctx, x, base, h, body, lit) {
+    for (let i = 0; i < h; i++) {
+      const half = Math.floor(i / h * (h * 0.36)) + (i % 3 === 0 ? 0 : 1);
+      rect(ctx, x - half, base - h + i, half * 2 + 1, 1, body);
+      if (lit && half > 0) px(ctx, x - half, base - h + i, lit);
+    }
+    rect(ctx, x, base, 1, 2, body);
+  }
+  function cottage(ctx, x, base, w, lights) {
+    rect(ctx, x, base - 5, w, 5, "#c9b592");
+    rect(ctx, x, base - 5, 1, 5, "#e8d8b4");
+    rect(ctx, x + w - 1, base - 5, 1, 5, "#a08c6c");
+    for (let i = 0; i < 4; i++) rect(ctx, x - 1 + i, base - 6 - (3 - i), w + 2 - i * 2, 1, i === 3 ? ROOF_DARK : ROOF);
+    px(ctx, x + 2, base - 3, GLASS2);
+    lights.push({ x: x + 2, y: base - 3, w: 1, h: 1 });
+    if (w > 6) {
+      px(ctx, x + w - 3, base - 3, GLASS2);
+      lights.push({ x: x + w - 3, y: base - 3, w: 1, h: 1 });
+    }
+  }
+  var ROAD = [
+    [132, 149, 2],
+    [150, 150, 3],
+    [176, 151, 4],
+    [214, 150, 4],
+    [252, 146, 4],
+    [278, 139, 3],
+    [286, 131, 3],
+    [272, 125, 2],
+    [250, 121, 2],
+    [232, 118, 2],
+    [221, 116, 2]
+  ];
   var castle_default = {
     id: "castle",
     name: "Dusk Castle",
-    create() {
-      const sky = layer();
-      ditherGradient(sky.ctx, 0, 0, W, 150, ["#181231", "#321c4d", "#582757", "#923963", "#c95c5e", "#e8895b"]);
-      glow(sky.ctx, 74, 122, 30, "#f5a36d", 0.5);
-      disc(sky.ctx, 74, 122, 14, "#f7c08a");
-      const clouds = layer(W * 2, 100);
-      const cr = rng(17);
-      for (let i = 0; i < 8; i++) cloud(clouds.ctx, cr() * W * 2, 16 + cr() * 60, 4 + cr() * 5, "#b35f7c", "#7c3d68", 300 + i);
+    signature: "sunset",
+    horizon: SHORE + 2,
+    celestial: { sunX: 58, sunHighY: 30, sunLowY: 104, moonX: 58, moonY: 34 },
+    fog: [96, 150],
+    rainBand: [SHORE + 4, H - 24],
+    sounds: { always: { water: 0.12 }, day: { birds: 0.4 }, night: { crickets: 0.7, owl: 0.6 } },
+    create(env) {
+      const sky = env.makeSky();
+      const sun = env.sun;
+      const far = layer();
+      ridge(far.ctx, 122, 16, "#8fa4c8", 41, { freq: 0.014, jag: 5 });
+      ridge(far.ctx, 134, 9, "#7488b0", 42, { freq: 0.022, jag: 3 });
+      far.ctx.clearRect(0, SHORE, W, H - SHORE);
+      env.grade(far.canvas);
+      hazeBand(far.ctx, 120, 152, env.info.sky[env.info.sky.length - 1], 0.35, 0.8);
       const land = layer();
       const l = land.ctx;
-      ridge(l, 128, 14, "#3a2150", 41, { freq: 0.016, jag: 5 });
-      ridge(l, 150, 6, "#2a1a42", 42, { freq: 0.02 });
-      l.fillStyle = "#20163a";
-      for (let x = 0; x < W; x++) {
-        const d = (x - 205) / 95;
-        const y = Math.round(128 + d * d * 40);
-        l.fillRect(x, Math.min(y, H), 1, H);
+      const r = rng(51);
+      const lights = [];
+      const jitter = [];
+      for (let x = 0; x < W; x++) jitter.push(x % 3 === 0 ? Math.round((r() - 0.5) * 2) : jitter[x - 1]);
+      const ground = (x) => cragTop(x) + (x >= 126 ? jitter[Math.max(0, Math.min(W - 1, x))] : 0);
+      for (let x = 126; x < W; x++) {
+        const top = ground(x);
+        rect(l, x, top, 1, H - top, x < 150 ? ROCK_LIT : x > 268 ? ROCK_DARK : ROCK);
+        for (let y = top + 3; y < H; y += 5) {
+          const shift = Math.round(Math.sin(x * 0.2 + y) * 1.5);
+          px(l, x, y + shift, x < 150 ? ROCK : ROCK_DARK);
+        }
+        if (x < 150 && x % 2 === 0) px(l, x, top + 1, "#d0b09a");
+        if (x >= 150) rect(l, x, top, 1, 2, x % 5 === 0 ? "#6fae56" : "#5f9a4c");
+      }
+      for (let i = 0; i < 9; i++) {
+        const x = 128 + Math.floor(r() * 20);
+        const y = ground(x) + 4 + Math.floor(r() * 18);
+        rect(l, x, y, 1, 3 + Math.floor(r() * 5), ROCK);
       }
       const flags = [];
-      const baseY = 132;
-      stoneBlock(l, 168, 108, 76, baseY - 108);
-      crenels(l, 168, 108, 76);
-      rect(l, 198, 116, 16, 16, "#1a1226");
-      for (let i = 0; i < 8; i++) rect(l, 198 + i, 116 - Math.round(Math.sqrt(64 - (i - 8) ** 2) / 2), 16 - i * 2, 1, "#1a1226");
-      tower(l, 160, 90, 12, baseY, flags);
-      tower(l, 240, 90, 12, baseY, flags);
-      tower(l, 199, 74, 14, 108, flags);
-      crenels(l, 160, 90, 12);
-      crenels(l, 240, 90, 12);
-      for (const wx of [176, 186, 222, 232]) rect(l, wx, 116, 2, 3, "#ffcf6b");
-      const tr = rng(51);
-      for (let i = 0; i < 12; i++) {
-        const x = i < 6 ? tr() * 90 : W - tr() * 60;
-        const h = 14 + tr() * 22;
-        for (let k = 0; k < h; k++) {
-          const half = Math.round(k / h * h * 0.33);
-          rect(l, x - half, H - h - 4 + k, half * 2 + 1, 1, "#120d1f");
+      wall(l, 268, 104, 30, ground);
+      crenels(l, 268, 104, 30);
+      roundTower(l, 294, 98, 9, ground, true, flags, lights);
+      roundTower(l, 232, 60, 9, ground, true, flags, lights);
+      wall(l, 186, 72, 34, ground);
+      crenels(l, 186, 72, 34);
+      for (const [wx, wy] of [[193, 80], [203, 80], [213, 80], [198, 92], [208, 92]]) {
+        arch(l, wx, wy, 2, 4, GLASS2);
+        lights.push({ x: wx, y: wy + 1, w: 2, h: 3 });
+      }
+      for (let i = 0; i < 10; i++) {
+        const left = 203 - i * 1.6;
+        const width = 2 + i * 3.2;
+        rect(l, left, 59 + i, width, 1, ROOF);
+        rect(l, left, 59 + i, Math.max(1, width * 0.3), 1, ROOF_LIT);
+        rect(l, left + width * 0.75, 59 + i, width * 0.25 + 1, 1, ROOF_DARK);
+      }
+      flags.push({ x: 203, y: 51 });
+      roundTower(l, 172, 78, 8, ground, true, flags, lights);
+      wall(l, 152, 98, 116, ground);
+      crenels(l, 152, 98, 116);
+      for (const bx of [170, 188, 240, 256]) {
+        rect(l, bx, 104, 2, ground(bx) - 104, STONE_LIT);
+        rect(l, bx + 2, 104, 1, ground(bx) - 104, STONE_DARK);
+      }
+      for (const wx of [162, 180, 196, 246, 262]) slit(l, wx, 104, lights);
+      roundTower(l, 146, 86, 11, ground, true, flags, lights);
+      roundTower(l, 262, 84, 11, ground, false, flags, lights);
+      wall(l, 208, 92, 22, ground);
+      crenels(l, 208, 92, 22);
+      roundTower(l, 204, 88, 6, ground, false, flags, lights);
+      roundTower(l, 228, 88, 6, ground, false, flags, lights);
+      arch(l, 214, 103, 10, 13, "#241a2c");
+      const torches = [[211, 106], [226, 106]];
+      for (let i = 0; i < 40; i++) {
+        const x = 150 + Math.floor(r() * 146);
+        const y = ground(x) - Math.floor(r() * 7);
+        px(l, x, y, r() < 0.5 ? "#4a7a44" : "#3f6a3c");
+      }
+      const hillY = (x) => Math.round(152 + Math.sin(x * 0.021 + 1) * 5 + Math.sin(x * 0.07) * 2 - Math.max(0, x - 120) * 0.035);
+      for (let x = 118; x < W; x++) {
+        const y = hillY(x);
+        rect(l, x, y, 1, H - y, "#3f6f3a");
+        px(l, x, y, "#5f9a4c");
+      }
+      for (let x = 262; x < 292; x++) rect(l, x, 140 - Math.round((x - 262) * 0.05), 1, 3, x % 4 === 0 ? STONE_DARK : "#8e8ba0");
+      arch(l, 270, 143, 6, 7, "#2a2438");
+      arch(l, 280, 143, 6, 7, "#2a2438");
+      for (let i = 0; i < ROAD.length - 1; i++) {
+        const [x0, y0, w0] = ROAD[i];
+        const [x1, y1, w1] = ROAD[i + 1];
+        const steps = Math.ceil(Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0)));
+        for (let s = 0; s <= steps; s++) {
+          const k = s / steps;
+          const x = x0 + (x1 - x0) * k;
+          const y = y0 + (y1 - y0) * k;
+          const w = Math.round(w0 + (w1 - w0) * k);
+          rect(l, x, y, 2, w, "#b8a684");
+          px(l, x, y, "#d4c49c");
         }
       }
-      rect(l, 0, H - 5, W, 5, "#120d1f");
-      const sr = rng(3);
-      const stars = Array.from({ length: 22 }, () => ({ x: Math.floor(sr() * W), y: Math.floor(sr() * 50), p: sr() * 10 }));
-      const bats = Array.from({ length: 5 }, (_, i) => ({ cx: 205 + (sr() - 0.5) * 60, cy: 70 + sr() * 20, rx: 30 + sr() * 30, p: i * 1.3 }));
+      for (let i = 0; i < 26; i++) {
+        const x = 130 + Math.floor(r() * 186);
+        const top = ground(x);
+        const base = top + 8 + Math.floor(r() * 22);
+        if (base > hillY(x) - 1 || x > 200 && x < 236) continue;
+        pine2(l, x, base, 6 + Math.floor(r() * 5), PINE, "#4a8a52");
+      }
+      cottage(l, 121, 150, 8, lights);
+      cottage(l, 134, 152, 7, lights);
+      cottage(l, 108, 149, 6, lights);
+      rect(l, 96, 148, 26, H - 148, "#3f6f3a");
+      for (let x = 96; x < 122; x++) px(l, x, 148 + Math.round(Math.sin(x * 0.4)), "#5f9a4c");
+      env.grade(land.canvas);
+      const scene = layer();
+      scene.ctx.drawImage(sky.canvas, 0, 0);
+      scene.ctx.drawImage(far.canvas, 0, 0);
+      scene.ctx.drawImage(land.canvas, 0, 0);
+      const lake = layer();
+      for (let y = SHORE; y < H; y++) {
+        const src = Math.max(0, SHORE - (y - SHORE) * 2 - 1);
+        const shift = Math.round(Math.sin(y * 1.7) * 1.2);
+        lake.ctx.drawImage(scene.canvas, 0, src, W, 1, shift, y, W, 1);
+      }
+      lake.ctx.fillStyle = `${env.c("#1c4a70").replace("rgb", "rgba").replace(")", ", 0.5)")}`;
+      lake.ctx.fillRect(0, SHORE, W, H - SHORE);
+      rect(lake.ctx, 0, SHORE, W, 1, env.c("#3a6a90"));
+      const near = layer();
+      const n = near.ctx;
+      const bankY = (x) => Math.round(172 - Math.sin(x * 0.012 + 0.4) * 5 - Math.max(0, x - 150) * 0.1 + Math.sin(x * 0.09) * 1.5);
+      for (let x = 0; x < W; x++) rect(n, x, bankY(x), 1, H, "#1f3f2a");
+      for (let i = 0; i < 9; i++) {
+        const x = i < 4 ? 4 + r() * 50 : W - 4 - r() * 70;
+        pine2(n, Math.round(x), bankY(Math.round(x)) + 1, 20 + Math.floor(r() * 26), "#1c3a26", "#2f5a3a");
+      }
+      for (let x = 0; x < W; x += 2) if (r() < 0.5) rect(n, x, bankY(x) - 1 - Math.floor(r() * 2), 1, 2, "#1f3f2a");
+      env.grade(near.canvas);
+      const bats = Array.from({ length: 5 }, (_, i) => ({ cx: 215 + (r() - 0.5) * 60, cy: 52 + r() * 18, rx: 30 + r() * 30, p: i * 1.3 }));
+      const swallows = Array.from({ length: 4 }, (_, i) => ({ cx: 215 + (r() - 0.5) * 60, cy: 40 + r() * 16, rx: 40 + r() * 30, p: i * 1.9 }));
+      const glints = Array.from({ length: 30 }, () => ({ x: r(), y: SHORE + 2 + Math.floor(r() * 24), p: r() * 6, len: 2 + Math.floor(r() * 5) }));
+      const dusk = env.id === "sunset" || env.id === "night";
+      const daytime = env.id === "sunny" || env.id === "cloudy";
+      const glintColors = env.sun.kind === "moon" ? ["#c8d4ff", "#8a9ad0"] : ["#ffd9a0", "#e8895b"];
+      const smoke = env.c("#a8a0b8");
+      const critter = env.c("#1a1626");
       return {
         draw(ctx, t) {
-          ctx.drawImage(sky.canvas, 0, 0);
-          for (const s of stars) if (Math.sin(t + s.p) > 0) px(ctx, s.x, s.y, "#f0d8f0");
-          const cx = Math.round(wrap(t * 3, W));
-          ctx.drawImage(clouds.canvas, -cx, 0);
-          ctx.drawImage(clouds.canvas, W * 2 - cx, 0);
+          sky.draw(ctx, t);
+          ctx.drawImage(far.canvas, 0, 0);
+          ctx.drawImage(lake.canvas, 0, 0);
+          if (sun.kind) {
+            for (const g of glints) {
+              if (Math.sin(t * 1.4 + g.p) < 0.1) continue;
+              const spread = 6 + (g.y - SHORE) * 1.1;
+              const x = sun.x + (g.x - 0.5) * spread * 2 + Math.sin(t * 0.5 + g.p) * 2;
+              rect(ctx, x, g.y, g.len, 1, g.y < SHORE + 10 ? glintColors[0] : glintColors[1]);
+            }
+          }
           ctx.drawImage(land.canvas, 0, 0);
+          if (env.lit > 0.05) {
+            ctx.globalAlpha = env.lit;
+            ctx.fillStyle = WARM;
+            for (const w of lights) ctx.fillRect(w.x, w.y, w.w, w.h);
+            arch(ctx, 215, 105, 8, 11, "#e0904a");
+            ctx.globalAlpha = 1;
+            ctx.fillStyle = "#2a1c2c";
+            for (let gx = 216; gx < 223; gx += 2) ctx.fillRect(gx, 105, 1, 11);
+            ctx.fillRect(215, 109, 8, 1);
+            ctx.globalAlpha = env.lit;
+            for (const [tx, ty] of torches) {
+              const flick = Math.sin(t * 11 + tx) > 0;
+              px(ctx, tx, ty, flick ? "#ffe9a0" : "#ffb84a");
+              px(ctx, tx, ty - 1, flick ? "#ffb84a" : "#e8703a");
+            }
+            ctx.globalAlpha = 1;
+            glow(ctx, 219, 117, 7, "#c9784a", 0.45 * env.lit);
+          }
           for (const f of flags) {
             rect(ctx, f.x, f.y, 1, 7, "#2a2030");
-            for (let c = 0; c < 7; c++) {
-              const dy = Math.round(Math.sin(t * 6 - c * 0.9) * 0.9);
+            const flap = 6 * (0.5 + env.wind * 0.6);
+            for (let c = 0; c < 6; c++) {
+              const dy = Math.round(Math.sin(t * flap - c * 0.9) * (0.7 + env.wind * 0.5));
               rect(ctx, f.x + 1 + c, f.y + dy, 1, 3, c % 2 ? "#ec4a5c" : "#d93a4e");
             }
           }
-          for (const b of bats) {
-            const x = Math.round(b.cx + Math.cos(t * 0.5 + b.p) * b.rx);
-            const y = Math.round(b.cy + Math.sin(t * 0.9 + b.p) * 10);
-            const up = Math.floor(t * 8 + b.p) % 2 === 0;
-            rect(ctx, x, y, 2, 1, "#140f22");
-            px(ctx, x - 1, y + (up ? -1 : 0), "#140f22");
-            px(ctx, x + 2, y + (up ? -1 : 0), "#140f22");
-            px(ctx, x - 2, y + (up ? -2 : 1), "#140f22");
-            px(ctx, x + 3, y + (up ? -2 : 1), "#140f22");
+          ctx.fillStyle = smoke;
+          for (let k = 0; k < 5; k++) {
+            const age = wrap(t * 0.35 + k / 5, 1);
+            ctx.fillRect(Math.round(124 + Math.sin(age * 6 + k) * 2 + age * (5 + env.wind * 6)), Math.round(141 - age * 14), 1, 1);
           }
+          if (dusk && env.rain === 0) {
+            ctx.fillStyle = critter;
+            for (const b of bats) {
+              const x = Math.round(b.cx + Math.cos(t * 0.5 + b.p) * b.rx);
+              const y = Math.round(b.cy + Math.sin(t * 0.9 + b.p) * 10);
+              const up = Math.floor(t * 8 + b.p) % 2 === 0;
+              ctx.fillRect(x, y, 2, 1);
+              ctx.fillRect(x - 1, y + (up ? -1 : 0), 1, 1);
+              ctx.fillRect(x + 2, y + (up ? -1 : 0), 1, 1);
+              ctx.fillRect(x - 2, y + (up ? -2 : 1), 1, 1);
+              ctx.fillRect(x + 3, y + (up ? -2 : 1), 1, 1);
+            }
+          }
+          if (daytime) {
+            ctx.fillStyle = critter;
+            for (const b of swallows) {
+              const x = Math.round(b.cx + Math.cos(t * 0.4 + b.p) * b.rx);
+              const y = Math.round(b.cy + Math.sin(t * 0.7 + b.p) * 8);
+              const up = Math.floor(t * 5 + b.p) % 2 === 0 ? -1 : 1;
+              ctx.fillRect(x, y, 1, 1);
+              for (const dx of [-2, -1, 1, 2]) ctx.fillRect(x + dx, y + up, 1, 1);
+            }
+          }
+          ctx.drawImage(near.canvas, 0, 0);
         }
       };
     }
@@ -1176,20 +2909,27 @@
   var ocean_default = {
     id: "ocean",
     name: "Open Sea",
-    create() {
-      const sky = layer();
-      ditherGradient(sky.ctx, 0, 0, W, HORIZON2, ["#2b69be", "#4585d4", "#65a2e2", "#8cc0ee", "#bddff7", "#e6f4fc"]);
-      glow(sky.ctx, 250, 32, 26, "#fff4c4", 0.6);
-      disc(sky.ctx, 250, 32, 11, "#fffbe6");
-      const clouds = layer(W * 2, HORIZON2);
-      const cr = rng(61);
-      for (let i = 0; i < 8; i++) cloud(clouds.ctx, cr() * W * 2, 20 + cr() * 60, 5 + cr() * 7, "#ffffff", "#c8dff2", 500 + i);
+    signature: "sunny",
+    horizon: HORIZON2,
+    celestial: { sunX: 250, sunHighY: 30, sunLowY: 98, moonX: 250, moonY: 32 },
+    fog: [HORIZON2 - 14, HORIZON2 + 40],
+    rainBand: [HORIZON2 + 6, H - 6],
+    sounds: { always: { surf: 0.7 }, day: { gulls: 0.7 }, night: {} },
+    create(env) {
+      const sky = env.makeSky();
       const sea = layer();
       ditherGradient(sea.ctx, 0, HORIZON2, W, H - HORIZON2, ["#56afe0", "#3690c8", "#2676b0", "#1c5e96", "#154c7e"]);
       rect(sea.ctx, 0, HORIZON2, W, 1, "#8fcaec");
       for (let i = 0; i < 26; i++) {
         const h = Math.round(Math.sin(i / 26 * Math.PI) * 5);
         rect(sea.ctx, 60 + i, HORIZON2 - h, 1, h, "#5a86a8");
+      }
+      env.grade(sea.canvas);
+      const shine = layer();
+      const shineColor = { sunset: ["#ff9a50", 0.5], night: ["#8ab0ff", 0.3], sunny: ["#ffffff", 0.22] }[env.id];
+      if (env.sun.kind && shineColor) {
+        glow(shine.ctx, env.sun.x, HORIZON2 + 4, 46, shineColor[0], shineColor[1]);
+        shine.ctx.clearRect(0, 0, W, HORIZON2 + 1);
       }
       const isle = layer();
       const s = isle.ctx;
@@ -1222,7 +2962,9 @@
       frond(1, 10, 0.18, "#3a9a40");
       frond(-1, 9, 0.2, "#3a9a40");
       disc(s, topX, topY + 2, 2, "#6b4424");
+      env.grade(isle.canvas);
       const r = rng(19);
+      const choppy = 0.6 + env.wind * 1.1;
       const waves = [];
       for (let i = 0; i < 90; i++) {
         const depth = r();
@@ -1232,62 +2974,448 @@
           len: 2 + Math.round(depth * 8),
           speed: (4 + depth * 10) * (r() < 0.5 ? 1 : -1),
           p: r() * 6,
-          color: depth < 0.4 ? "#a8dcf6" : "#7fc2ea"
+          near: depth < 0.4
         });
       }
+      const caps = Array.from({ length: 60 }, () => ({
+        x: r() * W,
+        y: HORIZON2 + 6 + Math.round(r() * r() * (H - HORIZON2 - 10)),
+        p: r() * 6,
+        len: 2 + Math.floor(r() * 4)
+      }));
       const gulls = Array.from({ length: 3 }, (_, i) => ({ x: r() * W, y: 40 + r() * 30, speed: 7 + r() * 5, p: i }));
+      const waveNear = env.c("#a8dcf6");
+      const waveFar = env.c("#7fc2ea");
+      const white = env.c("#ffffff");
+      const hull = env.c("#7a3a28");
+      const hullDark = env.c("#5a2a1c");
+      const mast = env.c("#3a2a20");
+      const sailA = env.c("#f4f1e8");
+      const sailB = env.c("#dcd6c8");
+      const wake = env.rgba("#ffffff", 0.35);
+      const gull = env.c("#f4f6fa");
+      const gullTip = env.c("#aab4c4");
+      const glitterMain = env.sun.kind === "moon" ? "#dfe8ff" : env.id === "sunset" ? "#ffe0a8" : "#ffffff";
+      const glitter = env.rgba(glitterMain, env.sun.kind === "moon" ? 0.7 : 1);
+      const showGulls = !env.night && !env.storm;
+      const pitch = 1 + env.wind * 2;
       return {
         draw(ctx, t) {
-          ctx.drawImage(sky.canvas, 0, 0);
-          const cx = Math.round(wrap(t * 2.5, W));
-          ctx.drawImage(clouds.canvas, -cx, 0);
-          ctx.drawImage(clouds.canvas, W * 2 - cx, 0);
+          sky.draw(ctx, t);
           ctx.drawImage(sea.canvas, 0, 0);
+          ctx.drawImage(shine.canvas, 0, 0);
           for (const w of waves) {
-            const x = wrap(w.x + t * w.speed, W + 20) - 10;
+            const x = wrap(w.x + t * w.speed * choppy, W + 20) - 10;
             if (Math.sin(t * 1.2 + w.p) < -0.6) continue;
-            rect(ctx, x, w.y, w.len, 1, w.color);
+            ctx.fillStyle = w.near ? waveNear : waveFar;
+            ctx.fillRect(Math.round(x), w.y, w.len, 1);
           }
-          const gr = rng(Math.floor(t * 8));
-          for (let i = 0; i < 14; i++) {
-            const y = HORIZON2 + 2 + Math.floor(gr() * 50);
-            const spread = 4 + (y - HORIZON2) * 0.4;
-            px(ctx, 250 + Math.round((gr() - 0.5) * spread * 2), y, "#ffffff");
+          if (env.wind >= 0.9) {
+            ctx.fillStyle = white;
+            for (const c of caps) {
+              const x = wrap(c.x + t * 9 * choppy, W + 10) - 5;
+              if (Math.sin(t * 3 + c.p) > 0.2) ctx.fillRect(Math.round(x), c.y, c.len, 1);
+            }
+          }
+          if (env.sun.kind) {
+            const gr = rng(Math.floor(t * 8));
+            ctx.fillStyle = glitter;
+            for (let i = 0; i < 14; i++) {
+              const y = HORIZON2 + 2 + Math.floor(gr() * 50);
+              const spread = 4 + (y - HORIZON2) * 0.4;
+              ctx.fillRect(env.sun.x + Math.round((gr() - 0.5) * spread * 2), y, 1, 1);
+            }
           }
           const bx = Math.round(wrap(t * 4 + 40, W + 60) - 30);
-          const by = Math.round(HORIZON2 + 8 + Math.sin(t * 1.5));
-          rect(ctx, bx, by, 14, 2, "#7a3a28");
-          rect(ctx, bx + 1, by + 2, 12, 1, "#5a2a1c");
-          rect(ctx, bx + 6, by - 13, 1, 13, "#3a2a20");
+          const by = Math.round(HORIZON2 + 8 + Math.sin(t * 1.5) * pitch);
+          rect(ctx, bx, by, 14, 2, hull);
+          rect(ctx, bx + 1, by + 2, 12, 1, hullDark);
+          rect(ctx, bx + 6, by - 13, 1, 13, mast);
           for (let i = 0; i < 11; i++) {
-            rect(ctx, bx + 7, by - 12 + i, Math.round(i * 0.6), 1, "#f4f1e8");
-            rect(ctx, bx + 5 - Math.round(i * 0.35), by - 10 + i, Math.round(i * 0.35), 1, "#dcd6c8");
+            rect(ctx, bx + 7, by - 12 + i, Math.round(i * 0.6), 1, sailA);
+            rect(ctx, bx + 5 - Math.round(i * 0.35), by - 10 + i, Math.round(i * 0.35), 1, sailB);
           }
-          rect(ctx, bx - 2, by + 3, 18, 1, "rgba(255,255,255,0.35)");
-          for (const g of gulls) {
-            const x = wrap(g.x + t * g.speed, W + 20) - 10;
-            const y = Math.round(g.y + Math.sin(t * 0.8 + g.p) * 4);
-            const up = Math.floor(t * 4 + g.p) % 2 === 0;
-            px(ctx, x, y, "#f4f6fa");
-            px(ctx, x - 1, y + (up ? -1 : 0), "#f4f6fa");
-            px(ctx, x + 1, y + (up ? -1 : 0), "#f4f6fa");
-            px(ctx, x - 2, y + (up ? -1 : 1), "#aab4c4");
-            px(ctx, x + 2, y + (up ? -1 : 1), "#aab4c4");
+          ctx.fillStyle = wake;
+          ctx.fillRect(bx - 2, by + 3, 18, 1);
+          if (env.lit > 0.05) {
+            ctx.globalAlpha = env.lit;
+            rect(ctx, bx + 6, by - 15, 2, 2, "#ffd27a");
+            glow(ctx, bx + 7, by - 14, 8, "#ffb84a", 0.6);
+            ctx.globalAlpha = 1;
+          }
+          if (showGulls) {
+            for (const g of gulls) {
+              const x = Math.round(wrap(g.x + t * g.speed, W + 20) - 10);
+              const y = Math.round(g.y + Math.sin(t * 0.8 + g.p) * 4);
+              const up = Math.floor(t * 4 + g.p) % 2 === 0;
+              ctx.fillStyle = gull;
+              ctx.fillRect(x, y, 1, 1);
+              ctx.fillRect(x - 1, y + (up ? -1 : 0), 1, 1);
+              ctx.fillRect(x + 1, y + (up ? -1 : 0), 1, 1);
+              ctx.fillStyle = gullTip;
+              ctx.fillRect(x - 2, y + (up ? -1 : 1), 1, 1);
+              ctx.fillRect(x + 2, y + (up ? -1 : 1), 1, 1);
+            }
           }
           ctx.drawImage(isle.canvas, 0, 0);
+          ctx.fillStyle = white;
           for (let x = -10; x < 90; x += 3) {
             const d = (x - 35) / 50;
             const h = Math.max(0, Math.round((1 - d * d) * 16));
-            if (h > 0 && h < 6 && Math.sin(t * 2 + x) > 0) px(ctx, x, H - h - 1, "#ffffff");
+            if (h > 0 && h < 6 && Math.sin(t * 2 * choppy + x) > 0) ctx.fillRect(x, H - h - 1, 1, 1);
           }
         }
       };
     }
   };
 
+  // js/scenes/neon-demo.js
+  var COLS2 = 10;
+  var ROWS = 20;
+  var KINDS = ["I", "O", "T", "S", "Z", "J", "L"];
+  var WELL = COLS2 - 1;
+  var STACK_TOP = ROWS - 4;
+  var SHAPES2 = {
+    I: [[1, 1, 1, 1]],
+    O: [[1, 1], [1, 1]],
+    T: [[0, 1, 0], [1, 1, 1]],
+    S: [[0, 1, 1], [1, 1, 0]],
+    Z: [[1, 1, 0], [0, 1, 1]],
+    J: [[1, 0, 0], [1, 1, 1]],
+    L: [[0, 0, 1], [1, 1, 1]]
+  };
+  var rotateCw = (m) => m[0].map((_, i) => m.map((row) => row[i]).reverse());
+  var ROTATIONS = Object.fromEntries(KINDS.map((kind) => {
+    const list = [];
+    let m = SHAPES2[kind];
+    for (let i = 0; i < 4; i++) {
+      const cells = [];
+      m.forEach((row, dy) => row.forEach((v, dx) => {
+        if (v) cells.push([dx, dy]);
+      }));
+      list.push({ cells, w: m[0].length, h: m.length });
+      m = rotateCw(m);
+    }
+    return [kind, list];
+  }));
+  var ORIENTS = Object.fromEntries(KINDS.map((kind) => {
+    const seen = /* @__PURE__ */ new Set();
+    const list = [];
+    ROTATIONS[kind].forEach((o, rot) => {
+      const key = o.cells.join(";");
+      if (!seen.has(key)) {
+        seen.add(key);
+        list.push({ ...o, rot });
+      }
+    });
+    return [kind, list];
+  }));
+  var flatBottom = (o) => Array.from({ length: o.w }, (_, dx) => o.cells.some(([x, y]) => x === dx && y === o.h - 1)).every(Boolean);
+  var TOPPERS = KINDS.flatMap((kind) => ORIENTS[kind].filter((o) => o.h <= 2 && flatBottom(o)).map((o) => ({ kind, o })));
+  var at = (x, y) => y * COLS2 + x;
+  function fits(board, cells, x, y) {
+    return cells.every(([dx, dy]) => {
+      const cx = x + dx, cy = y + dy;
+      return cx >= 0 && cx < COLS2 && cy < ROWS && (cy < 0 || board[at(cx, cy)] === 0);
+    });
+  }
+  function landing(board, cells, x) {
+    if (!fits(board, cells, x, 0)) return -1;
+    let y = 0;
+    while (fits(board, cells, x, y + 1)) y++;
+    return y;
+  }
+  function paint(board, move) {
+    const v = KINDS.indexOf(move.kind) + 1;
+    for (const [dx, dy] of move.o.cells) board[at(move.x + dx, move.y + dy)] = v;
+  }
+  function shuffle2(list, r) {
+    for (let i = list.length - 1; i > 0; i--) {
+      const j = Math.floor(r() * (i + 1));
+      [list[i], list[j]] = [list[j], list[i]];
+    }
+    return list;
+  }
+  function tile(board, r) {
+    const cover = new Int8Array(COLS2 * ROWS).fill(-1);
+    const pieces = [];
+    let nodes = 0;
+    const options = KINDS.flatMap((kind) => ORIENTS[kind].map((o) => ({ kind, o })));
+    const firstEmpty = () => {
+      for (let y = STACK_TOP; y < ROWS; y++) for (let x = 0; x < WELL; x++) if (board[at(x, y)] === 0 && cover[at(x, y)] < 0) return [x, y];
+      return null;
+    };
+    const solve = () => {
+      const spot = firstEmpty();
+      if (!spot) return true;
+      if (++nodes > 4e3) return false;
+      const [x, y] = spot;
+      for (const { kind, o } of shuffle2(options.slice(), r)) {
+        const ox = x - o.cells[0][0], oy = y - o.cells[0][1];
+        const ok = o.cells.every(([dx, dy]) => {
+          const cx = ox + dx, cy = oy + dy;
+          return cx >= 0 && cx < WELL && cy >= STACK_TOP && cy < ROWS && board[at(cx, cy)] === 0 && cover[at(cx, cy)] < 0;
+        });
+        if (!ok) continue;
+        for (const [dx, dy] of o.cells) cover[at(ox + dx, oy + dy)] = pieces.length;
+        pieces.push({ kind, o, x: ox, y: oy });
+        if (solve()) return true;
+        pieces.pop();
+        for (const [dx, dy] of o.cells) cover[at(ox + dx, oy + dy)] = -1;
+      }
+      return false;
+    };
+    return solve() ? pieces : null;
+  }
+  function dropOrder(board, pieces, r) {
+    const filled = board.slice();
+    const left = pieces.slice();
+    const order = [];
+    const supported = (p) => p.o.cells.every(([dx, dy]) => {
+      const cx = p.x + dx, cy = p.y + dy + 1;
+      return cy >= ROWS || p.o.cells.some(([ex, ey]) => ex === dx && ey === dy + 1) || filled[at(cx, cy)] !== 0;
+    });
+    while (left.length) {
+      const ready = left.filter(supported);
+      if (!ready.length) return null;
+      const p = ready[Math.floor(r() * ready.length)];
+      paint(filled, p);
+      order.push(p);
+      left.splice(left.indexOf(p), 1);
+    }
+    return order;
+  }
+  function planStack(board, r) {
+    for (let attempt = 0; attempt < 60; attempt++) {
+      const pieces = tile(board, r);
+      const order = pieces && dropOrder(board, pieces, r);
+      if (order) return order;
+    }
+    return null;
+  }
+  function chooseToppers(block, r) {
+    const board = block.slice();
+    const moves = [];
+    const count = r() < 0.5 ? 2 : 1;
+    for (let k = 0; k < count; k++) {
+      for (let tries = 0; tries < 30; tries++) {
+        const { kind, o } = TOPPERS[Math.floor(r() * TOPPERS.length)];
+        const x = Math.floor(r() * (COLS2 - o.w));
+        const y = landing(board, o.cells, x);
+        if (y < 0 || y > STACK_TOP - 1) continue;
+        const holeFree = o.cells.every(([dx, dy]) => dy < o.h - 1 || y + dy + 1 >= ROWS || board[at(x + dx, y + dy + 1)] !== 0);
+        if (!holeFree) continue;
+        const move = { kind, o, x, y };
+        paint(board, move);
+        moves.push(move);
+        break;
+      }
+    }
+    return moves;
+  }
+  function afterClear(board) {
+    const next = new Uint8Array(COLS2 * ROWS);
+    for (let y = 0; y < STACK_TOP; y++) for (let x = 0; x < COLS2; x++) next[at(x, y + 4)] = board[at(x, y)];
+    return next;
+  }
+  function planCycles(r, count) {
+    const cycles = [];
+    let left = new Uint8Array(COLS2 * ROWS);
+    let stack = planStack(left, r);
+    for (let c = 0; c < count; c++) {
+      const last = c === count - 1;
+      const block = left.slice();
+      for (const m of stack) paint(block, m);
+      let toppers = [];
+      let nextLeft = new Uint8Array(COLS2 * ROWS);
+      let nextStack = null;
+      for (let attempt = 0; attempt < 120 && !last; attempt++) {
+        toppers = chooseToppers(block, r);
+        const after = block.slice();
+        for (const m of toppers) paint(after, m);
+        nextLeft = afterClear(after);
+        nextStack = planStack(nextLeft, r);
+        if (nextStack) break;
+      }
+      if (!last && !nextStack) throw new Error("neon demo: no plan for the next cycle");
+      const well = { kind: "I", o: ORIENTS.I.find((o) => o.h === 4), x: WELL, y: STACK_TOP };
+      cycles.push({ left, stack, toppers, well, nextLeft });
+      left = nextLeft;
+      stack = nextStack;
+    }
+    return cycles;
+  }
+  function shapeOf(kind) {
+    return ROTATIONS[kind][0];
+  }
+  var easeIn = (u) => u * u;
+  var clamp01 = (u) => Math.max(0, Math.min(1, u));
+  function createDemo(seed = 9, cycleCount = 6) {
+    const r = rng(seed);
+    const cycles = planCycles(r, cycleCount);
+    const moves = [];
+    const events = [];
+    const bursts = [];
+    let cursor = 0;
+    cycles.forEach((cycle, ci) => {
+      const board = cycle.left.slice();
+      const list = [
+        ...cycle.stack.map((m) => ({ ...m, role: "stack" })),
+        ...cycle.toppers.map((m) => ({ ...m, role: "topper" })),
+        { ...cycle.well, role: "well" }
+      ];
+      for (const m of list) {
+        const spawnX = Math.floor((COLS2 - ROTATIONS[m.kind][0].w) / 2);
+        const steps = m.o.rot === 3 ? [3] : Array.from({ length: m.o.rot }, (_, i) => i + 1);
+        const t0 = cursor;
+        let t = t0 + 0.16 + r() * 0.08;
+        const rotTimes = steps.map(() => {
+          const at0 = t;
+          t += 0.11;
+          return at0;
+        });
+        const slideAt = t;
+        const cols = Math.abs(m.x - spawnX);
+        t += cols * 0.05 + 0.05;
+        const dropAt = t;
+        t += Math.max(0.1, m.y / 55);
+        const move = {
+          ...m,
+          cycle: ci,
+          before: board.slice(),
+          spawnX,
+          steps,
+          rotTimes,
+          slideAt,
+          cols,
+          dropAt,
+          lockAt: t,
+          spawnAt: t0
+        };
+        moves.push(move);
+        rotTimes.forEach((rt) => events.push({ t: rt, kind: "rotate" }));
+        if (cols > 0) events.push({ t: slideAt, kind: "move" });
+        events.push({ t: dropAt, kind: "drop" }, { t, kind: "lock" });
+        paint(board, m);
+        cursor = t + 0.14 + r() * 0.2;
+        if (m.role === "well") {
+          move.clear = { flashEnd: t + 0.6, burstAt: t + 0.6, collapseStart: t + 0.62, collapseEnd: t + 0.95, settled: cycle.toppers.length > 0 };
+          move.after = board.slice();
+          events.push({ t, kind: "tetris" });
+          bursts.push(t + 0.6);
+          if (move.clear.settled) events.push({ t: t + 0.95, kind: "land" });
+          cursor = t + (ci === cycles.length - 1 ? 1.6 : 1.4);
+        }
+      }
+    });
+    const period = cursor;
+    events.sort((a, b) => a.t - b.t);
+    const scores = [0];
+    const scoreAfter = (n) => {
+      while (scores.length <= n) {
+        const i = scores.length - 1;
+        scores.push(scores[i] + 800 * (1 + Math.floor(i * 4 / 10)));
+      }
+      return scores[n];
+    };
+    const sparkSeed = rng(seed * 31 + 7);
+    const sparkVel = Array.from({ length: COLS2 * ROWS * 2 }, () => [(sparkSeed() - 0.5) * 30, -6 - sparkSeed() * 22]);
+    function frame(t) {
+      const loops = Math.floor(t / period);
+      const tt = t - loops * period;
+      let idx = 0;
+      for (let lo = 0, hi = moves.length - 1; lo <= hi; ) {
+        const mid = lo + hi >> 1;
+        if (moves[mid].spawnAt <= tt) {
+          idx = mid;
+          lo = mid + 1;
+        } else hi = mid - 1;
+      }
+      const m = moves[idx];
+      const out = { cells: [], piece: null, ghost: null, sparks: [], title: 0, next: 0, lines: 0, level: 1, score: 0 };
+      const addBoard = (board, from, to, dy = 0, flash = false) => {
+        for (let y = from; y < to; y++) for (let x = 0; x < COLS2; x++) {
+          const v = board[at(x, y)];
+          if (v) out.cells.push({ x, y: y + dy, k: v - 1, flash });
+        }
+      };
+      out.next = KINDS.indexOf(moves[(idx + 1) % moves.length].kind);
+      if (tt < m.lockAt) {
+        addBoard(m.before, 0, ROWS);
+        const k = KINDS.indexOf(m.kind);
+        let rot = 0;
+        m.rotTimes.forEach((rt, i) => {
+          if (tt >= rt) rot = m.steps[i];
+        });
+        const shape = ROTATIONS[m.kind][rot].cells;
+        let px2 = m.spawnX;
+        let py = 0;
+        if (tt >= m.slideAt) {
+          const moved = Math.min(m.cols, Math.floor((tt - m.slideAt) / 0.05) + 1);
+          px2 = m.spawnX + Math.sign(m.x - m.spawnX) * moved;
+        }
+        if (tt >= m.dropAt) py = m.y * easeIn(clamp01((tt - m.dropAt) / (m.lockAt - m.dropAt)));
+        if (tt >= m.dropAt) px2 = m.x;
+        out.piece = { k, cells: shape.map(([dx, dy]) => [px2 + dx, py + dy]) };
+        if (tt >= m.slideAt + Math.max(0, m.cols * 0.05) - 0.01) {
+          out.ghost = m.o.cells.map(([dx, dy]) => [m.x + dx, m.y + dy]);
+        }
+      } else if (!m.clear) {
+        addBoard(m.before, 0, ROWS);
+        const lockedFor = tt - m.lockAt;
+        for (const [dx, dy] of m.o.cells) out.cells.push({ x: m.x + dx, y: m.y + dy, k: KINDS.indexOf(m.kind), flash: lockedFor < 0.06 });
+      } else {
+        const c = m.clear;
+        const since = tt - m.lockAt;
+        if (tt < c.flashEnd) {
+          const flash = Math.floor(since / 0.05) % 2 === 0;
+          addBoard(m.after, 0, STACK_TOP);
+          addBoard(m.after, STACK_TOP, ROWS, 0, flash);
+        } else {
+          const u = clamp01((tt - c.collapseStart) / (c.collapseEnd - c.collapseStart));
+          addBoard(m.after, 0, STACK_TOP, 4 * easeIn(u));
+          const age = tt - c.burstAt;
+          if (age < 0.9) {
+            for (let y = STACK_TOP; y < ROWS; y++) for (let x = 0; x < COLS2; x++) {
+              const v = m.after[at(x, y)];
+              if (!v) continue;
+              for (let s = 0; s < 2; s++) {
+                const [vx, vy] = sparkVel[at(x, y) * 2 + s];
+                out.sparks.push({ x: x + 0.5 + vx * age / 7, y: y + 0.5 + (vy * age + 38 * age * age) / 7, k: v - 1, a: 1 - age / 0.9 });
+              }
+            }
+          }
+        }
+        if (since < 1.5) out.title = Math.min(1, since / 0.12) * (since > 1.1 ? (1.5 - since) / 0.4 : 1);
+      }
+      const done = bursts.filter((b) => b <= tt).length;
+      const tetrises = loops * cycles.length + done;
+      out.lines = tetrises * 4;
+      out.level = 1 + Math.floor(out.lines / 10);
+      out.score = scoreAfter(tetrises);
+      return out;
+    }
+    return {
+      period,
+      cycles,
+      moves,
+      frame,
+      events(t0, t1) {
+        const found = [];
+        for (let p = Math.floor(t0 / period); p <= Math.floor(t1 / period); p++) {
+          for (const e of events) {
+            const at0 = p * period + e.t;
+            if (at0 > t0 && at0 <= t1) found.push({ t: at0, kind: e.kind });
+          }
+        }
+        return found;
+      }
+    };
+  }
+
   // js/scenes/neon.js
   var HORIZON3 = 118;
-  var SHAPES2 = [
+  var SHAPES3 = [
     [[1, 1, 1, 1]],
     [[1, 0, 0], [1, 1, 1]],
     [[0, 0, 1], [1, 1, 1]],
@@ -1297,6 +3425,120 @@
     [[1, 1, 0], [0, 1, 1]]
   ];
   var COLORS = ["#3ff5d0", "#ff4fb4", "#ffd84a", "#7a6bff", "#9bff5a", "#ff7a3a"];
+  var KIND_COLORS = ["#3ff5d0", "#ffd84a", "#b06bff", "#9bff5a", "#ff4f7a", "#4f8bff", "#ff9a3a"];
+  var CELL = 7;
+  var BOARD = { x: 232, y: 30 };
+  var PANEL = { x: 187, y: 30, w: 39 };
+  var GLYPHS = {
+    0: "111101101101111",
+    1: "010110010010111",
+    2: "111001111100111",
+    3: "111001111001111",
+    4: "101101111001001",
+    5: "111100111001111",
+    6: "111100111101111",
+    7: "111001001001001",
+    8: "111101111101111",
+    9: "111101111001111",
+    T: "111010010010010",
+    E: "111100111100111",
+    R: "111101111110101",
+    I: "111010010010111",
+    S: "111100111001111",
+    L: "100100100100111",
+    N: "111101101101101",
+    V: "101101101101010",
+    C: "111100100100111",
+    O: "111101101101111",
+    X: "101101010101101",
+    D: "110101101101110"
+  };
+  function text(ctx, str, x, y, color, scale = 1) {
+    ctx.fillStyle = color;
+    let cx = x;
+    for (const ch of String(str)) {
+      const g = GLYPHS[ch];
+      if (g) {
+        for (let i = 0; i < 15; i++) if (g[i] === "1") ctx.fillRect(cx + i % 3 * scale, y + Math.floor(i / 3) * scale, scale, scale);
+      }
+      cx += 4 * scale;
+    }
+  }
+  var textWidth = (str, scale = 1) => String(str).length * 4 * scale - scale;
+  function cellSprite(color, white) {
+    const c = document.createElement("canvas");
+    c.width = c.height = CELL;
+    const g = c.getContext("2d");
+    g.fillStyle = white ? "#ffffff" : color;
+    g.fillRect(0, 0, CELL, CELL);
+    g.fillStyle = white ? "rgba(255,255,255,0.78)" : "rgba(8,2,20,0.66)";
+    g.fillRect(1, 1, CELL - 2, CELL - 2);
+    g.globalAlpha = white ? 0 : 0.42;
+    g.fillStyle = color;
+    g.fillRect(2, 2, CELL - 4, CELL - 4);
+    g.globalAlpha = 0.75;
+    g.fillStyle = "#ffffff";
+    g.fillRect(1, 1, 1, 1);
+    return c;
+  }
+  var LOOKS = {
+    sunny: {
+      sky: ["#5a6cf0", "#7f84f4", "#b48cf0", "#ee8cd0", "#ffb0b8", "#ffd8a8"],
+      floor: ["#b070e8", "#8a50c8", "#6a38a8"],
+      grid: "#ffffff",
+      horizon: "#ffffff",
+      sun: ["#fff6b0", "#ffb0c8", 20],
+      glow: 0.7
+    },
+    cloudy: {
+      sky: ["#585888", "#68689a", "#7878a8", "#8a8ab4", "#9e9ec0", "#b2b2cc"],
+      floor: ["#6a6a98", "#54547e", "#404068"],
+      grid: "#c8c8f0",
+      horizon: "#e0e0ff",
+      sun: null,
+      glow: 0.6
+    },
+    sunset: {
+      sky: ["#0d0221", "#2a0a4a", "#5a1a7a", "#c02a8a", "#ff5a6a", "#ffb04a"],
+      floor: ["#2a0a3a", "#160520", "#0a0212"],
+      grid: "#ff4fb4",
+      horizon: "#ffb04a",
+      sun: ["#ffe066", "#ff3f8a", 26],
+      glow: 1
+    },
+    rain: {
+      sky: ["#22223c", "#2c2c4a", "#383858", "#444466", "#545476", "#666688"],
+      floor: ["#2a2a48", "#1c1c34", "#101022"],
+      grid: "#7a8ad0",
+      horizon: "#9aaae8",
+      sun: null,
+      glow: 0.85
+    },
+    thunder: {
+      sky: ["#0a0a16", "#12121f", "#1a1a2a", "#242434", "#30303f", "#3e3e50"],
+      floor: ["#16162a", "#0c0c1a", "#06060e"],
+      grid: "#8a7aff",
+      horizon: "#a89aff",
+      sun: null,
+      glow: 1
+    },
+    night: {
+      sky: ["#05030d", "#0b0620", "#170a34", "#2a0d47", "#46125a", "#5e1a6a"],
+      floor: ["#1a0628", "#0c0416", "#06020c"],
+      grid: "#ff4fb4",
+      horizon: "#ff4fb4",
+      sun: ["#ff9ad0", "#c02a8a", 16],
+      glow: 1
+    },
+    nightthunder: {
+      sky: ["#020208", "#05050e", "#0a0a16", "#101020", "#181828", "#222236"],
+      floor: ["#0e0a1e", "#08061a", "#040310"],
+      grid: "#7a5aff",
+      horizon: "#9a7aff",
+      sun: null,
+      glow: 1
+    }
+  };
   function rotate(m) {
     return m[0].map((_, i) => m.map((row) => row[i]).reverse());
   }
@@ -1314,43 +3556,138 @@
     }));
     ctx.globalAlpha = 1;
   }
+  function retroSun(ctx, x, y, r, top, bottom) {
+    const hex = (c) => [parseInt(c.slice(1, 3), 16), parseInt(c.slice(3, 5), 16), parseInt(c.slice(5, 7), 16)];
+    const from = hex(top);
+    const to = hex(bottom);
+    for (let row = 0; row <= r; row++) {
+      const k = row / r;
+      if (k > 0.4 && row % 6 < Math.round((k - 0.3) * 5)) continue;
+      const dy = row - r;
+      const half = Math.floor(Math.sqrt(r * r - dy * dy));
+      const c = from.map((v, i) => Math.round(v + (to[i] - v) * k));
+      ctx.fillStyle = `rgb(${c[0]},${c[1]},${c[2]})`;
+      ctx.fillRect(x - half, y + dy, half * 2 + 1, 1);
+    }
+  }
   var neon_default = {
     id: "neon",
     name: "Neon Fall",
-    create() {
-      const base = layer();
-      ditherGradient(base.ctx, 0, 0, W, HORIZON3, ["#05030d", "#0b0620", "#170a34", "#2a0d47", "#46125a"]);
-      ditherGradient(base.ctx, 0, HORIZON3, W, H - HORIZON3, ["#1a0628", "#0c0416", "#06020c"]);
-      glow(base.ctx, 160, HORIZON3, 60, "#5a1a6a", 0.45);
-      rect(base.ctx, 0, HORIZON3, W, 1, "#ff4fb4");
+    signature: "night",
+    horizon: HORIZON3,
+    celestial: { sunX: 160, sunHighY: 60, sunLowY: 60, moonX: 160, moonY: 60 },
+    fog: [HORIZON3 - 30, HORIZON3 + 40],
+    rainBand: [HORIZON3 + 10, H - 4],
+    sounds: { always: { hum: 0.35, arcade: 1, cabinets: 0.6 }, day: {}, night: {} },
+    create(env) {
+      const look = LOOKS[env.id];
+      const sky = env.makeSky({ palette: look.sky, noSun: true });
+      const sc = sky.canvas.getContext("2d");
+      glow(sc, 160, HORIZON3, 60, look.horizon, 0.3);
+      if (look.sun) retroSun(sc, 160, HORIZON3, look.sun[2], look.sun[0], look.sun[1]);
+      const floor = layer();
+      ditherGradient(floor.ctx, 0, HORIZON3, W, H - HORIZON3, look.floor);
+      rect(floor.ctx, 0, HORIZON3, W, 1, look.horizon);
       const r = rng(71);
-      const pieces = Array.from({ length: 18 }, () => {
-        let shape = SHAPES2[Math.floor(r() * SHAPES2.length)];
+      const pieces = Array.from({ length: 10 }, () => {
+        let shape = SHAPES3[Math.floor(r() * SHAPES3.length)];
         for (let k = Math.floor(r() * 4); k > 0; k--) shape = rotate(shape);
         const cell = r() < 0.35 ? 7 : r() < 0.6 ? 5 : 4;
         return {
           shape,
           cell,
-          x: r() * (W - 30),
+          x: r() * 150,
           y: r() * H,
           speed: 6 + cell * 2.2 + r() * 6,
           color: COLORS[Math.floor(r() * COLORS.length)],
           p: r() * 6
         };
       }).sort((a, b) => a.cell - b.cell);
-      const stars = Array.from({ length: 40 }, () => ({ x: Math.floor(r() * W), y: Math.floor(r() * (HORIZON3 - 10)), p: r() * 6 }));
+      const rush = 1.4 + env.wind * 0.3;
+      const demo = createDemo(9, 6);
+      const sprites2 = KIND_COLORS.map((c) => cellSprite(c, false));
+      const flashSprites = KIND_COLORS.map((c) => cellSprite(c, true));
+      const ink = look.grid === "#ffffff" ? "#e8f4ff" : look.grid;
+      const cellsW = COLS2 * CELL, cellsH = ROWS * CELL;
+      function drawStacker(ctx, t) {
+        const f = demo.frame(t);
+        const { x: bx, y: by } = BOARD;
+        ctx.fillStyle = "rgba(6,2,16,0.5)";
+        ctx.fillRect(PANEL.x, PANEL.y, PANEL.w, 100);
+        text(ctx, "NEXT", PANEL.x + 5, PANEL.y + 4, ink);
+        const shape = shapeOf(KINDS[f.next]);
+        const small = 4;
+        const sx = PANEL.x + Math.round((PANEL.w - shape.w * small) / 2);
+        for (const [dx, dy] of shape.cells) rect(ctx, sx + dx * small, PANEL.y + 13 + dy * small, small - 1, small - 1, KIND_COLORS[f.next]);
+        text(ctx, "LINES", PANEL.x + 5, PANEL.y + 32, ink);
+        text(ctx, String(f.lines % 1e3).padStart(3, "0"), PANEL.x + 5, PANEL.y + 40, "#ffffff");
+        text(ctx, "LEVEL", PANEL.x + 5, PANEL.y + 54, ink);
+        text(ctx, String(f.level % 100).padStart(2, "0"), PANEL.x + 5, PANEL.y + 62, "#ffffff");
+        text(ctx, "SCORE", PANEL.x + 5, PANEL.y + 76, ink);
+        text(ctx, String(f.score % 1e5).padStart(5, "0"), PANEL.x + 5, PANEL.y + 84, "#ffffff");
+        ctx.globalAlpha = 0.18 + 0.05 * Math.sin(t * 2.4);
+        ctx.fillStyle = ink;
+        ctx.fillRect(bx - 3, by - 3, cellsW + 6, cellsH + 6);
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = "rgba(6,2,16,0.72)";
+        ctx.fillRect(bx, by, cellsW, cellsH);
+        ctx.fillStyle = ink;
+        ctx.globalAlpha = 0.07;
+        for (let x = 1; x < COLS2; x++) ctx.fillRect(bx + x * CELL, by, 1, cellsH);
+        for (let y = 1; y < ROWS; y++) ctx.fillRect(bx, by + y * CELL, cellsW, 1);
+        ctx.globalAlpha = 1;
+        ctx.fillRect(bx - 1, by, 1, cellsH + 1);
+        ctx.fillRect(bx + cellsW, by, 1, cellsH + 1);
+        ctx.fillRect(bx - 1, by + cellsH, cellsW + 2, 1);
+        if (f.ghost) {
+          ctx.globalAlpha = 0.4;
+          ctx.fillStyle = ink;
+          for (const [x, y] of f.ghost) {
+            const cx = bx + x * CELL, cy = by + Math.round(y) * CELL;
+            ctx.fillRect(cx, cy, CELL, 1);
+            ctx.fillRect(cx, cy + CELL - 1, CELL, 1);
+            ctx.fillRect(cx, cy, 1, CELL);
+            ctx.fillRect(cx + CELL - 1, cy, 1, CELL);
+          }
+          ctx.globalAlpha = 1;
+        }
+        for (const c of f.cells) {
+          ctx.drawImage((c.flash ? flashSprites : sprites2)[c.k], bx + c.x * CELL, by + Math.round(c.y * CELL));
+        }
+        if (f.piece) {
+          for (const [x, y] of f.piece.cells) ctx.drawImage(sprites2[f.piece.k], bx + x * CELL, by + Math.round(y * CELL));
+        }
+        for (const s of f.sparks) {
+          ctx.globalAlpha = Math.max(0, s.a);
+          rect(ctx, bx + Math.round(s.x * CELL), by + Math.round(s.y * CELL), 2, 2, s.a > 0.6 ? "#ffffff" : KIND_COLORS[s.k]);
+        }
+        ctx.globalAlpha = 1;
+        if (f.title > 0) {
+          const scale = 2;
+          const word = "TETRIS";
+          const tx = bx + Math.round((cellsW - textWidth(word, scale)) / 2);
+          const ty = by + 52 - Math.round((1 - f.title) * 6);
+          ctx.globalAlpha = f.title;
+          ctx.fillStyle = "rgba(6,2,16,0.75)";
+          ctx.fillRect(tx - 4, ty - 4, textWidth(word, scale) + 8, 18);
+          text(ctx, word, tx + 1, ty + 1, "#ff2d8a", scale);
+          text(ctx, word, tx, ty, Math.floor(t * 12) % 2 ? "#ffffff" : "#ffe066", scale);
+          ctx.globalAlpha = 1;
+        }
+      }
+      let lastEventT = null;
       return {
         draw(ctx, t) {
-          ctx.drawImage(base.canvas, 0, 0);
-          for (const s of stars) if (Math.sin(t * 2 + s.p) > 0.3) px(ctx, s.x, s.y, "#b9a8ff");
-          ctx.fillStyle = "rgba(255, 79, 180, 0.55)";
+          sky.draw(ctx, t);
+          ctx.drawImage(floor.canvas, 0, 0);
+          ctx.fillStyle = look.grid;
           for (let i = 0; i < 12; i++) {
-            const z = wrap(i - t * 1.4, 12) / 12;
+            const z = wrap(i - t * rush, 12) / 12;
             const y = HORIZON3 + Math.round(Math.pow(z, 2.2) * (H - HORIZON3));
-            ctx.globalAlpha = 0.25 + z * 0.75;
+            ctx.globalAlpha = (0.25 + z * 0.75) * 0.55;
             ctx.fillRect(0, y, W, 1);
           }
-          ctx.globalAlpha = 0.5;
+          ctx.globalAlpha = 0.28;
           for (let i = -12; i <= 12; i++) {
             const bottomX = 160 + i * 34;
             for (let y = HORIZON3 + 1; y < H; y += 1) {
@@ -1362,34 +3699,39 @@
           for (const p of pieces) {
             const y = wrap(p.y + t * p.speed, H + 50) - 40;
             const x = p.x + Math.sin(t * 0.3 + p.p) * 3;
-            drawPiece(ctx, p.shape, x, y - p.cell * 3, p.cell, p.color, 0.15);
-            drawPiece(ctx, p.shape, x, y - p.cell * 1.5, p.cell, p.color, 0.3);
-            drawPiece(ctx, p.shape, x, y, p.cell, p.color, 1);
+            drawPiece(ctx, p.shape, x, y - p.cell * 3, p.cell, p.color, 0.15 * look.glow);
+            drawPiece(ctx, p.shape, x, y - p.cell * 1.5, p.cell, p.color, 0.3 * look.glow);
+            drawPiece(ctx, p.shape, x, y, p.cell, p.color, Math.min(1, 0.55 + 0.45 * look.glow));
           }
+          drawStacker(ctx, t);
+        },
+        /** Report the stacker's moves since the last call, so the arcade sounds can follow them. */
+        events(t, fire) {
+          if (lastEventT !== null && t > lastEventT && t - lastEventT < 1) for (const e of demo.events(lastEventT, t)) fire(e);
+          lastEventT = t;
         }
       };
     }
   };
 
   // js/scenes/city.js
-  var ROAD = 150;
-  function skyline(ctx, seed, count, minH, maxH, body, windowColors, litChance, winStep) {
+  var ROAD2 = 150;
+  var CAR_COLORS = ["#d94a4a", "#4a7ad9", "#e8c84a", "#f0f0f0", "#3a3a48", "#4ab86a", "#e88a3a"];
+  function skyline(ctx, seed, count, minH, maxH, body, glass, litColors, litChance, winStep) {
     const r = rng(seed);
     const lit = [];
     let x = -4;
     while (x < W) {
       const w = 12 + Math.floor(r() * 22);
       const h = minH + Math.floor(r() * (maxH - minH));
-      const top = ROAD - h;
+      const top = ROAD2 - h;
       rect(ctx, x, top, w, h, body);
+      rect(ctx, x, top, 1, h, glass);
       if (r() < 0.3) rect(ctx, x + Math.floor(w / 2), top - 6, 1, 6, body);
-      for (let wy = top + 3; wy < ROAD - 3; wy += winStep) {
+      for (let wy = top + 3; wy < ROAD2 - 3; wy += winStep) {
         for (let wx = x + 2; wx < x + w - 2; wx += winStep) {
-          if (r() < litChance) {
-            const c = windowColors[Math.floor(r() * windowColors.length)];
-            px(ctx, wx, wy, c);
-            lit.push({ x: wx, y: wy, c, p: r() * 100 });
-          }
+          px(ctx, wx, wy, glass);
+          if (r() < litChance) lit.push({ x: wx, y: wy, c: litColors[Math.floor(r() * litColors.length)], p: r() * 100 });
         }
       }
       x += w + Math.floor(r() * 4);
@@ -1400,30 +3742,35 @@
   var city_default = {
     id: "city",
     name: "Midnight Circuit",
-    create() {
+    signature: "night",
+    horizon: ROAD2,
+    celestial: { sunX: 262, sunHighY: 32, sunLowY: 70, moonX: 262, moonY: 32 },
+    fog: [ROAD2 - 60, ROAD2 + 12],
+    rainBand: [ROAD2 + 3, ROAD2 + 16],
+    sounds: { always: { city: 1, traffic: 1, hum: 0.25 }, day: {}, night: {} },
+    create(env) {
+      const sky = env.makeSky();
       const base = layer();
       const b = base.ctx;
-      ditherGradient(b, 0, 0, W, ROAD, ["#04030c", "#08071e", "#120c32", "#1f1348", "#3a1a5e", "#5a2266"]);
-      glow(b, 262, 32, 24, "#2c2466", 0.8);
-      disc(b, 262, 32, 13, "#ece8ff");
-      disc(b, 266, 29, 11, "#d6d0f4");
-      skyline(b, 3, 40, 40, 90, "#141236", ["#2e2d6a", "#3a3a7a"], 0.25, 3);
-      const midLit = skyline(b, 9, 30, 25, 70, "#1b1744", ["#ffd27a", "#7ad0ff", "#ff9ad0"], 0.18, 4);
+      const farLit = skyline(b, 3, 40, 40, 90, "#7f92b4", "#a9c0dc", ["#5a5aa8", "#6a6ab8"], 0.25, 3);
+      const midLit = skyline(b, 9, 30, 25, 70, "#5f7398", "#8fb0d4", ["#ffd27a", "#7ad0ff", "#ff9ad0"], 0.18, 4);
       const signs = [];
       const nr = rng(15);
       let x = 6;
       while (x < W) {
         const w = 16 + Math.floor(nr() * 20);
         const h = 18 + Math.floor(nr() * 40);
-        rect(b, x, ROAD - h, w, h, "#0b0920");
-        if (nr() < 0.6) signs.push({ x: x + 2 + Math.floor(nr() * (w - 6)), y: ROAD - h + 4, h: 6 + Math.floor(nr() * 10), c: nr() < 0.5 ? "#ff4fa8" : "#4ff0ff", p: nr() * 10 });
+        rect(b, x, ROAD2 - h, w, h, "#3c4866");
+        rect(b, x, ROAD2 - h, 1, h, "#5a6a8a");
+        if (nr() < 0.6) signs.push({ x: x + 2 + Math.floor(nr() * (w - 6)), y: ROAD2 - h + 4, h: 6 + Math.floor(nr() * 10), c: nr() < 0.5 ? "#ff4fa8" : "#4ff0ff", p: nr() * 10 });
         x += w + 6 + Math.floor(nr() * 14);
       }
-      rect(b, 0, ROAD, W, H - ROAD, "#0e0c1c");
-      rect(b, 0, ROAD, W, 2, "#3a3560");
-      rect(b, 0, ROAD + 14, W, 1, "#2a2548");
-      rect(b, 0, H - 8, W, 8, "#08070f");
-      for (let px0 = 10; px0 < W; px0 += 40) rect(b, px0, H - 8, 4, 8, "#1a1830");
+      rect(b, 0, ROAD2, W, H - ROAD2, "#4a4c62");
+      rect(b, 0, ROAD2, W, 2, "#9a9cc0");
+      rect(b, 0, ROAD2 + 14, W, 1, "#6a6c88");
+      rect(b, 0, H - 8, W, 8, "#2a2c3e");
+      for (let px0 = 10; px0 < W; px0 += 40) rect(b, px0, H - 8, 4, 8, "#3a3c52");
+      env.grade(base.canvas);
       const antennas = [];
       const ar = rng(27);
       for (let i = 0; i < 6; i++) antennas.push({ x: Math.floor(ar() * W), y: 60 + Math.floor(ar() * 40), p: ar() * 6 });
@@ -1434,40 +3781,62 @@
           right,
           x: r() * W,
           speed: (90 + r() * 90) * (right ? 1 : -1),
-          y: right ? ROAD + 5 + Math.floor(r() * 3) : ROAD + 10 + Math.floor(r() * 3),
-          len: 6 + Math.floor(r() * 10)
+          y: right ? ROAD2 + 5 + Math.floor(r() * 3) : ROAD2 + 10 + Math.floor(r() * 3),
+          len: 6 + Math.floor(r() * 10),
+          body: env.c(CAR_COLORS[Math.floor(r() * CAR_COLORS.length)])
         };
       });
+      const lane = env.c("#c8cae8");
+      const headlight = env.rgb("#fff6d8");
+      const tailLight = env.rgb("#ff3050");
+      const streak = 0.2 + 0.8 * env.lit;
+      const rush = env.rain > 0 ? 0.8 : 1;
       return {
         draw(ctx, t) {
+          sky.draw(ctx, t);
           ctx.drawImage(base.canvas, 0, 0);
-          for (const w of midLit) {
-            if (Math.sin(t * 0.3 + w.p) > 0.97) px(ctx, w.x, w.y, "#1b1744");
-          }
-          for (const a of antennas) {
-            if (Math.sin(t * 3 + a.p) > 0.3) px(ctx, a.x, a.y, "#ff3b3b");
-          }
-          for (const s of signs) {
-            const on = Math.sin(t * 9 + s.p) > -0.85 || Math.sin(t * 0.7 + s.p) > 0;
-            if (!on) continue;
-            rect(ctx, s.x, s.y, 2, s.h, s.c);
-            ctx.globalAlpha = 0.25;
-            rect(ctx, s.x - 1, s.y - 1, 4, s.h + 2, s.c);
-            ctx.globalAlpha = 1;
-          }
-          for (let i = 0; i < 12; i++) {
-            const lx = wrap(i * 30 - t * 160, W + 30) - 15;
-            rect(ctx, lx, ROAD + 9, 10, 1, "#4a4478");
-          }
-          for (const c of cars) {
-            const x2 = wrap(c.x + t * c.speed, W + 60) - 30;
-            for (let k = 0; k < c.len; k++) {
-              const tx = c.right ? x2 - k : x2 + k;
-              ctx.globalAlpha = 1 - k / c.len;
-              px(ctx, tx, c.y, c.right ? "#fff6d8" : "#ff3050");
+          if (env.lit > 0.05) {
+            ctx.globalAlpha = env.lit;
+            for (const list of [farLit, midLit]) {
+              for (const w of list) {
+                if (Math.sin(t * 0.3 + w.p) > 0.97) continue;
+                px(ctx, w.x, w.y, w.c);
+              }
             }
             ctx.globalAlpha = 1;
-            px(ctx, x2, c.y - 1, c.right ? "#ffffff" : "#ff6070");
+            if (env.lit > 0.3) {
+              for (const a of antennas) if (Math.sin(t * 3 + a.p) > 0.3) px(ctx, a.x, a.y, "#ff3b3b");
+              for (const s of signs) {
+                const on = Math.sin(t * 9 + s.p) > -0.85 || Math.sin(t * 0.7 + s.p) > 0;
+                if (!on) continue;
+                ctx.globalAlpha = env.lit;
+                rect(ctx, s.x, s.y, 2, s.h, s.c);
+                ctx.globalAlpha = 0.25 * env.lit;
+                rect(ctx, s.x - 1, s.y - 1, 4, s.h + 2, s.c);
+                ctx.globalAlpha = 1;
+              }
+            }
+          }
+          ctx.fillStyle = lane;
+          for (let i = 0; i < 12; i++) {
+            const lx = wrap(i * 30 - t * 160 * rush, W + 30) - 15;
+            ctx.fillRect(Math.round(lx), ROAD2 + 9, 10, 1);
+          }
+          for (const c of cars) {
+            const cx = Math.round(wrap(c.x + t * c.speed * rush, W + 60) - 30);
+            const rgb = c.right ? headlight : tailLight;
+            for (let k = 0; k < c.len; k++) {
+              const tx = c.right ? cx - k - 3 : cx + k + 3;
+              ctx.fillStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${(streak * (1 - k / c.len)).toFixed(2)})`;
+              ctx.fillRect(tx, c.y, 1, 1);
+            }
+            ctx.fillStyle = c.body;
+            ctx.fillRect(cx - 2, c.y - 1, 5, 2);
+            const front = c.right ? cx + 2 : cx - 2;
+            ctx.fillStyle = c.right ? "#ffffff" : "#ff6070";
+            ctx.globalAlpha = 0.5 + 0.5 * env.lit;
+            ctx.fillRect(front, c.y - 1, 1, 1);
+            ctx.globalAlpha = 1;
           }
         }
       };
@@ -1475,7 +3844,6 @@
   };
 
   // js/scenes/storm.js
-  var FLASH_EVERY = 3.4;
   function peaks(ctx, seed, baseY, amp, color, snow) {
     const r = rng(seed);
     const list = [];
@@ -1505,93 +3873,48 @@
     }
     return tops;
   }
-  function bolt(ctx, seed, groundY) {
-    const r = rng(seed);
-    let x = 40 + r() * 240;
-    let y = 0;
-    const paths = [];
-    while (y < groundY) {
-      const nx = x + (r() - 0.5) * 12;
-      const ny = y + 4 + r() * 8;
-      paths.push([x, y, nx, ny]);
-      if (r() < 0.18) {
-        let bx = nx, by = ny;
-        const dir = r() < 0.5 ? -1 : 1;
-        for (let k = 0; k < 4; k++) {
-          const ex = bx + dir * (3 + r() * 6), ey = by + 3 + r() * 5;
-          paths.push([bx, by, ex, ey, true]);
-          bx = ex;
-          by = ey;
-        }
-      }
-      x = nx;
-      y = ny;
-    }
-    for (const [x0, y0, x1, y1, branch] of paths) {
-      const steps = Math.ceil(Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0)));
-      for (let i = 0; i <= steps; i++) {
-        const px0 = x0 + (x1 - x0) * (i / steps);
-        const py0 = y0 + (y1 - y0) * (i / steps);
-        if (!branch) px(ctx, px0 - 1, py0, "#7fa8ff");
-        px(ctx, px0, py0, branch ? "#b8d0ff" : "#ffffff");
-      }
-    }
-  }
   var storm_default = {
     id: "storm",
     name: "Thunder Peak",
-    create() {
-      const sky = layer();
-      ditherGradient(sky.ctx, 0, 0, W, H, ["#06080e", "#0b0f19", "#121827", "#1a2234", "#232d42"]);
-      const cloudsFar = layer(W * 2, 80);
-      const cloudsNear = layer(W * 2, 70);
-      const cr = rng(33);
-      for (let i = 0; i < 14; i++) cloud(cloudsFar.ctx, cr() * W * 2, 10 + cr() * 50, 7 + cr() * 8, "#1f2638", "#161b29", 700 + i);
-      for (let i = 0; i < 10; i++) cloud(cloudsNear.ctx, cr() * W * 2, 4 + cr() * 30, 9 + cr() * 9, "#2a3246", "#1c2231", 800 + i);
+    signature: "thunder",
+    horizon: 128,
+    celestial: { sunX: 250, sunHighY: 26, sunLowY: 92, moonX: 70, moonY: 30 },
+    fog: [96, 170],
+    rainBand: [150, 176],
+    sounds: { always: { wind: 0.3 }, day: {}, night: { owl: 0.2 } },
+    create(env) {
+      const sky = env.makeSky();
       const far = layer();
-      peaks(far.ctx, 2, 128, 46, "#161c2b", "#7c889f");
-      const lit = layer();
-      peaks(lit.ctx, 2, 128, 46, "#39456a", "#dfe6f5");
+      peaks(far.ctx, 2, 128, 46, "#7a8aa8", "#e8f0fa");
+      env.grade(far.canvas);
       const near = layer();
-      const nearTop = peaks(near.ctx, 9, 162, 38, "#0a0d15", "#3a4458");
-      const r = rng(5);
-      const drops = Array.from({ length: 260 }, () => ({
-        x: r() * (W + 80),
-        y: r() * H,
-        speed: 230 + r() * 120,
-        len: 4 + Math.floor(r() * 5)
-      }));
+      peaks(near.ctx, 9, 162, 38, "#3a4658", "#c8d4e4");
+      env.grade(near.canvas);
+      const pr = rng(31);
+      const pines = layer();
+      for (let x = 0; x < W; x += 3 + Math.floor(pr() * 5)) {
+        const h = 4 + Math.floor(pr() * 8);
+        const y = 172 + Math.floor(pr() * 8);
+        for (let i = 0; i < h; i++) rect(pines.ctx, x - Math.floor(i / 3), y - h + i, 1 + Math.floor(i / 3) * 2, 1, "#22342e");
+      }
+      env.grade(pines.canvas);
+      const hut = layer();
+      rect(hut.ctx, 250, 166, 12, 8, "#7a5a44");
+      for (let i = 0; i < 5; i++) rect(hut.ctx, 248 + i, 161 + i, 16 - i * 2, 1, i === 0 ? "#f2f8ff" : "#a8b8d0");
+      rect(hut.ctx, 253, 169, 3, 3, "#3f5070");
+      env.grade(hut.canvas);
       return {
         draw(ctx, t) {
-          ctx.drawImage(sky.canvas, 0, 0);
-          const fx = Math.round(wrap(t * 9, W * 2));
-          ctx.drawImage(cloudsFar.canvas, -fx, 0);
-          ctx.drawImage(cloudsFar.canvas, W * 2 - fx, 0);
-          const n = Math.floor(t / FLASH_EVERY);
-          const local = t - n * FLASH_EVERY;
-          const offset = rng(n)() * 1.2;
-          const since = local - offset;
-          const flash = since >= 0 && since < 0.45 ? (1 - since / 0.45) * (Math.sin(since * 60) > -0.3 ? 1 : 0.4) : 0;
+          sky.draw(ctx, t);
           ctx.drawImage(far.canvas, 0, 0);
-          if (flash > 0) {
-            ctx.globalAlpha = flash * 0.8;
-            ctx.drawImage(lit.canvas, 0, 0);
-            ctx.globalAlpha = 1;
-            if (since < 0.25) bolt(ctx, n * 7 + 1, nearTop[160] - 20);
-          }
-          const nx = Math.round(wrap(t * 16, W * 2));
-          ctx.drawImage(cloudsNear.canvas, -nx, 0);
-          ctx.drawImage(cloudsNear.canvas, W * 2 - nx, 0);
           ctx.drawImage(near.canvas, 0, 0);
-          ctx.fillStyle = "rgba(160, 182, 214, 0.42)";
-          for (const d of drops) {
-            const y = wrap(d.y + t * d.speed, H + 10) - 5;
-            const x = wrap(d.x - y * 0.45 - t * 30, W + 80) - 40;
-            for (let k = 0; k < d.len; k++) ctx.fillRect(Math.round(x + k * 0.45), Math.round(y - k), 1, 1);
-          }
-          if (flash > 0) {
-            ctx.fillStyle = `rgba(200, 220, 255, ${flash * 0.3})`;
-            ctx.fillRect(0, 0, W, H);
+          ctx.drawImage(hut.canvas, 0, 0);
+          ctx.drawImage(pines.canvas, 0, 0);
+          if (env.lit > 0.05) {
+            ctx.globalAlpha = env.lit;
+            rect(ctx, 253, 169, 3, 3, "#ffcf6b");
+            glow(ctx, 254, 170, 8, "#e8b870", 0.5);
+            ctx.globalAlpha = 1;
           }
         }
       };
@@ -1599,7 +3922,7 @@
   };
 
   // js/scenes/blocks.js
-  var CELL = 8;
+  var CELL2 = 8;
   var STACK_COLS = 9;
   var STACK_ROWS = 14;
   var LETTERS = Object.keys(SHAPES);
@@ -1608,8 +3931,8 @@
     if (!cache2.has(`s${p}`)) {
       const out = {};
       for (const kind of ["light", "dark", "ring"]) {
-        const c = layer(CELL, CELL);
-        paintNesBlock(c.ctx, 0, 0, CELL, kind, NES_PALETTES[p]);
+        const c = layer(CELL2, CELL2);
+        paintNesBlock(c.ctx, 0, 0, CELL2, kind, NES_PALETTES[p]);
         out[kind] = c.canvas;
       }
       cache2.set(`s${p}`, out);
@@ -1623,7 +3946,7 @@
   function buildStack(seed, pieces) {
     const r = rng(seed);
     const board = Array.from({ length: STACK_ROWS }, () => new Array(STACK_COLS).fill(null));
-    const fits = (m, x, y) => m.every((row, dy) => row.every((v, dx) => {
+    const fits2 = (m, x, y) => m.every((row, dy) => row.every((v, dx) => {
       if (!v) return true;
       const bx = x + dx;
       const by = y + dy;
@@ -1635,8 +3958,8 @@
       for (let k = Math.floor(r() * 4); k > 0; k--) m = rotateMatrix(m, 1);
       const x = Math.floor(r() * (STACK_COLS - m[0].length + 1));
       let y = -m.length;
-      if (!fits(m, x, y)) continue;
-      while (fits(m, x, y + 1)) y++;
+      if (!fits2(m, x, y)) continue;
+      while (fits2(m, x, y + 1)) y++;
       m.forEach((row, dy) => row.forEach((v, dx) => {
         if (v && y + dy >= 0) board[y + dy][x + dx] = letter;
       }));
@@ -1650,11 +3973,11 @@
     rect(ctx, 0, 0, W, H, "#000000");
     const dot = dim(dark, 0.42);
     const faint = dim(light, 0.16);
-    for (let row = 0; row * CELL < H; row++) {
-      for (let col = 0; col * CELL < W; col++) {
-        const ox = col * CELL + (row % 2 ? 4 : 0);
-        rect(ctx, ox + 2, row * CELL + 3, 2, 2, dot);
-        if ((row + col) % 5 === 0) rect(ctx, ox + 3, row * CELL + 2, 1, 4, faint);
+    for (let row = 0; row * CELL2 < H; row++) {
+      for (let col = 0; col * CELL2 < W; col++) {
+        const ox = col * CELL2 + (row % 2 ? 4 : 0);
+        rect(ctx, ox + 2, row * CELL2 + 3, 2, 2, dot);
+        if ((row + col) % 5 === 0) rect(ctx, ox + 3, row * CELL2 + 2, 1, 4, faint);
       }
     }
     const shade2 = ctx.createLinearGradient(W * 0.25, 0, W * 0.75, 0);
@@ -1667,7 +3990,7 @@
     stacks.forEach(({ board, x }) => {
       board.forEach((row, ry) => row.forEach((letter, rx) => {
         if (!letter) return;
-        ctx.drawImage(s[NES_BLOCK_KIND[letter]], x + rx * CELL, H - (STACK_ROWS - ry) * CELL);
+        ctx.drawImage(s[NES_BLOCK_KIND[letter]], x + rx * CELL2, H - (STACK_ROWS - ry) * CELL2);
       }));
     });
     return l.canvas;
@@ -1675,16 +3998,19 @@
   var blocks_default = {
     id: "blocks",
     name: "Retro Blocks",
+    // Classic scenes keep their own look in every weather and play no scene sounds (see background.js)
+    quiet: true,
+    signature: "sunny",
     create() {
       const stacks = [
         { board: buildStack(5, 34), x: 0 },
-        { board: buildStack(12, 34), x: W - STACK_COLS * CELL }
+        { board: buildStack(12, 34), x: W - STACK_COLS * CELL2 }
       ];
       const r = rng(91);
-      const rows = Math.ceil(H / CELL) + 6;
+      const rows = Math.ceil(H / CELL2) + 6;
       const fallers = Array.from({ length: 12 }, (_, i) => ({
         letter: LETTERS[i % LETTERS.length],
-        x: Math.floor(r() * (W / CELL - 4)) * CELL,
+        x: Math.floor(r() * (W / CELL2 - 4)) * CELL2,
         speed: 0.9 + r() * 1.8,
         phase: r() * rows,
         turn: 0.25 + r() * 0.35,
@@ -1699,12 +4025,12 @@
           const s = sprites(p);
           for (const f of fallers) {
             const step = Math.floor(f.phase + t * f.speed);
-            const y = step % rows * CELL - 4 * CELL;
+            const y = step % rows * CELL2 - 4 * CELL2;
             let m = SHAPES[f.letter].matrix;
             for (let k = (f.spin + Math.floor(step * f.turn)) % 4; k > 0; k--) m = rotateMatrix(m, 1);
             const sprite = s[NES_BLOCK_KIND[f.letter]];
             m.forEach((row, ry) => row.forEach((v, rx) => {
-              if (v) ctx.drawImage(sprite, f.x + rx * CELL, y + ry * CELL);
+              if (v) ctx.drawImage(sprite, f.x + rx * CELL2, y + ry * CELL2);
             }));
           }
         }
@@ -1719,7 +4045,7 @@
   function buildStack2(seed, cols, rows, pieces) {
     const r = rng(seed);
     const board = Array.from({ length: rows }, () => new Array(cols).fill(null));
-    const fits = (m, x, y) => m.every((row, dy) => row.every((v, dx) => {
+    const fits2 = (m, x, y) => m.every((row, dy) => row.every((v, dx) => {
       if (!v) return true;
       const bx = x + dx;
       const by = y + dy;
@@ -1731,8 +4057,8 @@
       for (let k = Math.floor(r() * 4); k > 0; k--) m = rotateMatrix(m, 1);
       const x = Math.floor(r() * (cols - m[0].length + 1));
       let y = -m.length;
-      if (!fits(m, x, y)) continue;
-      while (fits(m, x, y + 1)) y++;
+      if (!fits2(m, x, y)) continue;
+      while (fits2(m, x, y + 1)) y++;
       m.forEach((row, dy) => row.forEach((v, dx) => {
         if (v && y + dy >= 0) board[y + dy][x + dx] = letter;
       }));
@@ -1754,6 +4080,9 @@
   var ulol_default = {
     id: "ulol",
     name: "ulol Night",
+    // Classic scenes keep their own look in every weather and play no scene sounds (see background.js)
+    quiet: true,
+    signature: "sunny",
     create() {
       const base = layer();
       const b = base.ctx;
@@ -1886,7 +4215,7 @@
     ribs: (x, i, side) => Math.floor((side + 1) * 3) % 2 === 0,
     spiral: (x, i, side, u) => ((side * 1.6 + u * 4) % 1 + 1) % 1 < 0.5
   };
-  function drum(ctx, cx, top, h, w, lights) {
+  function drum2(ctx, cx, top, h, w, lights) {
     rect(ctx, cx - w, top, w * 2 + 1, h, CREAM);
     rect(ctx, cx + w - 1, top, 2, h, CREAM_DARK);
     rect(ctx, cx - w, top, w * 2 + 1, 1, GOLD);
@@ -1895,7 +4224,7 @@
       lights.push({ x, y: top + 2, w: 1, h: h - 3 });
     }
   }
-  function wall(ctx, x, y, w, h) {
+  function wall2(ctx, x, y, w, h) {
     rect(ctx, x, y, w, h, BRICK);
     for (let row = y + 3, n = 0; row < y + h; row += 3, n++) {
       rect(ctx, x, row, w, 1, BRICK_DARK);
@@ -1949,6 +4278,9 @@
   var domes_default = {
     id: "domes",
     name: "Snow Domes",
+    // Classic scenes keep their own look in every weather and play no scene sounds (see background.js)
+    quiet: true,
+    signature: "sunny",
     create() {
       const sky = layer();
       const s = sky.ctx;
@@ -1966,8 +4298,8 @@
         rect(l, tx - 4, GROUND2 - 38, 9, 38, "#3e2b6c");
         for (let i = 0; i < 10; i++) rect(l, tx - 5 + Math.floor(i / 2), GROUND2 - 39 - i, 11 - Math.floor(i / 2) * 2, 1, "#523a86");
       }
-      wall(l, 4, 120, 96, GROUND2 - 120);
-      wall(l, 20, 106, 64, 14);
+      wall2(l, 4, 120, 96, GROUND2 - 120);
+      wall2(l, 20, 106, 64, 14);
       for (const wx of [14, 28, 42, 62, 76, 90]) {
         windowArch(l, wx, 129, WINDOW);
         lights.push({ x: wx, y: 131, w: 3, h: 4 });
@@ -1976,27 +4308,27 @@
         windowArch(l, wx - 1, 111, WINDOW);
         lights.push({ x: wx - 1, y: 113, w: 3, h: 4 });
       }
-      drum(l, 30, 99, 7, 5, lights);
+      drum2(l, 30, 99, 7, 5, lights);
       onion(l, 30, 99, 7, 17, "#3a6fd0", "#f2f2ff", PATTERNS.spiral);
-      drum(l, 74, 99, 7, 5, lights);
+      drum2(l, 74, 99, 7, 5, lights);
       onion(l, 74, 99, 7, 17, "#e8892e", "#ffd84a", PATTERNS.ribs);
       tent(l, 52, 106, 26, 58);
       rect(l, 47, 106, 11, 2, CREAM);
       onion(l, 52, 47, 4, 10, GOLD, GOLD_DARK, PATTERNS.ribs);
-      drum(l, 14, 114, 6, 5, lights);
+      drum2(l, 14, 114, 6, 5, lights);
       onion(l, 14, 114, 8, 19, "#2f9e5a", "#e8f2d0", PATTERNS.stripes);
-      drum(l, 88, 114, 6, 5, lights);
+      drum2(l, 88, 114, 6, 5, lights);
       onion(l, 88, 114, 8, 19, "#d6453d", "#f3c94a", PATTERNS.diamonds);
-      wall(l, 236, 120, 32, GROUND2 - 120);
+      wall2(l, 236, 120, 32, GROUND2 - 120);
       for (const wx of [242, 252, 262]) {
         windowArch(l, wx, 129, WINDOW);
         lights.push({ x: wx, y: 131, w: 3, h: 4 });
       }
-      drum(l, 245, 114, 6, 4, lights);
+      drum2(l, 245, 114, 6, 4, lights);
       onion(l, 245, 114, 6, 14, "#cc3b44", "#f4f0e0", PATTERNS.stripes);
-      drum(l, 259, 114, 6, 4, lights);
+      drum2(l, 259, 114, 6, 4, lights);
       onion(l, 259, 114, 6, 14, "#2c8f6a", "#f4f0e0", PATTERNS.stripes);
-      wall(l, 276, 74, 20, GROUND2 - 74);
+      wall2(l, 276, 74, 20, GROUND2 - 74);
       for (let wy = 84; wy < 130; wy += 14) {
         windowArch(l, 285, wy, WINDOW);
         lights.push({ x: 285, y: wy + 2, w: 3, h: 4 });
@@ -2004,7 +4336,7 @@
       for (const wx of [279, 291]) {
         rect(l, wx - 1, 74, 4, 8, "#2b1424");
       }
-      drum(l, 286, 67, 7, 6, lights);
+      drum2(l, 286, 67, 7, 6, lights);
       onion(l, 286, 67, 8, 19, "#2c5fb8", "#f3c94a", PATTERNS.ribs);
       for (const [x, y, w] of [[3, 117, 98], [19, 103, 66], [235, 117, 34], [275, 71, 22]]) {
         for (let i = 0; i < w; i++) if (i * 7 % 5 !== 0) px(l, x + i, y, SNOW);
@@ -2058,21 +4390,506 @@
     }
   };
 
+  // js/scenes/sakura.js
+  var PINK = ["#f7b9cf", "#ee8fb2", "#d96a97", "#fde0ea"];
+  var SPRING_SKY = ["#6fa8dc", "#8fbfe6", "#b5d6ee", "#dbe6f2", "#f6dfe2", "#fbcfd4"];
+  function blossom(ctx, r, x, y, size) {
+    const puffs = Array.from({ length: 5 + Math.floor(size / 2) }, () => [
+      x + (r() - 0.5) * size * 2.4,
+      y + (r() - 0.5) * size * 1.1,
+      size * (0.45 + r() * 0.5)
+    ]);
+    for (const [cx, cy, pr] of puffs) disc(ctx, cx, cy + 2, Math.round(pr), PINK[2]);
+    for (const [cx, cy, pr] of puffs) disc(ctx, cx, cy, Math.round(pr), PINK[1]);
+    for (const [cx, cy, pr] of puffs) disc(ctx, cx - 1, cy - 1, Math.max(1, Math.round(pr * 0.65)), PINK[0]);
+    for (let i = 0; i < size * 3; i++) px(ctx, x + (r() - 0.5) * size * 2.6, y + (r() - 0.6) * size * 1.4, PINK[3]);
+  }
+  function branch(ctx, r, x, y, angle, length, width, color) {
+    const points = [];
+    for (let i = 0; i < length; i++) {
+      angle += (r() - 0.5) * 0.35;
+      x += Math.cos(angle);
+      y += Math.sin(angle);
+      const w = Math.max(1, Math.round(width * (1 - i / length)));
+      rect(ctx, x, y, w, w, color);
+      if (i % 6 === 0) points.push([x, y]);
+    }
+    return points;
+  }
+  function torii(ctx, x, base) {
+    const red = "#d8433c", dark = "#8e2630", lit = "#f0735a", cap = "#3a2a34";
+    for (const lx of [x - 9, x + 6]) {
+      rect(ctx, lx, base - 22, 3, 22, red);
+      rect(ctx, lx, base - 22, 1, 22, lit);
+      rect(ctx, lx + 2, base - 22, 1, 22, dark);
+      rect(ctx, lx - 1, base - 2, 5, 2, cap);
+    }
+    rect(ctx, x - 11, base - 18, 22, 2, red);
+    rect(ctx, x - 11, base - 17, 22, 1, dark);
+    rect(ctx, x - 14, base - 25, 28, 3, red);
+    rect(ctx, x - 14, base - 25, 28, 1, lit);
+    rect(ctx, x - 15, base - 27, 30, 2, cap);
+    rect(ctx, x - 16, base - 28, 2, 1, cap);
+    rect(ctx, x + 14, base - 28, 2, 1, cap);
+    rect(ctx, x - 1, base - 22, 2, 4, dark);
+  }
+  var sakura_default = {
+    id: "sakura",
+    name: "Blossom Shrine",
+    signature: "sunny",
+    horizon: 150,
+    celestial: { sunX: 190, sunHighY: 26, sunLowY: 108, moonX: 190, moonY: 30 },
+    fog: [96, 156],
+    rainBand: [H - 24, H - 3],
+    sounds: { always: { bell: 1, wind: 0.22 }, day: { birds: 1 }, night: { owl: 0.35, crickets: 0.4 } },
+    create(env) {
+      const sky = env.makeSky(env.id === "sunny" ? { palette: SPRING_SKY } : {});
+      const land = layer();
+      const l = land.ctx;
+      const r = rng(83);
+      for (let y = 0; y < 62; y++) {
+        const half = 6 + y * 1.25 + Math.sin(y * 0.5) * 1.5;
+        rect(l, 92 - half, 58 + y, half * 2, 1, "#8ea3c8");
+        if (y < 9) rect(l, 92 - half, 58 + y, half * 2, 1, "#f4f6fb");
+        else if (y < 22) {
+          for (let x = -half; x < half; x++) {
+            if (9 + Math.abs(Math.sin(x * 0.9)) * 12 > y) px(l, 92 + x, 58 + y, "#f4f6fb");
+          }
+        }
+      }
+      env.grade(land.canvas);
+      hazeBand(l, 96, 132, env.info.sky[env.info.sky.length - 1], 0.7, 0.9);
+      const hills = layer();
+      const h = hills.ctx;
+      ridge(h, 126, 7, "#8aa88e", 21, { freq: 0.02 });
+      for (let i = 0; i < 26; i++) disc(h, r() * W, 122 + r() * 8, 2 + Math.floor(r() * 2), r() < 0.6 ? "#eea4bf" : "#f7c4d6");
+      ridge(h, 142, 8, "#5f8f68", 22, { freq: 0.016 });
+      for (let i = 0; i < 18; i++) {
+        const x = r() * W, y = 136 + r() * 8;
+        rect(h, x, y, 1, 4, "#4a3a3a");
+        disc(h, x, y - 1, 3, "#e98bb0");
+        disc(h, x - 1, y - 2, 2, "#f7bfd3");
+      }
+      const hillY = (x) => Math.round(150 - Math.exp(-(((x - 120) / 70) ** 2)) * 22 + Math.sin(x * 0.05) * 1.5);
+      for (let x = 0; x < W; x++) {
+        const y = hillY(x);
+        rect(h, x, y, 1, H - y, "#3f7a4c");
+        rect(h, x, y, 1, 2, "#6cab62");
+        if (r() < 0.3) px(h, x, y + 3 + r() * 20, "#57955a");
+        if (r() < 0.12) px(h, x, y + 2 + r() * 24, "#f7bfd3");
+      }
+      for (let i = 0; i < 17; i++) {
+        const y = 129 + i * 3;
+        const half = 5 + i * 1.3;
+        rect(h, 120 - half, y, half * 2, 3, i % 2 ? "#b9b4ae" : "#cfcac2");
+        rect(h, 120 - half, y + 2, half * 2, 1, "#8d8890");
+      }
+      torii(h, 120, 130);
+      const lanterns = [98, 142];
+      for (const lx of lanterns) {
+        rect(h, lx, 138, 3, 7, "#9a96a0");
+        rect(h, lx - 1, 135, 5, 3, "#7c7884");
+        px(h, lx + 1, 136, "#5a5a66");
+        rect(h, lx - 2, 133, 7, 2, "#9a96a0");
+      }
+      env.grade(hills.canvas);
+      l.drawImage(hills.canvas, 0, 0);
+      const tree = layer();
+      const tc = tree.ctx;
+      const tr = rng(19);
+      for (let y = 60; y < H; y++) {
+        const w = 9 + Math.max(0, y - 150) * 0.5 + Math.sin(y * 0.2) * 1.2;
+        const x = 268 + Math.sin(y * 0.035) * 9;
+        rect(tc, x, y, w, 1, "#4a2f33");
+        rect(tc, x, y, 2, 1, "#7a5350");
+        rect(tc, x + w - 2, y, 2, 1, "#2e1c24");
+        if (y % 7 === 0) rect(tc, x + 2, y, w * 0.4, 1, "#2e1c24");
+      }
+      const tips = [];
+      for (const [bx, by, ang, len, wd] of [
+        [270, 92, -2.75, 120, 5],
+        [272, 74, -2.2, 80, 4],
+        [276, 66, -1.2, 48, 4],
+        [274, 108, -2.95, 84, 3],
+        [278, 84, -0.45, 46, 3],
+        [270, 120, 3, 50, 2]
+      ]) tips.push(...branch(tc, tr, bx, by, ang, len, wd, "#4a2f33"));
+      for (const [x, y] of tips) blossom(tc, tr, x, y, 5 + Math.floor(tr() * 5));
+      blossom(tc, tr, 290, 58, 12);
+      blossom(tc, tr, 250, 46, 10);
+      env.grade(tree.canvas);
+      const petalColors = PINK.map((c) => env.c(c));
+      const petals = Array.from({ length: 46 }, () => ({
+        x: r() * W,
+        y: r() * H,
+        fall: 7 + r() * 9,
+        drift: 8 + r() * 10,
+        p: r() * 6,
+        c: petalColors[Math.floor(r() * 4)]
+      }));
+      const birds = Array.from({ length: 3 }, (_, i) => ({ x: r() * W, y: 24 + r() * 30, speed: 10 + r() * 6, p: i * 2 }));
+      const flies = Array.from({ length: 12 }, () => ({ x: 20 + r() * 200, y: 128 + r() * 26, p: r() * 10 }));
+      const bird = env.c("#4a5a78");
+      const showBirds = !env.night && env.rain === 0;
+      const blow = 0.6 + env.wind * 1.4;
+      return {
+        draw(ctx, t) {
+          sky.draw(ctx, t);
+          if (showBirds) {
+            ctx.fillStyle = bird;
+            for (const b of birds) {
+              const x = Math.round(wrap(b.x + t * b.speed, W + 20) - 10);
+              const y = Math.round(b.y + Math.sin(t * 0.8 + b.p) * 3);
+              const up = Math.floor(t * 5 + b.p) % 2 === 0 ? -1 : 1;
+              ctx.fillRect(x, y, 1, 1);
+              ctx.fillRect(x - 1, y + up, 1, 1);
+              ctx.fillRect(x + 1, y + up, 1, 1);
+            }
+          }
+          ctx.drawImage(land.canvas, 0, 0);
+          if (env.lit > 0.05) {
+            ctx.globalAlpha = env.lit;
+            for (const lx of lanterns) {
+              const flick = Math.sin(t * 9 + lx) > 0;
+              rect(ctx, lx, 136, 3, 2, flick ? "#ffe9a0" : "#ffd27a");
+              glow(ctx, lx + 1, 137, 9, "#ffb84a", 0.5);
+            }
+            ctx.globalAlpha = 1;
+          }
+          if (env.night && env.rain === 0) {
+            for (const f of flies) {
+              const on = Math.sin(t * 2.2 + f.p);
+              if (on < 0.1) continue;
+              ctx.fillStyle = on > 0.7 ? "#eaff9a" : "#a8d85a";
+              ctx.fillRect(Math.round(f.x + Math.sin(t * 0.6 + f.p) * 14), Math.round(f.y + Math.sin(t * 1.3 + f.p * 2) * 5), 1, 1);
+            }
+          }
+          ctx.drawImage(tree.canvas, 0, 0);
+          for (const p of petals) {
+            const y = wrap(p.y + t * p.fall * blow, H + 8) - 4;
+            const x = wrap(p.x - t * p.drift * blow + Math.sin(t * 1.3 + p.p) * 7, W + 8) - 4;
+            const flip = Math.sin(t * 4 + p.p) > 0;
+            ctx.fillStyle = p.c;
+            ctx.fillRect(Math.round(x), Math.round(y), flip ? 2 : 1, flip ? 1 : 2);
+          }
+        }
+      };
+    }
+  };
+
+  // js/scenes/aurora.js
+  var SHORE2 = 128;
+  var GLASS3 = "#3f5070";
+  var CURTAINS = [
+    { y: 34, amp: 11, len: 34, speed: 0.22, freq: 0.021, core: [126, 255, 196], edge: [60, 190, 170] },
+    { y: 22, amp: 8, len: 26, speed: -0.16, freq: 0.034, core: [150, 140, 255], edge: [90, 80, 200] }
+  ];
+  function snowPine(ctx, x, base, h, body, snow) {
+    for (let i = 0; i < h; i++) {
+      const tier = i % 5;
+      const half = Math.floor(i / h * (h * 0.36)) + (tier < 2 ? 0 : 1);
+      rect(ctx, x - half, base - h + i, half * 2 + 1, 1, body);
+      if (tier === 0 && half > 0) rect(ctx, x - half, base - h + i, half + 1, 1, snow);
+    }
+    rect(ctx, x, base, 1, 2, body);
+  }
+  var aurora_default = {
+    id: "aurora",
+    name: "Northern Lights",
+    signature: "night",
+    horizon: SHORE2,
+    precip: "snow",
+    celestial: { sunX: 240, sunHighY: 26, sunLowY: 92, moonX: 70, moonY: 30 },
+    fog: [86, 150],
+    sounds: { always: { wind: 0.35 }, day: {}, night: { owl: 0.35 } },
+    create(env) {
+      const sky = env.makeSky();
+      const r = rng(404);
+      const showLights = env.id === "night";
+      const land = layer();
+      const l = land.ctx;
+      for (const [base, amp, color, seed, freq, jag] of [[112, 14, "#7c92b8", 61, 0.017, 6], [120, 9, "#6a80a8", 62, 0.026, 4]]) {
+        const range = layer();
+        ridge(range.ctx, base, amp, color, seed, { freq, jag });
+        const data = range.ctx.getImageData(0, 0, W, SHORE2).data;
+        for (let x = 0; x < W; x++) {
+          let y = 0;
+          while (y < SHORE2 && data[(y * W + x) * 4 + 3] === 0) y++;
+          const depth = 3 + Math.round(Math.sin(x * 0.3) + Math.sin(x * 0.11) * 2);
+          for (let k = 0; k < depth; k++) px(range.ctx, x, y + k, k === 0 ? "#f4f8ff" : "#c8d8f0");
+        }
+        l.drawImage(range.canvas, 0, 0);
+      }
+      l.clearRect(0, SHORE2, W, H - SHORE2);
+      env.grade(land.canvas);
+      const lake = layer();
+      ditherGradient(lake.ctx, 0, SHORE2, W, H - SHORE2, ["#b8dcf0", "#9cc8e4", "#82b4d8", "#6ca0c8"]);
+      env.grade(lake.canvas);
+      const near = layer();
+      const n = near.ctx;
+      const lights = [];
+      const shoreY = (x) => Math.round(164 - Math.exp(-(((x - 236) / 60) ** 2)) * 20 + Math.sin(x * 0.04) * 3);
+      for (let x = 0; x < W; x++) {
+        const y = shoreY(x);
+        rect(n, x, y, 1, H - y, "#dce8f8");
+        rect(n, x, y, 1, 2, "#ffffff");
+        if (r() < 0.25) px(n, x, y + 3 + r() * 14, "#b0c4e4");
+      }
+      const cabinBase = shoreY(232) + 2;
+      rect(n, 220, cabinBase - 12, 26, 12, "#8a5a3e");
+      for (let y = cabinBase - 11; y < cabinBase; y += 3) rect(n, 220, y, 26, 1, "#6a4028");
+      for (let i = 0; i < 9; i++) rect(n, 217 + (8 - i) * 1.7, cabinBase - 21 + i, 32 - (8 - i) * 3.4, 1, i > 6 ? "#b8c8e0" : "#f2f8ff");
+      rect(n, 238, cabinBase - 25, 4, 7, "#5a4038");
+      rect(n, 237, cabinBase - 26, 6, 1, "#f2f8ff");
+      rect(n, 225, cabinBase - 8, 5, 5, GLASS3);
+      rect(n, 227, cabinBase - 8, 1, 5, "#6a4028");
+      lights.push({ x: 225, y: cabinBase - 8, w: 5, h: 5 });
+      rect(n, 236, cabinBase - 8, 5, 8, "#4a2c20");
+      for (let i = 0; i < 14; i++) {
+        const x = Math.round(i < 5 ? 6 + r() * 60 : 170 + r() * 146);
+        if (x > 212 && x < 254) continue;
+        snowPine(n, x, shoreY(x) + 1, 14 + Math.floor(r() * 22), "#245040", "#f2f8ff");
+      }
+      env.grade(near.canvas);
+      const flakes = Array.from({ length: 60 }, () => ({ x: r() * W, y: r() * H, s: 8 + r() * 10, p: r() * 6 }));
+      const sparkles = Array.from({ length: 40 }, () => ({ x: Math.floor(r() * W), y: 150 + Math.floor(r() * 28), p: r() * 10 }));
+      const smokeColor = env.rgb("#e8eef8");
+      const sparkle = env.c("#ffffff");
+      const day = !env.night && env.rain === 0 && env.id !== "sunset";
+      function curtain(ctx, c, t, mirror) {
+        for (let x = 0; x < W; x += 2) {
+          const wave = Math.sin(x * c.freq + t * c.speed) * c.amp + Math.sin(x * c.freq * 2.7 - t * c.speed * 1.7) * c.amp * 0.4;
+          const bright = 0.45 + 0.55 * Math.sin(x * 0.045 + t * c.speed * 3 + c.y);
+          if (bright < 0.12) continue;
+          const len = c.len * (0.6 + 0.4 * Math.sin(x * 0.07 - t * 0.31));
+          const top = c.y + wave;
+          if (mirror) {
+            const y = SHORE2 + 2 + (SHORE2 - top - len) * 0.28;
+            ctx.fillStyle = `rgba(${c.core}, ${0.16 * bright})`;
+            ctx.fillRect(x, Math.round(y), 2, Math.round(len * 0.3));
+            continue;
+          }
+          ctx.fillStyle = `rgba(${c.edge}, ${0.2 * bright})`;
+          ctx.fillRect(x, Math.round(top), 2, Math.round(len));
+          ctx.fillStyle = `rgba(${c.core}, ${0.4 * bright})`;
+          ctx.fillRect(x, Math.round(top + len * 0.55), 2, Math.round(len * 0.45));
+          ctx.fillStyle = `rgba(${c.core}, ${0.5 * bright})`;
+          ctx.fillRect(x, Math.round(top + len - 3), 2, 3);
+        }
+      }
+      return {
+        draw(ctx, t) {
+          sky.draw(ctx, t);
+          if (showLights) for (const c of CURTAINS) curtain(ctx, c, t, false);
+          ctx.drawImage(land.canvas, 0, 0);
+          ctx.drawImage(lake.canvas, 0, 0);
+          if (showLights) for (const c of CURTAINS) curtain(ctx, c, t, true);
+          ctx.drawImage(near.canvas, 0, 0);
+          if (env.lit > 0.05) {
+            ctx.globalAlpha = env.lit;
+            ctx.fillStyle = "#ffcf6b";
+            for (const w of lights) ctx.fillRect(w.x, w.y, w.w, w.h);
+            glow(ctx, 227, cabinBase + 4, 9, "#e8b870", 0.4);
+            ctx.globalAlpha = 1;
+          }
+          for (let k = 0; k < 6; k++) {
+            const age = wrap(t * 0.3 + k / 6, 1);
+            ctx.fillStyle = `rgba(${smokeColor[0]}, ${smokeColor[1]}, ${smokeColor[2]}, ${(0.85 - age * 0.6).toFixed(2)})`;
+            ctx.fillRect(Math.round(240 + Math.sin(age * 5 + k) * 2 - age * (8 + env.wind * 8)), Math.round(cabinBase - 27 - age * 22), age > 0.5 ? 2 : 1, 1);
+          }
+          if (day) {
+            ctx.fillStyle = sparkle;
+            for (const s of sparkles) if (Math.sin(t * 3 + s.p * 5) > 0.93) ctx.fillRect(s.x, s.y, 1, 1);
+          }
+          if (env.rain === 0) {
+            ctx.fillStyle = sparkle;
+            for (const f of flakes) {
+              const y = wrap(f.y + t * f.s, H);
+              const x = wrap(f.x + Math.sin(t * 0.7 + f.p) * 8 - t * 5, W);
+              ctx.fillRect(Math.round(x), Math.round(y), 1, 1);
+            }
+          }
+        }
+      };
+    }
+  };
+
+  // js/scenes/falls.js
+  var FALL = { x: 128, w: 30, top: 46, bottom: 138 };
+  var POOL = 138;
+  function fern(ctx, x, y, len, dir, color, tip) {
+    for (let k = 0; k < len; k++) {
+      const fx = x + dir * k;
+      const fy = y - Math.sin(k / len * Math.PI) * len * 0.45 + k * 0.35;
+      px(ctx, fx, fy, k > len - 3 ? tip : color);
+      if (k % 2 === 0 && k > 1) {
+        const leaf = Math.max(1, Math.round((1 - k / len) * 4));
+        rect(ctx, fx, fy + 1, 1, leaf, color);
+        rect(ctx, fx, fy - leaf, 1, leaf, color);
+      }
+    }
+  }
+  var falls_default = {
+    id: "falls",
+    name: "Misty Falls",
+    signature: "sunny",
+    horizon: 100,
+    celestial: { sunX: 288, sunHighY: 20, sunLowY: 54, moonX: 288, moonY: 24 },
+    fog: [70, 150],
+    rainBand: [POOL + 2, H - 8],
+    sounds: { always: { water: 1 }, day: { birds: 0.6 }, night: { crickets: 0.4 } },
+    create(env) {
+      const sky = env.makeSky();
+      const land = layer();
+      const l = land.ctx;
+      const r = rng(77);
+      const inFall = (x) => x > FALL.x - 4 && x < FALL.x + FALL.w + 4;
+      const cliffTop = (x) => Math.round(46 + Math.sin(x * 0.03) * 5 + Math.sin(x * 0.11 + 1) * 2 + (inFall(x) ? 3 : 0) + Math.max(0, x - 250) * 0.5);
+      const joints = [0];
+      while (joints[joints.length - 1] < W) joints.push(joints[joints.length - 1] + 9 + Math.floor(r() * 22));
+      const tones = ["#7a7488", "#6a657c", "#5c576e", "#4e4a60"];
+      let block = 0;
+      for (let x = 0; x < W; x++) {
+        if (x >= joints[block + 1]) block++;
+        const top = cliffTop(x);
+        const warp = Math.round(Math.sin(x * 0.05 + block) * 2 + block % 3);
+        for (let y = top; y < POOL; y++) {
+          const band = Math.floor((y + warp) / 11);
+          const edge = (y + warp) % 11;
+          const tone = (band * 3 + block * 5) % 3 + (x === joints[block] ? 1 : 0);
+          px(l, x, y, edge === 0 ? "#38364a" : edge === 1 ? "#9a94ac" : tones[tone]);
+        }
+        rect(l, x, top - 2, 1, 5, "#2f7a3f");
+      }
+      for (let i = 0; i < 60; i++) {
+        const x = Math.floor(r() * W);
+        const y = cliffTop(x) + 6 + Math.floor(r() * 80);
+        if (y < POOL - 2 && !inFall(x)) rect(l, x, y, 2 + Math.floor(r() * 6), 1 + Math.floor(r() * 2), r() < 0.5 ? "#5aaa54" : "#448a48");
+      }
+      for (let i = 0; i < 80; i++) {
+        const x = r() * W;
+        if (inFall(x)) continue;
+        const y = cliffTop(Math.floor(x));
+        disc(l, x, y - 3 - r() * 5, 3 + Math.floor(r() * 4), r() < 0.5 ? "#2f8a3f" : "#3fa44c");
+        px(l, x - 1, y - 7 - r() * 4, "#8cd470");
+      }
+      for (let i = 0; i < 46; i++) {
+        const x = Math.floor(r() * W);
+        if (x > FALL.x - 6 && x < FALL.x + FALL.w + 6) continue;
+        const y = cliffTop(x) + 4 + Math.floor(r() * 50);
+        rect(l, x, y, 1, 4 + Math.floor(r() * 16), r() < 0.5 ? "#3f8a44" : "#2f6a3a");
+      }
+      rect(l, FALL.x - 3, FALL.top, FALL.w + 6, POOL - FALL.top, "#3a3c54");
+      env.grade(land.canvas);
+      const spray = layer();
+      glow(spray.ctx, FALL.x + FALL.w / 2, POOL - 6, 34, "#e6f8f6", 0.75);
+      env.grade(spray.canvas);
+      const pool = layer();
+      ditherGradient(pool.ctx, 0, POOL, W, H - POOL, ["#7fd0c8", "#4fb0b4", "#2f8c9c", "#1f6a80", "#16506a"]);
+      env.grade(pool.canvas);
+      const front = layer();
+      const f = front.ctx;
+      for (const [bx, by, br] of [[24, 176, 22], [70, 186, 16], [292, 178, 26], [246, 188, 14]]) {
+        disc(f, bx, by, br, "#3a3a48");
+        disc(f, bx - 3, by - 3, br - 4, "#55556a");
+        for (let k = 0; k < br; k++) px(f, bx - br * 0.7 + r() * br * 1.2, by - br + 2 + r() * 5, "#5aaa54");
+      }
+      for (let i = 0; i < 16; i++) {
+        const x = i < 8 ? r() * 90 : W - r() * 80;
+        fern(f, x, H - 6 - r() * 22, 12 + r() * 12, r() < 0.5 ? -1 : 1, "#2a7a3c", "#6fc45a");
+      }
+      env.grade(front.canvas);
+      const span = FALL.bottom - FALL.top;
+      const streaks = Array.from({ length: 70 }, () => ({
+        x: FALL.x + r() * FALL.w,
+        p: r() * 100,
+        speed: 60 + r() * 50,
+        len: 5 + r() * 12,
+        bright: r() < 0.35
+      }));
+      const mist = Array.from({ length: 34 }, () => ({ a: r() * 6.28, d: r(), p: r() * 6, s: 0.2 + r() * 0.4 }));
+      const ripples = Array.from({ length: 26 }, () => ({ x: r() * W, y: POOL + 4 + Math.floor(r() * 30), len: 3 + r() * 9, p: r() * 6 }));
+      const birds = Array.from({ length: 3 }, (_, i) => ({ x: r() * W, y: 14 + r() * 20, speed: 9 + r() * 6, p: i * 2 }));
+      const flies = Array.from({ length: 14 }, () => ({ x: 20 + r() * 280, y: POOL + 2 + r() * 40, p: r() * 10 }));
+      const sheet = env.rgba("#bee8f0", 0.78);
+      const lip = env.c("#e8fbff");
+      const white = env.c("#ffffff");
+      const streakDim = env.c("#8fc8dc");
+      const ripple = env.c("#b8ece6");
+      const bird = env.c("#2a3a4a");
+      const showBirds = !env.night && env.rain === 0;
+      const flow = 1 + (env.rain > 0 ? 0.25 : 0);
+      return {
+        draw(ctx, t) {
+          sky.draw(ctx, t);
+          if (showBirds) {
+            ctx.fillStyle = bird;
+            for (const b of birds) {
+              const x = Math.round(wrap(b.x + t * b.speed, W + 20) - 10);
+              const y = Math.round(b.y + Math.sin(t * 0.8 + b.p) * 3);
+              const up = Math.floor(t * 5 + b.p) % 2 === 0 ? -1 : 1;
+              ctx.fillRect(x, y, 1, 1);
+              ctx.fillRect(x - 1, y + up, 1, 1);
+              ctx.fillRect(x + 1, y + up, 1, 1);
+            }
+          }
+          ctx.drawImage(land.canvas, 0, 0);
+          ctx.drawImage(pool.canvas, 0, 0);
+          ctx.fillStyle = sheet;
+          ctx.fillRect(FALL.x, FALL.top, FALL.w, span);
+          rect(ctx, FALL.x, FALL.top - 2, FALL.w, 3, lip);
+          for (const s of streaks) {
+            const y = FALL.top + wrap(s.p + t * s.speed * flow, span);
+            rect(ctx, s.x, y, 1, Math.min(s.len, FALL.bottom - y), s.bright ? white : streakDim);
+          }
+          ctx.fillStyle = ripple;
+          for (const rp of ripples) {
+            const x = wrap(rp.x + Math.sin(t * 0.4 + rp.p) * 6, W);
+            if (Math.sin(t * 1.3 + rp.p) > 0) ctx.fillRect(Math.round(x), rp.y, Math.round(rp.len), 1);
+          }
+          ctx.drawImage(spray.canvas, 0, 0);
+          const base = FALL.x + FALL.w / 2;
+          for (const m of mist) {
+            const age = wrap(t * m.s + m.p, 1);
+            const x = base + Math.cos(m.a) * (FALL.w * 0.5 + age * 26) * (0.4 + m.d);
+            const y = POOL + 2 - age * 20 * m.d - Math.abs(Math.sin(m.a)) * 3;
+            ctx.fillStyle = env.rgba("#f0fcff", ((1 - age) * 0.75).toFixed(2));
+            ctx.fillRect(Math.round(x), Math.round(y), age > 0.4 ? 3 : 2, age > 0.4 ? 2 : 1);
+          }
+          ctx.fillStyle = white;
+          for (let x = FALL.x - 6; x < FALL.x + FALL.w + 6; x += 2) {
+            if (Math.sin(t * 7 + x * 1.7) > -0.2) ctx.fillRect(x, POOL - 1 + Math.round(Math.sin(t * 5 + x)), 2, 2);
+          }
+          if (env.night && env.rain === 0) {
+            for (const fl of flies) {
+              const on = Math.sin(t * 2.2 + fl.p);
+              if (on < 0.1) continue;
+              ctx.fillStyle = on > 0.7 ? "#eaff9a" : "#a8d85a";
+              ctx.fillRect(Math.round(fl.x + Math.sin(t * 0.6 + fl.p) * 14), Math.round(fl.y + Math.sin(t * 1.3 + fl.p * 2) * 5), 1, 1);
+            }
+          }
+          ctx.drawImage(front.canvas, 0, 0);
+        }
+      };
+    }
+  };
+
   // js/background.js
-  var SCENES = { bamboo: bamboo_default, wheat: wheat_default, village: village_default, castle: castle_default, ocean: ocean_default, neon: neon_default, city: city_default, storm: storm_default, blocks: blocks_default, ulol: ulol_default, domes: domes_default };
-  var CASUAL_SCENES = ["bamboo", "wheat", "village", "castle", "ocean", "neon"];
+  var SCENES = { bamboo: bamboo_default, wheat: wheat_default, sakura: sakura_default, village: village_default, falls: falls_default, castle: castle_default, ocean: ocean_default, aurora: aurora_default, neon: neon_default, city: city_default, storm: storm_default, blocks: blocks_default, ulol: ulol_default, domes: domes_default };
+  var CASUAL_SCENES = ["bamboo", "wheat", "sakura", "village", "falls", "castle", "ocean", "aurora", "neon"];
   var CLASSIC_SCENES = ["blocks", "ulol", "domes"];
   var MODE_SCENES = { sprint: "city", blitz: "storm" };
   var FADE_S = 1.6;
   var FRAME_MS2 = 1e3 / 30;
   var MENU_CYCLE_S = 16;
+  var KEEP_INSTANCES = 4;
   function describeScene(id) {
     return id === "cycle" ? "Cycle by level" : SCENES[id]?.name || id;
   }
-  function createBackground(canvas, layerEl, settings2) {
-    canvas.width = W;
-    canvas.height = H;
-    const ctx = canvas.getContext("2d");
+  function createBackground(canvas2, layerEl, settings2, hooks = {}) {
+    canvas2.width = W;
+    canvas2.height = H;
+    const ctx = canvas2.getContext("2d");
     ctx.imageSmoothingEnabled = false;
     const fadeCanvas = document.createElement("canvas");
     fadeCanvas.width = W;
@@ -2088,30 +4905,85 @@
     let menuSince = 0;
     let lastDraw = 0;
     const start = performance.now();
-    function instance(id) {
-      if (!instances.has(id)) instances.set(id, SCENES[id].create());
-      return instances.get(id);
+    function instance({ id, variant, key }) {
+      let inst = instances.get(key);
+      if (!inst) {
+        const scene = SCENES[id];
+        const env = createEnv(variant, scene);
+        const drawing = scene.create(env);
+        inst = {
+          env,
+          events: drawing.events,
+          draw(c, t, opts) {
+            drawing.draw(c, t, opts);
+            if (!scene.quiet) env.overlay(c, t);
+          }
+        };
+        instances.set(key, inst);
+        for (const old of instances.keys()) {
+          if (instances.size <= KEEP_INSTANCES) break;
+          if (old !== current?.key && old !== previous?.key && old !== key) instances.delete(old);
+        }
+      }
+      return inst;
     }
     function fit() {
       const scale = Math.max(window.innerWidth / W, window.innerHeight / H);
-      canvas.style.width = `${Math.ceil(W * scale)}px`;
-      canvas.style.height = `${Math.ceil(H * scale)}px`;
+      canvas2.style.width = `${Math.ceil(W * scale)}px`;
+      canvas2.style.height = `${Math.ceil(H * scale)}px`;
     }
-    function show(id) {
-      if (!SCENES[id] || id === current) return;
+    function variantFor(id, step) {
+      if (SCENES[id].quiet) return SCENES[id].signature;
+      const pick2 = settings2.weather || "default";
+      if (VARIANT_INFO[pick2]) return pick2;
+      if (pick2 === "cycle" && step !== null) return cycleVariant(step);
+      return SCENES[id].signature;
+    }
+    function show(id, variant) {
+      if (!SCENES[id]) return;
+      const key = `${id}:${variant}`;
+      if (key === current?.key) return;
       previous = current;
-      current = id;
+      current = { id, variant, key };
       fadeStart = (performance.now() - start) / 1e3;
+      hooks.onScene?.({
+        id,
+        variant,
+        sceneName: SCENES[id].name,
+        weatherName: SCENES[id].quiet ? "" : VARIANT_INFO[variant].name,
+        sounds: SCENES[id].quiet ? {} : ambienceFor(SCENES[id], variant)
+      });
     }
     function casualScene(level2) {
-      const pick = settings2.casualScene || "cycle";
-      if (pick !== "cycle" && SCENES[pick]) return pick;
+      const pick2 = settings2.casualScene || "cycle";
+      if (pick2 !== "cycle" && SCENES[pick2]) return pick2;
       return CASUAL_SCENES[(Math.max(1, level2) - 1) % CASUAL_SCENES.length];
     }
     function classicScene(level2) {
-      const pick = settings2.classicScene || "cycle";
-      if (pick !== "cycle" && SCENES[pick]) return pick;
+      const pick2 = settings2.classicScene || "cycle";
+      if (pick2 !== "cycle" && SCENES[pick2]) return pick2;
       return CLASSIC_SCENES[Math.max(0, level2) % CLASSIC_SCENES.length];
+    }
+    function showClassic(lvl) {
+      const id = classicScene(lvl);
+      show(id, variantFor(id, null));
+    }
+    let warmTimer = 0;
+    function showCasual(level2) {
+      const id = casualScene(level2);
+      show(id, variantFor(id, level2));
+      clearTimeout(warmTimer);
+      warmTimer = setTimeout(() => {
+        const next = casualScene(level2 + 1);
+        const variant = variantFor(next, level2 + 1);
+        instance({ id: next, variant, key: `${next}:${variant}` });
+      }, 2500);
+    }
+    function showMenuScene() {
+      const pick2 = settings2.casualScene || "cycle";
+      const fixed2 = pick2 !== "cycle" && SCENES[pick2];
+      const id = fixed2 ? pick2 : CASUAL_SCENES[menuIndex];
+      show(id, variantFor(id, menuIndex + 1));
     }
     function frame(now) {
       requestAnimationFrame(frame);
@@ -2125,9 +4997,12 @@
       if (menuCycle && t - menuSince > MENU_CYCLE_S) {
         menuSince = t;
         menuIndex = (menuIndex + 1) % CASUAL_SCENES.length;
-        show(CASUAL_SCENES[menuIndex]);
+        showMenuScene();
       }
-      instance(current).draw(ctx, t, { level });
+      const inst = instance(current);
+      inst.draw(ctx, t, { level });
+      if (hooks.onStrike) inst.env.poll(t, hooks.onStrike);
+      if (hooks.onCue && inst.events) inst.events(t, hooks.onCue);
       const k = (t - fadeStart) / FADE_S;
       if (previous && k < 1) {
         instance(previous).draw(fadeCtx, t, { level });
@@ -2142,31 +5017,96 @@
     fit();
     requestAnimationFrame(frame);
     return {
-      /** Menu: slowly cycle through the Casual scenes. */
+      /** Menu: slowly cycle through the Casual scenes (or show the chosen one). */
       showMenu() {
         menuCycle = true;
         menuSince = (performance.now() - start) / 1e3;
-        show(CASUAL_SCENES[menuIndex]);
+        showMenuScene();
+      },
+      /** The scene or weather setting changed in the menu: show it now. */
+      refresh() {
+        if (menuCycle) showMenuScene();
       },
       /** A game started: pick the scene for its mode (and the start level, in Classic). */
       showMode(modeId, startLevel = 1) {
         menuCycle = false;
         level = startLevel;
-        show(modeId === "og" ? classicScene(level) : MODE_SCENES[modeId] || casualScene(level));
+        const fixed2 = MODE_SCENES[modeId];
+        if (modeId === "og") showClassic(level);
+        else if (fixed2) show(fixed2, variantFor(fixed2, null));
+        else showCasual(level);
       },
       /** Level changed in Casual or Classic: move to the next scene in the cycle. */
       onLevel(modeId, newLevel) {
         level = newLevel;
-        if (modeId === "og") show(classicScene(level));
-        else if (!MODE_SCENES[modeId]) show(casualScene(level));
+        if (modeId === "og") showClassic(level);
+        else if (!MODE_SCENES[modeId]) showCasual(level);
       }
     };
   }
 
+  // js/settings-defs.js
+  var SOUND_PACK_LABELS = { ulol: "uloltris", arcade: "Arcade (Jstris-style)", bubbly: "Bubbly (PPT-style)", nes: "8-bit (console-style)" };
+  var LEVELS = ["off", "low", "medium", "high"];
+  var SETTINGS_TABS = [
+    { id: "handling", label: "HANDLING", settings: [
+      { key: "arr", label: "ARR", type: "range", describe: describeArr, hint: "Auto repeat rate. Frames between auto-shifts once DAS has charged. 0 slides to the wall at once." },
+      { key: "das", label: "DAS", type: "range", describe: describeFrames, hint: "Delayed auto shift. Frames you hold a direction before it starts repeating." },
+      { key: "dcd", label: "DCD", type: "range", describe: describeDcd, hint: "DAS cut delay. Pauses DAS charging for this many frames after a rotation or a new piece. 0 is off." },
+      { key: "sdf", label: "SDF", type: "range", describe: describeSoftDrop, hint: "Soft drop factor. How many times faster than gravity a held soft drop falls. The top value drops at once." },
+      { key: "cancelDasOnDirectionChange", label: "CANCEL DAS ON TURN", type: "toggle", hint: "On: changing direction resets the DAS charge. Off: the charge carries over." },
+      { key: "preferSoftDrop", label: "PREFER SOFT DROP", type: "toggle", hint: "On: soft drop runs before sideways movement within a frame." }
+    ] },
+    { id: "audio", label: "AUDIO", settings: [
+      { key: "masterVolume", label: "MASTER", type: "range", describe: describeVolume, hint: "Overall volume for everything." },
+      { key: "sfxVolume", label: "SFX", type: "range", describe: describeVolume, hint: "Volume of move, rotate, drop and clear sounds." },
+      { key: "musicVolume", label: "MUSIC", type: "range", describe: describeVolume, hint: "Volume of the soundtrack." },
+      { key: "ambienceVolume", label: "SCENE SOUND VOLUME", type: "range", describe: describeVolume, hint: "Volume of rain, wind, birds and the other sounds of the scenery." },
+      { key: "sfxMuted", label: "MUTE SFX", type: "toggle", hint: "Silence the effect sounds." },
+      { key: "musicMuted", label: "MUTE MUSIC", type: "toggle", hint: "Silence the soundtrack." },
+      { key: "ambience", label: "SCENE SOUNDS", type: "toggle", hint: "Play the sounds of the scenery: rain, thunder, wind, wheat, water, birds and more." },
+      { key: "soundPack", label: "SOUND PACK", type: "enum", values: ["ulol", "arcade", "bubbly", "nes"], describe: (v) => SOUND_PACK_LABELS[v] || v, hint: "The set of effect sounds. All are synthesized; none are recordings. Classic always uses the 8-bit set." },
+      { key: "soundtrack", label: "SOUNDTRACK", type: "enum", values: ["auto", "casual", "competitive", "intense", "chip", "off"], describe: describeSoundtrack, hint: "Which playlist plays. Auto plays casual in the menu, Casual and 40 Lines, intense in Blitz and the 8-bit chiptune in Classic." },
+      { key: "track", label: "TRACK", type: "enum", values: ["auto", ...TRACK_IDS], describe: (v) => v === "auto" ? "Auto (playlist)" : TRACK_INFO[v].name, hint: "Loop one track from the soundtrack instead of the playlist. You can also pick one on the MUSIC tab." },
+      { key: "crossfadeDuration", label: "PLAYER CROSSFADE", type: "range", describe: describeCrossfade, hint: "Fade between songs in the music player that plays your own files." }
+    ] },
+    { id: "visual", label: "VISUAL", settings: [
+      { key: "blockSkin", label: "BLOCK SKIN", type: "enum", values: SKINS, describe: describeSkin, hint: "How the blocks are drawn." },
+      { key: "statsDisplay", label: "STATS DISPLAY", type: "enum", values: ["off", "time", "speed", "efficiency", "versus"], describe: describeStatsDisplay, hint: "Which numbers sit at the bottom left of the board." },
+      { key: "background", label: "BACKGROUND", type: "enum", values: ["on", "dim", "off"], describe: describeEnum, hint: "The pixel art scenery behind the game. Dim darkens it; off also silences scene sounds." },
+      { key: "casualScene", label: "CASUAL SCENE", type: "enum", values: ["cycle", ...CASUAL_SCENES], describe: describeScene, hint: "Which scene Casual shows. Cycle changes the scene every level." },
+      { key: "classicScene", label: "CLASSIC SCENE", type: "enum", values: ["cycle", ...CLASSIC_SCENES], describe: describeScene, hint: "Which scene Classic shows. Cycle changes the scene every level. Classic scenes keep their retro look in every weather." },
+      { key: "classicFont", label: "CLASSIC FONT", type: "enum", values: ["og", "ulol"], describe: describeClassicFont, hint: "The font on the Classic screen. OG is an 8-bit pixel font (loaded from Google Fonts, with the uloltris fonts as the fallback)." },
+      { key: "weather", label: "WEATHER", type: "enum", values: ["default", "cycle", ...VARIANTS], describe: describeWeather, hint: "Scene default gives each scene its own look. Cycle changes the weather every Casual level. Or pick one for every scene." },
+      { key: "ghostOpacity", label: "GHOST OPACITY", type: "range", describe: describeOpacity, hint: "How visible the ghost piece is, where the piece will land." },
+      { key: "showActionText", label: "CLEAR TEXT", type: "toggle", hint: "Show the name of each clear, T-spin and combo beside the board." }
+    ] },
+    { id: "effects", label: "FX", settings: [
+      { key: "boardBounce", label: "BOARD BOUNCE", type: "enum", values: LEVELS, describe: describeEnum, hint: "The board springs on hard drops, clears and wall bumps." },
+      { key: "placeImpact", label: "PLACE IMPACT", type: "enum", values: LEVELS, describe: describeEnum, hint: "Drop trail, landing flash and dust when a piece locks." },
+      { key: "clearEffects", label: "CLEAR EFFECTS", type: "enum", values: LEVELS, describe: describeEnum, hint: "Row flashes, bursts, T-spin spirals, sparkles and confetti." },
+      { key: "screenShake", label: "SCREEN SHAKE", type: "enum", values: LEVELS, describe: describeEnum, hint: "The board shakes on big clears." }
+    ] },
+    { id: "gameplay", label: "GAME", settings: [
+      { key: "gameStyle", label: "GAME STYLE", type: "enum", values: ["modern", "battle"], describe: describeGameStyle, hint: "Modern spawns the next piece at once. Battle pauses on line clears and adds an entry delay. Read when a game starts." },
+      { key: "nextPreviewCount", label: "NEXT PIECES", type: "range", describe: describePreviewCount, hint: "How many upcoming pieces are shown." },
+      { key: "lockDelay", label: "LOCK DELAY", type: "range", describe: describeLockDelay, hint: "How long a piece can rest on the stack before it locks." },
+      { key: "classicStartLevel", label: "CLASSIC START LEVEL", type: "range", describe: describeStartLevel, hint: "The level Classic begins on, 0 to 19, like the level select of the original. Higher levels fall faster from the first piece." },
+      { key: "touchControls", label: "TOUCH CONTROLS", type: "enum", values: ["auto", "on", "off"], describe: describeEnum, hint: "On-screen buttons for phones and tablets. Auto shows them on touch devices." }
+    ] }
+  ];
+  function findSetting(key) {
+    for (const tab of SETTINGS_TABS) {
+      const def = tab.settings.find((s) => s.key === key);
+      if (def) return def;
+    }
+    return null;
+  }
+
   // js/chip.js
   var cache3 = /* @__PURE__ */ new WeakMap();
-  function midiToHz(midi) {
-    return 440 * Math.pow(2, (midi - 69) / 12);
+  function midiToHz(midi2) {
+    return 440 * Math.pow(2, (midi2 - 69) / 12);
   }
   function pulseWave(ctx, duty) {
     let byDuty = cache3.get(ctx);
@@ -2279,11 +5219,11 @@
       blip(from, "sine", t, len, peak, to);
     }
     const CHIP_LIFT = 2.4;
-    function chip(midi, t, len, peakIn, duty = 0.5, bendTo = null) {
+    function chip(midi2, t, len, peakIn, duty = 0.5, bendTo = null) {
       const peak = peakIn * CHIP_LIFT;
       const osc = ctx.createOscillator();
       osc.setPeriodicWave(pulseWave(ctx, duty));
-      const from = midiToHz(midi);
+      const from = midiToHz(midi2);
       osc.frequency.setValueAtTime(from, t);
       if (bendTo !== null) {
         const steps = 6;
@@ -2302,8 +5242,8 @@
       osc.stop(t + len + 0.01);
       osc.onended = () => gain.disconnect();
     }
-    function chipTri(midi, t, len, peak, bendTo = midi) {
-      const { osc } = playTone(midiToHz(midi), "triangle", t, len + 0.02, (g, time) => {
+    function chipTri(midi2, t, len, peak, bendTo = midi2) {
+      const { osc } = playTone(midiToHz(midi2), "triangle", t, len + 0.02, (g, time) => {
         g.setValueAtTime(peak, time);
         g.exponentialRampToValueAtTime(1e-3, time + len);
       });
@@ -2540,33 +5480,39 @@
           break;
         case "clear4": {
           const delay = ctx.createDelay();
-          delay.delayTime.value = 0.1;
+          delay.delayTime.value = 0.11;
           const feedback = ctx.createGain();
-          feedback.gain.value = 0.4;
+          feedback.gain.value = 0.3;
+          const wet = ctx.createGain();
+          wet.gain.value = 0.3;
           delay.connect(feedback);
           feedback.connect(delay);
-          delay.connect(masterGain);
-          [523, 659, 784, 1046].forEach((freq) => {
-            const osc = ctx.createOscillator();
-            const g = ctx.createGain();
-            osc.type = "square";
-            osc.frequency.value = freq;
-            g.gain.setValueAtTime(0, t);
-            g.gain.linearRampToValueAtTime(0.15, t + 0.05);
-            g.gain.exponentialRampToValueAtTime(0.01, t + 0.3);
-            osc.connect(g);
-            g.connect(masterGain);
-            g.connect(delay);
-            osc.start(t);
-            osc.stop(t + 0.3);
-            osc.onended = () => {
-              g.disconnect();
-            };
-          });
+          delay.connect(wet);
+          wet.connect(masterGain);
+          const ring = (freq, at2, len, peak) => {
+            for (const [ratio, level, decay] of [[1, 1, 1], [2, 0.3, 0.6], [3.01, 0.16, 0.35], [5.4, 0.07, 0.2]]) {
+              const osc = ctx.createOscillator();
+              const g = ctx.createGain();
+              osc.frequency.value = freq * ratio;
+              g.gain.setValueAtTime(0, at2);
+              g.gain.linearRampToValueAtTime(peak * level, at2 + 3e-3);
+              g.gain.exponentialRampToValueAtTime(1e-4, at2 + len * decay);
+              osc.connect(g);
+              g.connect(masterGain);
+              g.connect(delay);
+              osc.start(at2);
+              osc.stop(at2 + len * decay + 0.02);
+              osc.onended = () => g.disconnect();
+            }
+          };
+          [1047, 1319, 1568].forEach((freq, i) => ring(freq, t + i * 0.045, 0.25, 0.2));
+          ring(2093, t + 0.135, 1, 0.3);
+          ring(3136, t + 0.135, 0.7, 0.1);
           setTimeout(() => {
             delay.disconnect();
             feedback.disconnect();
-          }, 1500);
+            wet.disconnect();
+          }, 2500);
           break;
         }
         case "tspin": {
@@ -2795,6 +5741,454 @@
     };
   }
 
+  // js/audio-tags.js
+  var MAX_HEAD = 12 * 1024 * 1024;
+  var ascii = (b, at2, n) => String.fromCharCode(...b.subarray(at2, at2 + n));
+  var u32 = (b, at2) => (b[at2] << 24 | b[at2 + 1] << 16 | b[at2 + 2] << 8 | b[at2 + 3]) >>> 0;
+  var u32le = (b, at2) => (b[at2] | b[at2 + 1] << 8 | b[at2 + 2] << 16 | b[at2 + 3] << 24) >>> 0;
+  var u24 = (b, at2) => b[at2] << 16 | b[at2 + 1] << 8 | b[at2 + 2];
+  var synchsafe = (b, at2) => (b[at2] & 127) << 21 | (b[at2 + 1] & 127) << 14 | (b[at2 + 2] & 127) << 7 | b[at2 + 3] & 127;
+  function decodeText(bytes, encoding) {
+    let text2;
+    if (encoding === 1 || encoding === 2) {
+      let label = encoding === 2 ? "utf-16be" : "utf-16le";
+      let body = bytes;
+      if (bytes[0] === 255 && bytes[1] === 254) {
+        label = "utf-16le";
+        body = bytes.subarray(2);
+      } else if (bytes[0] === 254 && bytes[1] === 255) {
+        label = "utf-16be";
+        body = bytes.subarray(2);
+      }
+      text2 = new TextDecoder(label).decode(body);
+    } else text2 = new TextDecoder(encoding === 3 ? "utf-8" : "windows-1252").decode(bytes);
+    return text2.replace(/\0+$/, "").trim();
+  }
+  function pastTerminator(bytes, at2, encoding) {
+    if (encoding === 1 || encoding === 2) {
+      for (let i2 = at2; i2 + 1 < bytes.length; i2 += 2) if (bytes[i2] === 0 && bytes[i2 + 1] === 0) return i2 + 2;
+      return bytes.length;
+    }
+    const i = bytes.indexOf(0, at2);
+    return i < 0 ? bytes.length : i + 1;
+  }
+  var IMAGE_TYPES = { PNG: "image/png", JPG: "image/jpeg", JPEG: "image/jpeg" };
+  function readId3(bytes) {
+    if (ascii(bytes, 0, 3) !== "ID3") return null;
+    const version = bytes[3];
+    if (version < 2 || version > 4) return null;
+    let p = 10;
+    const end = Math.min(bytes.length, 10 + synchsafe(bytes, 6));
+    if (bytes[5] & 64 && version >= 3) p += version === 4 ? synchsafe(bytes, p) : u32(bytes, p) + 4;
+    const header = version === 2 ? 6 : 10;
+    const tags = {};
+    let cover = null;
+    while (p + header <= end) {
+      const id = ascii(bytes, p, version === 2 ? 3 : 4);
+      if (!/^[A-Z0-9]+$/.test(id)) break;
+      const length = version === 2 ? u24(bytes, p + 3) : version === 4 ? synchsafe(bytes, p + 4) : u32(bytes, p + 4);
+      const body = bytes.subarray(p + header, Math.min(end, p + header + length));
+      p += header + length;
+      if (id === "TIT2" || id === "TT2") tags.title = decodeText(body.subarray(1), body[0]);
+      else if (id === "TPE1" || id === "TP1") tags.artist = decodeText(body.subarray(1), body[0]);
+      else if (id === "TALB" || id === "TAL") tags.album = decodeText(body.subarray(1), body[0]);
+      else if (id === "APIC" || id === "PIC") {
+        const encoding = body[0];
+        let q = 1;
+        let type;
+        if (id === "PIC") {
+          type = IMAGE_TYPES[ascii(body, 1, 3).toUpperCase()];
+          q = 4;
+        } else {
+          const z = body.indexOf(0, 1);
+          type = ascii(body, 1, Math.max(0, z - 1)) || "image/jpeg";
+          q = z + 1;
+        }
+        const pictureType = body[q];
+        q = pastTerminator(body, q + 1, encoding);
+        if (type && type !== "-->" && (!cover || pictureType === 3) && body.length > q) cover = new Blob([body.slice(q)], { type });
+      }
+    }
+    if (cover) tags.image = cover;
+    return tags;
+  }
+  function readFlac(bytes) {
+    if (ascii(bytes, 0, 4) !== "fLaC") return null;
+    const tags = {};
+    let p = 4;
+    while (p + 4 <= bytes.length) {
+      const last = bytes[p] & 128;
+      const type = bytes[p] & 127;
+      const length = u24(bytes, p + 1);
+      const body = bytes.subarray(p + 4, p + 4 + length);
+      p += 4 + length;
+      if (type === 4) {
+        let q = 4 + u32le(body, 0);
+        const count = u32le(body, q);
+        q += 4;
+        for (let i = 0; i < count && q + 4 <= body.length; i++) {
+          const size = u32le(body, q);
+          const comment = new TextDecoder("utf-8").decode(body.subarray(q + 4, q + 4 + size));
+          q += 4 + size;
+          const eq = comment.indexOf("=");
+          const key = comment.slice(0, eq).toUpperCase();
+          if (key === "TITLE") tags.title = comment.slice(eq + 1);
+          else if (key === "ARTIST") tags.artist = comment.slice(eq + 1);
+          else if (key === "ALBUM") tags.album = comment.slice(eq + 1);
+        }
+      } else if (type === 6) {
+        const pictureType = u32(body, 0);
+        const mimeLength = u32(body, 4);
+        const mime = ascii(body, 8, mimeLength);
+        let q = 8 + mimeLength;
+        q += 4 + u32(body, q);
+        q += 16;
+        const size = u32(body, q);
+        if (!tags.image || pictureType === 3) tags.image = new Blob([body.slice(q + 4, q + 4 + size)], { type: mime || "image/jpeg" });
+      }
+      if (last) break;
+    }
+    return tags;
+  }
+  function atoms(bytes, start, end, visit) {
+    let p = start;
+    while (p + 8 <= end) {
+      let size = u32(bytes, p);
+      const type = ascii(bytes, p + 4, 4);
+      let header = 8;
+      if (size === 1) {
+        size = u32(bytes, p + 12);
+        header = 16;
+      }
+      if (size === 0) size = end - p;
+      if (size < header) break;
+      visit(type, p + header, Math.min(end, p + size));
+      p += size;
+    }
+  }
+  function readMoov(bytes) {
+    const tags = {};
+    const find = (from, to, path, fn) => {
+      atoms(bytes, from, to, (type, a, b) => {
+        if (type !== path[0]) return;
+        if (path.length === 1) fn(a, b);
+        else find(type === "meta" ? a + 4 : a, b, path.slice(1), fn);
+      });
+    };
+    find(8, bytes.length, ["udta", "meta", "ilst"], (from, to) => {
+      atoms(bytes, from, to, (type, a, b) => {
+        atoms(bytes, a, b, (inner, c, d) => {
+          if (inner !== "data") return;
+          const flags = u24(bytes, c + 1);
+          const payload = bytes.subarray(c + 8, d);
+          if (type === "\xA9nam") tags.title = new TextDecoder("utf-8").decode(payload);
+          else if (type === "\xA9ART") tags.artist = new TextDecoder("utf-8").decode(payload);
+          else if (type === "\xA9alb") tags.album = new TextDecoder("utf-8").decode(payload);
+          else if (type === "covr") tags.image = new Blob([payload.slice()], { type: flags === 14 ? "image/png" : "image/jpeg" });
+        });
+      });
+    });
+    return tags;
+  }
+  async function readMp4(file) {
+    let offset = 0;
+    while (offset + 8 <= file.size) {
+      const head = new Uint8Array(await file.slice(offset, offset + 16).arrayBuffer());
+      let size = u32(head, 0);
+      if (size === 1) size = u32(head, 12);
+      if (size < 8) return null;
+      if (ascii(head, 4, 4) === "moov") {
+        if (size > MAX_HEAD) return null;
+        return readMoov(new Uint8Array(await file.slice(offset, offset + size).arrayBuffer()));
+      }
+      offset += size;
+    }
+    return null;
+  }
+  async function readTags(file) {
+    try {
+      const first = new Uint8Array(await file.slice(0, 12).arrayBuffer());
+      if (ascii(first, 0, 3) === "ID3") {
+        const size = synchsafe(first, 6) + 10;
+        return readId3(new Uint8Array(await file.slice(0, Math.min(size, MAX_HEAD)).arrayBuffer())) || {};
+      }
+      if (ascii(first, 0, 4) === "fLaC") return readFlac(new Uint8Array(await file.slice(0, MAX_HEAD).arrayBuffer())) || {};
+      if (ascii(first, 4, 4) === "ftyp") return await readMp4(file) || {};
+    } catch {
+    }
+    return {};
+  }
+
+  // js/cover-art.js
+  var SIZE = 32;
+  function canvas() {
+    const c = document.createElement("canvas");
+    c.width = c.height = SIZE;
+    const g = c.getContext("2d", { willReadFrequently: true });
+    g.imageSmoothingEnabled = false;
+    return { c, g };
+  }
+  var rect2 = (g, x, y, w, h, color, alpha = 1) => {
+    g.globalAlpha = alpha;
+    g.fillStyle = color;
+    g.fillRect(x, y, w, h);
+    g.globalAlpha = 1;
+  };
+  var disc2 = (g, cx, cy, r, color, alpha = 1) => {
+    g.globalAlpha = alpha;
+    g.fillStyle = color;
+    for (let y = -r; y <= r; y++) for (let x = -r; x <= r; x++) if (x * x + y * y <= r * r + r * 0.4) g.fillRect(cx + x, cy + y, 1, 1);
+    g.globalAlpha = 1;
+  };
+  function bands(g, y0, y1, colors) {
+    const h = (y1 - y0) / colors.length;
+    colors.forEach((color, i) => rect2(g, 0, Math.round(y0 + i * h), SIZE, Math.ceil(h) + 1, color));
+  }
+  function seeded(seed) {
+    let s = seed >>> 0 || 1;
+    return () => {
+      s = Math.imul(s, 1664525) + 1013904223 >>> 0;
+      return s / 4294967296;
+    };
+  }
+  function hash(text2) {
+    let h = 2166136261;
+    for (let i = 0; i < text2.length; i++) h = Math.imul(h ^ text2.charCodeAt(i), 16777619);
+    return h >>> 0;
+  }
+  var PAINTERS2 = {
+    // Rainy Window: rain on the glass, a warm lamp beyond it
+    rain(g) {
+      bands(g, 0, SIZE, ["#242d48", "#2d3859", "#37456a", "#42527a", "#4d5f86"]);
+      disc2(g, 9, 24, 6, "#f3b36a", 0.32);
+      disc2(g, 9, 24, 3, "#ffd590", 0.5);
+      const r = seeded(21);
+      for (let i = 0; i < 26; i++) {
+        const x = 2 + Math.floor(r() * 27), y = 2 + Math.floor(r() * 24);
+        rect2(g, x, y, 1, 3, "#b4cdee", 0.75);
+        rect2(g, x - 1, y + 3, 1, 1, "#b4cdee", 0.5);
+      }
+      for (const [x, y, w, h] of [[0, 0, 32, 2], [0, 30, 32, 2], [0, 0, 2, 32], [30, 0, 2, 32], [15, 0, 2, 32], [0, 15, 32, 2]]) rect2(g, x, y, w, h, "#121628");
+    },
+    // Midnight Blue: a big moon over a sleeping town
+    moon(g) {
+      bands(g, 0, SIZE, ["#080c26", "#0e153a", "#16214f", "#202f66", "#2c3f7c"]);
+      const r = seeded(5);
+      for (let i = 0; i < 16; i++) rect2(g, Math.floor(r() * 32), Math.floor(r() * 18), 1, 1, "#dfe6ff", 0.4 + r() * 0.5);
+      disc2(g, 20, 11, 8, "#f6f1da");
+      disc2(g, 17, 9, 2, "#dcd5b8");
+      disc2(g, 23, 14, 2, "#e3dcc0");
+      disc2(g, 22, 8, 1, "#dcd5b8");
+      let x = 0;
+      while (x < SIZE) {
+        const w = 3 + Math.floor(r() * 4), h = 5 + Math.floor(r() * 9);
+        rect2(g, x, SIZE - h, w, h, "#090d20");
+        for (let wy = SIZE - h + 2; wy < SIZE - 1; wy += 3) if (r() < 0.5) rect2(g, x + 1, wy, 1, 1, "#ffd36b");
+        x += w;
+      }
+    },
+    // Corner Cafe: a cup with steam on a warm table
+    cup(g) {
+      bands(g, 0, SIZE, ["#ecd8b4", "#e6cda4", "#dcbe94", "#ceab80", "#bd9870"]);
+      rect2(g, 0, 25, SIZE, 7, "#8a5a36");
+      rect2(g, 0, 25, SIZE, 1, "#a9744a");
+      rect2(g, 6, 24, 20, 3, "#f7efe0");
+      rect2(g, 8, 27, 16, 1, "#c9b89a");
+      rect2(g, 9, 13, 14, 11, "#fffaf0");
+      rect2(g, 9, 13, 2, 11, "#efe4ce");
+      rect2(g, 21, 13, 2, 11, "#e2d5bb");
+      rect2(g, 11, 22, 10, 2, "#e2d5bb");
+      rect2(g, 10, 12, 12, 3, "#4e2c17");
+      rect2(g, 11, 12, 4, 1, "#7a4a2a");
+      rect2(g, 23, 15, 4, 2, "#fffaf0");
+      rect2(g, 26, 16, 2, 4, "#fffaf0");
+      rect2(g, 23, 20, 4, 2, "#fffaf0");
+      for (const [x, dy] of [[12, 0], [16, 2], [20, 1]]) for (let y = 0; y < 9; y++) rect2(g, x + Math.floor((y + dy) / 2) % 2, 10 - y, 1, 1, "#ffffff", 0.55 - y * 0.05);
+    },
+    // Neon Circuit: a striped sun over a glowing grid
+    sun(g) {
+      bands(g, 0, 20, ["#1a0840", "#3a0f66", "#7a1a84", "#c02a8a", "#ff5a6a", "#ffa05a"]);
+      for (let y = 0; y < 13; y++) {
+        const half = Math.floor(Math.sqrt(81 - (y - 12) * (y - 12)));
+        const t = y / 13;
+        if (y > 6 && y % 3 === 0) continue;
+        rect2(g, 16 - half, 7 + y, half * 2, 1, t < 0.5 ? "#ffe066" : t < 0.8 ? "#ff9a5a" : "#ff4f8a");
+      }
+      rect2(g, 0, 20, SIZE, 12, "#14052a");
+      rect2(g, 0, 20, SIZE, 1, "#ff4fb4");
+      for (const y of [22, 25, 29]) rect2(g, 0, y, SIZE, 1, "#ff4fb4", 0.75);
+      for (let i = -6; i <= 6; i++) for (let y = 21; y < 32; y++) rect2(g, Math.round(16 + i * (y - 19) * 0.9), y, 1, 1, "#ff4fb4", 0.6);
+    },
+    // Pulse Driver: light beams over a dark floor
+    beam(g) {
+      bands(g, 0, SIZE, ["#080620", "#0d0a2e", "#14103e", "#1c1650", "#241c60"]);
+      const beams = [[6, "#3ff5d0"], [13, "#b06bff"], [19, "#3ff5d0"], [26, "#ff4fb4"]];
+      for (const [x0, color] of beams) for (let y = 0; y < 24; y++) rect2(g, x0 - Math.floor(y / 6), y, 1 + Math.floor(y / 3), 1, color, 0.22 + y * 8e-3);
+      rect2(g, 0, 24, SIZE, 8, "#0a0820");
+      rect2(g, 0, 24, SIZE, 1, "#ffffff", 0.4);
+      for (const [x0, color] of beams) rect2(g, x0 - 2, 25, 5, 1, color, 0.5);
+      const r = seeded(9);
+      for (let i = 0; i < 10; i++) rect2(g, Math.floor(r() * 32), Math.floor(r() * 20), 1, 1, "#ffffff", 0.4 + r() * 0.4);
+    },
+    // Night Shift: a mirror ball
+    disco(g) {
+      bands(g, 0, SIZE, ["#1a0a3a", "#2a1252", "#3b1a6a", "#4c2282", "#5d2a9a"]);
+      rect2(g, 16, 0, 1, 6, "#c9c9e0");
+      const cx = 16, cy = 16, rad = 10;
+      for (let y = -rad; y <= rad; y++) for (let x = -rad; x <= rad; x++) {
+        if (x * x + y * y > rad * rad) continue;
+        const tile2 = (x >> 1) + (y >> 1) & 1;
+        const light = 1 - (x + y + 2 * rad) / (4 * rad);
+        const v = Math.round(110 + light * 120 + (tile2 ? 18 : -14));
+        rect2(g, cx + x, cy + y, 1, 1, `rgb(${v},${Math.min(255, v + 8)},${Math.min(255, v + 30)})`);
+      }
+      rect2(g, 11, 11, 2, 2, "#ffffff");
+      for (const [x, y] of [[4, 6], [27, 9], [6, 26], [28, 24], [24, 3]]) {
+        rect2(g, x - 1, y, 3, 1, "#ffffff");
+        rect2(g, x, y - 1, 1, 3, "#ffffff");
+      }
+    },
+    // Redline: a pulse trace across a dark screen
+    wave(g) {
+      rect2(g, 0, 0, SIZE, SIZE, "#120707");
+      for (let y = 0; y < SIZE; y += 2) rect2(g, 0, y, SIZE, 1, "#1c0a0a");
+      for (let x = 0; x < SIZE; x++) {
+        const a = Math.sin(x / 2.4) * 8 * (0.35 + 0.65 * Math.sin(x / SIZE * Math.PI));
+        const y = Math.round(16 + a);
+        rect2(g, x, y - 2, 1, 5, "#6a1a10", 0.6);
+        rect2(g, x, y - 1, 1, 3, "#ff5a36");
+        rect2(g, x, y, 1, 1, "#ffd2a0");
+      }
+      rect2(g, 0, 27, SIZE, 1, "#d8281c");
+      rect2(g, 0, 29, 20, 1, "#d8281c", 0.6);
+    },
+    // Overclock: a star burst
+    star(g) {
+      bands(g, 0, SIZE, ["#050a26", "#0a1240", "#101c5c", "#0a1240", "#050a26"]);
+      const cx = 16, cy = 16;
+      for (let k = 0; k < 8; k++) {
+        const angle = k * Math.PI / 4;
+        const len = k % 2 ? 9 : 15;
+        for (let i = 2; i < len; i++) {
+          const x = Math.round(cx + Math.cos(angle) * i), y = Math.round(cy + Math.sin(angle) * i);
+          rect2(g, x, y, 1, 1, i < len * 0.5 ? "#fff6c0" : "#7aa8ff", 1 - i / (len + 4));
+          if (k % 2 === 0 && i < len * 0.6) rect2(g, x + (k === 2 || k === 6 ? 1 : 0), y + (k === 0 || k === 4 ? 1 : 0), 1, 1, "#b8d0ff", 0.5);
+        }
+      }
+      disc2(g, cx, cy, 4, "#7aa8ff", 0.5);
+      disc2(g, cx, cy, 2, "#ffffff");
+      const r = seeded(77);
+      for (let i = 0; i < 12; i++) rect2(g, Math.floor(r() * 32), Math.floor(r() * 32), 1, 1, "#9cb8ff", 0.5);
+    },
+    // Static Storm: a dark cloud and a bolt
+    bolt(g) {
+      bands(g, 0, SIZE, ["#141a28", "#1c2436", "#252f46", "#2f3a54", "#3a4664"]);
+      for (const [x, y, r2] of [[6, 7, 6], [14, 5, 7], [23, 7, 6], [29, 10, 4], [3, 11, 4]]) disc2(g, x, y, r2, "#0d121d");
+      for (const [x, y, r2] of [[9, 9, 4], [18, 8, 5], [26, 9, 4]]) disc2(g, x, y, r2, "#19202f");
+      const rows = [[12, 17, 20], [14, 15, 19], [16, 14, 18], [18, 12, 19], [20, 15, 20], [22, 14, 18], [24, 12, 16], [26, 11, 14], [28, 10, 12]];
+      for (const [y, x0, x1] of rows) {
+        rect2(g, x0 - 1, y, x1 - x0 + 3, 2, "#ffb400", 0.5);
+        rect2(g, x0, y, x1 - x0 + 1, 2, "#ffe066");
+        rect2(g, x0 + 1, y, Math.max(1, x1 - x0 - 1), 2, "#ffffff");
+      }
+      const r = seeded(14);
+      for (let i = 0; i < 14; i++) rect2(g, Math.floor(r() * 32), 14 + Math.floor(r() * 18), 1, 2, "#7d93c4", 0.35);
+    },
+    // Chiptune (Classic): 8-bit blocks stacked in a well, a T piece falling in
+    chip(g) {
+      bands(g, 0, SIZE, ["#0c0c1c", "#101030", "#14143c", "#181848"]);
+      const colors = [["#38c0f8", "#0058f8"], ["#b8f818", "#00a800"], ["#f87858", "#a81000"], ["#fcb800", "#a87000"]];
+      const cell = (cx, cy, k) => {
+        const [light, dark] = colors[k % colors.length];
+        rect2(g, cx * 4, cy * 4, 4, 4, dark);
+        rect2(g, cx * 4, cy * 4, 3, 3, light);
+        rect2(g, cx * 4 + 1, cy * 4 + 1, 1, 1, "#ffffff");
+      };
+      const r = seeded(8);
+      for (let row = 0; row < 4; row++) {
+        for (let col = 0; col < 8; col++) if (row === 0 || r() < 0.78) cell(col, 7 - row, Math.floor(r() * 4));
+      }
+      for (const [cx, cy] of [[3, 1], [4, 1], [5, 1], [4, 2]]) cell(cx, cy, 1);
+    }
+  };
+  var ART_KINDS = Object.keys(PAINTERS2);
+  function coverArt(kind) {
+    const { c, g } = canvas();
+    (PAINTERS2[kind] || PAINTERS2.moon)(g);
+    return c;
+  }
+  function sparkMark() {
+    const { c, g } = canvas();
+    rect2(g, 0, 0, SIZE, SIZE, "#1b1310");
+    rect2(g, 1, 1, SIZE - 2, 1, "#3a2620");
+    rect2(g, 1, SIZE - 2, SIZE - 2, 1, "#3a2620");
+    rect2(g, 1, 1, 1, SIZE - 2, "#3a2620");
+    rect2(g, SIZE - 2, 1, 1, SIZE - 2, "#3a2620");
+    const cx = 16, cy = 16;
+    const color = (i) => i < 3 ? "#ffd2b4" : i < 8 ? "#f08a64" : "#d8603e";
+    for (let i = 2; i < 13; i++) {
+      const w = i < 5 ? 3 : i < 9 ? 2 : 1;
+      const off = Math.floor((w - 1) / 2);
+      rect2(g, cx - off, cy - i, w, 1, color(i));
+      rect2(g, cx - off, cy + i - 1, w, 1, color(i));
+      rect2(g, cx - i, cy - off, 1, w, color(i));
+      rect2(g, cx + i - 1, cy - off, 1, w, color(i));
+    }
+    for (let i = 3; i < 8; i++) for (const [sx, sy] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+      rect2(g, cx + sx * i - (sx > 0 ? 1 : 0), cy + sy * i - (sy > 0 ? 1 : 0), 2, 2, i < 5 ? "#f3a27e" : "#d8603e");
+    }
+    rect2(g, cx - 2, cy - 2, 4, 4, "#fff1e6");
+    return c;
+  }
+  function noteMark() {
+    const { c, g } = canvas();
+    bands(g, 0, SIZE, ["#0f3a44", "#134852", "#18565f", "#1d646c"]);
+    rect2(g, 13, 7, 2, 15, "#eaffff");
+    rect2(g, 14, 6, 10, 3, "#eaffff");
+    rect2(g, 22, 8, 2, 11, "#eaffff");
+    disc2(g, 11, 22, 4, "#eaffff");
+    disc2(g, 20, 20, 4, "#eaffff");
+    return c;
+  }
+  function identicon(seed) {
+    const h = hash(seed);
+    const r = seeded(h);
+    const hue = h % 360;
+    const { c, g } = canvas();
+    rect2(g, 0, 0, SIZE, SIZE, `hsl(${hue} 35% 16%)`);
+    const ink = `hsl(${(hue + 30) % 360} 70% 62%)`;
+    const dim2 = `hsl(${(hue + 30) % 360} 60% 40%)`;
+    for (let y = 0; y < 5; y++) for (let x = 0; x < 3; x++) {
+      if (r() < 0.5) continue;
+      const color = r() < 0.3 ? dim2 : ink;
+      rect2(g, 1 + x * 6, 1 + y * 6, 5, 5, color);
+      rect2(g, 1 + (4 - x) * 6, 1 + y * 6, 5, 5, color);
+    }
+    return c;
+  }
+  function pixelate(image, levels = 5) {
+    const { c, g } = canvas();
+    const w = image.width || image.naturalWidth;
+    const h = image.height || image.naturalHeight;
+    const side = Math.min(w, h);
+    g.imageSmoothingEnabled = true;
+    g.imageSmoothingQuality = "high";
+    g.drawImage(image, (w - side) / 2, (h - side) / 2, side, side, 0, 0, SIZE, SIZE);
+    g.imageSmoothingEnabled = false;
+    const pixels = g.getImageData(0, 0, SIZE, SIZE);
+    const d = pixels.data;
+    const bayer = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+    const step = 255 / (levels - 1);
+    for (let y = 0; y < SIZE; y++) for (let x = 0; x < SIZE; x++) {
+      const nudge = (bayer[y % 4 * 4 + x % 4] / 16 - 0.47) * step * 0.7;
+      const i = (y * SIZE + x) * 4;
+      for (let k = 0; k < 3; k++) d[i + k] = Math.max(0, Math.min(255, Math.round((d[i + k] + nudge) / step) * step));
+      d[i + 3] = 255;
+    }
+    g.putImageData(pixels, 0, 0);
+    return c;
+  }
+
   // js/music-player.js
   function createMusicPlayer(containerEl, settingsRef) {
     const state = {
@@ -2807,7 +6201,8 @@
       minimized: true,
       activePlayer: 0,
       // 0 or 1 for crossfading
-      audioContext: null
+      audioContext: null,
+      listeners: /* @__PURE__ */ new Set()
     };
     const elements = {};
     const players = [
@@ -2869,6 +6264,7 @@
       fileInput.multiple = true;
       fileInput.accept = "audio/*";
       fileInput.style.display = "none";
+      elements.fileInput = fileInput;
       browseBtn.addEventListener("click", () => fileInput.click());
       fileInput.addEventListener("change", (e) => handleFiles(e.target.files));
       dropZone.appendChild(browseBtn);
@@ -2976,26 +6372,47 @@
       const s = Math.floor(seconds % 60);
       return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
     }
-    function handleFiles(files) {
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        if (file.type.startsWith("audio/")) {
-          const url = URL.createObjectURL(file);
-          const tempAudio = new Audio(url);
-          tempAudio.addEventListener("loadedmetadata", () => {
-            const track = {
-              name: file.name.replace(/\.[^/.]+$/, ""),
-              file,
-              url,
-              duration: tempAudio.duration
-            };
-            state.playlist.push(track);
-            renderPlaylist();
-            if (state.playlist.length === 1 && !state.isPlaying) {
-              playTrack(0);
-            }
-          });
+    function changed() {
+      state.listeners.forEach((cb) => cb());
+    }
+    function isAudio(file) {
+      return file.type.startsWith("audio/") || /\.(mp3|flac|m4a|mp4|aac|ogg|oga|opus|wav|webm)$/i.test(file.name);
+    }
+    async function handleFiles(files) {
+      for (const file of Array.from(files)) {
+        if (!isAudio(file)) continue;
+        const url = URL.createObjectURL(file);
+        const tags = await readTags(file);
+        const fileName = file.name.replace(/\.[^/.]+$/, "");
+        let cover = null;
+        if (tags.image) {
+          try {
+            cover = pixelate(await createImageBitmap(tags.image));
+          } catch {
+            cover = null;
+          }
         }
+        const duration = await new Promise((resolve) => {
+          const probe = new Audio(url);
+          probe.addEventListener("loadedmetadata", () => resolve(probe.duration));
+          probe.addEventListener("error", () => resolve(null));
+        });
+        if (duration === null) {
+          URL.revokeObjectURL(url);
+          continue;
+        }
+        state.playlist.push({
+          name: tags.title || fileName,
+          artist: tags.artist || "",
+          album: tags.album || "",
+          file,
+          url,
+          duration,
+          cover: cover || identicon(fileName),
+          hasArt: !!cover
+        });
+        renderPlaylist();
+        if (state.playlist.length === 1 && !state.isPlaying) playTrack(0);
       }
     }
     function renderPlaylist() {
@@ -3006,9 +6423,14 @@
         if (index === state.currentIndex) {
           item.classList.add("playing");
         }
+        const thumb = document.createElement("canvas");
+        thumb.width = thumb.height = 32;
+        thumb.className = "mp-thumb";
+        thumb.getContext("2d").drawImage(track.cover, 0, 0);
+        item.appendChild(thumb);
         const nameSpan = document.createElement("span");
         nameSpan.className = "mp-track-name";
-        nameSpan.textContent = `${index + 1}. ${track.name}`;
+        nameSpan.textContent = `${index + 1}. ${track.artist ? track.artist + " - " : ""}${track.name}`;
         nameSpan.style.cursor = "pointer";
         nameSpan.addEventListener("click", () => playTrack(index));
         const durSpan = document.createElement("span");
@@ -3026,6 +6448,7 @@
         item.appendChild(removeBtn);
         elements.playlist.appendChild(item);
       });
+      changed();
     }
     function removeTrack(index) {
       URL.revokeObjectURL(state.playlist[index].url);
@@ -3048,6 +6471,7 @@
       state.currentIndex = -1;
       elements.btnPlay.textContent = "\u25B6";
       elements.nowPlayingText.textContent = "No track selected";
+      changed();
     }
     function playTrack(index, useCrossfade = true) {
       if (state.playlist.length === 0 || index < 0 || index >= state.playlist.length) return;
@@ -3098,6 +6522,7 @@
         state.isPlaying = true;
         elements.btnPlay.textContent = "\u23F8";
       }
+      changed();
     }
     function playNext() {
       if (state.playlist.length === 0) return;
@@ -3140,8 +6565,8 @@
     }
     function seek(e) {
       if (!state.isPlaying || state.currentIndex === -1) return;
-      const rect2 = elements.progressFill.parentElement.getBoundingClientRect();
-      const pos = (e.clientX - rect2.left) / rect2.width;
+      const rect3 = elements.progressFill.parentElement.getBoundingClientRect();
+      const pos = (e.clientX - rect3.left) / rect3.width;
       const p = players[state.activePlayer];
       if (p.audio.duration) {
         p.audio.currentTime = pos * p.audio.duration;
@@ -3207,310 +6632,44 @@
         state.audioContext.close();
       }
     }
+    function clear() {
+      stopPlayback();
+      state.playlist.forEach((track) => URL.revokeObjectURL(track.url));
+      state.playlist = [];
+      renderPlaylist();
+    }
     buildUI();
     return {
       toggle,
       isPlaying: () => state.isPlaying,
-      dispose
+      dispose,
+      /** The playlist: [{ name, artist, album, duration, cover (a 32 x 32 canvas), hasArt }]. */
+      getTracks: () => state.playlist,
+      /** Index of the track that is loaded, or -1. */
+      getIndex: () => state.currentIndex,
+      play: (index) => playTrack(index),
+      /** Pause or resume. */
+      pauseToggle: togglePlay,
+      stop: stopPlayback,
+      next: playNext,
+      prev: playPrev,
+      remove: removeTrack,
+      clear,
+      /** Open the file picker. */
+      openPicker: () => elements.fileInput.click(),
+      addFiles: handleFiles,
+      /** Call `cb()` when the list or what is playing changes. Returns a function that stops it. */
+      onChange(cb) {
+        state.listeners.add(cb);
+        return () => state.listeners.delete(cb);
+      }
     };
   }
 
-  // js/tracks.js
-  var A4 = 69;
-  var B4 = 71;
-  var C5 = 72;
-  var D5 = 74;
-  var E5 = 76;
-  var F5 = 77;
-  var G5 = 79;
-  var A5 = 81;
-  var Gs4 = 68;
-  var Gs5 = 80;
-  var MELODY_A = [
-    [[E5, 0, 4], [B4, 4, 2], [C5, 6, 2], [D5, 8, 4], [C5, 12, 2], [B4, 14, 2]],
-    [[A4, 0, 4], [A4, 4, 2], [C5, 6, 2], [E5, 8, 4], [D5, 12, 2], [C5, 14, 2]],
-    [[B4, 0, 6], [C5, 6, 2], [D5, 8, 4], [E5, 12, 4]],
-    [[C5, 0, 4], [A4, 4, 4], [A4, 8, 4]],
-    [[D5, 2, 4], [F5, 6, 2], [A5, 8, 4], [G5, 12, 2], [F5, 14, 2]],
-    [[E5, 0, 6], [C5, 6, 2], [E5, 8, 4], [D5, 12, 2], [C5, 14, 2]],
-    [[B4, 0, 4], [B4, 4, 2], [C5, 6, 2], [D5, 8, 4], [E5, 12, 4]],
-    [[C5, 0, 4], [A4, 4, 4], [A4, 8, 4]]
-  ];
-  var MELODY_B = [
-    [[E5, 0, 8], [C5, 8, 8]],
-    [[D5, 0, 8], [B4, 8, 8]],
-    [[C5, 0, 8], [A4, 8, 8]],
-    [[Gs4, 0, 8], [B4, 8, 8]],
-    [[E5, 0, 8], [C5, 8, 8]],
-    [[D5, 0, 8], [B4, 8, 8]],
-    [[C5, 0, 4], [E5, 4, 4], [A5, 8, 8]],
-    [[Gs5, 0, 16]]
-  ];
-  var FILL = [[E5, 12, 1], [D5, 13, 1], [C5, 14, 1], [B4, 15, 1]];
-  var CH = {
-    Am: { c: [57, 60, 64], r: 45 },
-    Am7: { c: [57, 60, 64, 67], r: 45 },
-    Am9: { c: [57, 60, 64, 67, 71], r: 45 },
-    Amadd9: { c: [57, 60, 64, 71], r: 45 },
-    F: { c: [53, 57, 60], r: 41 },
-    Fmaj7: { c: [53, 57, 60, 64], r: 41 },
-    E: { c: [52, 56, 59], r: 40 },
-    E7: { c: [52, 56, 59, 62], r: 40 },
-    E7sus4: { c: [52, 57, 59, 62], r: 40 },
-    E7b9: { c: [52, 56, 59, 62, 65], r: 40 },
-    Dm: { c: [50, 53, 57], r: 38 },
-    Dm9: { c: [50, 53, 57, 60, 64], r: 38 },
-    C: { c: [48, 52, 55, 60], r: 36 },
-    Cmaj7: { c: [48, 55, 59, 64], r: 36 },
-    G: { c: [55, 59, 62], r: 43 },
-    G6: { c: [55, 59, 62, 64], r: 43 },
-    Bm7b5: { c: [47, 50, 53, 57], r: 35 }
-  };
-  function harmony(spec) {
-    if (Array.isArray(spec)) {
-      return [{ at: 0, len: 8, ch: CH[spec[0]] }, { at: 8, len: 8, ch: CH[spec[1]] }];
-    }
-    return [{ at: 0, len: 16, ch: CH[spec] }];
-  }
-  var SCALE_PCS = [9, 11, 0, 2, 4, 5, 7];
-  function thirdBelow(midi) {
-    const pc = (midi % 12 + 12) % 12 === 8 ? 7 : (midi % 12 + 12) % 12;
-    const deg = SCALE_PCS.indexOf(pc);
-    const target = SCALE_PCS[(deg + 5) % 7];
-    let n = midi - 1;
-    while ((n % 12 + 12) % 12 !== target) n--;
-    return n;
-  }
-  function melodyEvents(notes, voice, vel, shift = 0) {
-    return notes.map(([n, s, l]) => ({ s, l, v: voice, n: n + shift, g: vel }));
-  }
-  function drum2(voice, steps, vel) {
-    return steps.map((s) => ({ s, l: 1, v: voice, n: null, g: vel }));
-  }
-  function transposeBar(events, semitones) {
-    return events.map((e) => e.n === null ? e : { ...e, n: e.n + semitones });
-  }
-  var CALM_A = ["Am9", "Fmaj7", ["E7sus4", "E7"], "Am7", "Dm9", "Cmaj7", ["Bm7b5", "E7"], "Amadd9"];
-  var CALM_B = ["Am9", "G6", "Fmaj7", "E7", "Am9", "G6", "Fmaj7", "E7b9"];
-  function calmBacking(spec, withDrums) {
-    const events = [];
-    for (const seg of harmony(spec)) {
-      for (const n of seg.ch.c) {
-        events.push({ s: seg.at, l: seg.len === 16 ? 10 : seg.len, v: "epiano", n, g: 0.2 });
-        if (seg.len === 16) events.push({ s: 10, l: 6, v: "epiano", n, g: 0.12 });
-        events.push({ s: seg.at, l: seg.len, v: "pad", n: n + 12, g: 0.07 });
-      }
-      events.push({ s: seg.at, l: seg.len === 16 ? 8 : seg.len, v: "softbass", n: seg.ch.r, g: 0.38 });
-      if (seg.len === 16) events.push({ s: 8, l: 8, v: "softbass", n: seg.ch.r + 7, g: 0.3 });
-    }
-    if (withDrums) {
-      events.push(...drum2("lofikick", [0, 10], 0.6));
-      events.push(...drum2("rim", [8], 0.25));
-      events.push(...drum2("brush", [2, 6, 10, 14], 0.12));
-    }
-    return events;
-  }
-  function buildCalm() {
-    const bars = [];
-    bars.push(calmBacking("Am9", false), calmBacking("Fmaj7", false));
-    for (let i = 0; i < 8; i++) {
-      bars.push([...calmBacking(CALM_A[i], true), ...melodyEvents(MELODY_A[i], "bell", 0.7)]);
-    }
-    for (let i = 0; i < 8; i++) {
-      const shift = i >= 4 ? 12 : 0;
-      const mel = melodyEvents(MELODY_A[i], "bell", i >= 4 ? 0.55 : 0.7, shift);
-      if (i === 3 || i === 7) mel.push(...melodyEvents(FILL, "bell", 0.4, shift));
-      bars.push([...calmBacking(CALM_A[i], true), ...mel]);
-    }
-    for (let i = 0; i < 8; i++) {
-      const arp = harmony(CALM_B[i]).flatMap((seg) => [0, 2, 4, 6].filter((s) => s < seg.len).map((s, k) => ({
-        s: seg.at + s,
-        l: 2,
-        v: "epiano",
-        n: seg.ch.c[k % seg.ch.c.length] + 12,
-        g: 0.14
-      })));
-      bars.push([...calmBacking(CALM_B[i], true), ...arp, ...melodyEvents(MELODY_B[i], "bell", 0.65)]);
-    }
-    for (let i = 0; i < 8; i++) {
-      const harm = MELODY_A[i].map(([n, s, l]) => [thirdBelow(n), s, l]);
-      bars.push([
-        ...calmBacking(CALM_A[i], true),
-        ...melodyEvents(MELODY_A[i], "bell", 0.65),
-        ...melodyEvents(harm, "epiano", 0.16, 12)
-      ]);
-    }
-    return bars.map((b) => transposeBar(b, 3));
-  }
-  var COMP_A = ["Am", "F", "E", "Am", "Dm", "C", ["G", "E"], "Am"];
-  var COMP_B = ["F", "G", "Am", "E", "F", "G", "Am", "E"];
-  function compBacking(spec, { fill = false, drums = true } = {}) {
-    const events = [];
-    for (const seg of harmony(spec)) {
-      for (let s = 0; s < seg.len; s += 2) {
-        events.push({ s: seg.at + s, l: 2, v: "bass", n: seg.ch.r + (s % 4 === 2 ? 12 : 0), g: 0.36 });
-      }
-      for (let s = 0; s < seg.len; s++) {
-        const tones = seg.ch.c;
-        events.push({ s: seg.at + s, l: 1, v: "pluck", n: tones[s % tones.length] + 12, g: 0.16 });
-      }
-      for (const n of seg.ch.c) events.push({ s: seg.at, l: seg.len, v: "pad", n, g: 0.06 });
-    }
-    if (drums) {
-      events.push(...drum2("kick", [0, 4, 8, 12], 0.8));
-      events.push(...drum2("snare", fill ? [4, 12, 13, 14, 15] : [4, 12], 0.55));
-      events.push(...drum2("hat", [2, 6, 10, 14], 0.3));
-      events.push(...drum2("hat", [1, 3, 5, 7, 9, 11, 13, 15], 0.1));
-    }
-    return events;
-  }
-  function buildCompetitive() {
-    const bars = [];
-    bars.push(compBacking("Am"), compBacking("F", { fill: true }));
-    for (let i = 0; i < 8; i++) {
-      bars.push([...compBacking(COMP_A[i], { fill: i === 7 }), ...melodyEvents(MELODY_A[i], "lead", 0.46)]);
-    }
-    for (let i = 0; i < 8; i++) {
-      const harm = MELODY_A[i].map(([n, s, l]) => [thirdBelow(n), s, l]);
-      bars.push([
-        ...compBacking(COMP_A[i], { fill: i === 7 }),
-        ...melodyEvents(MELODY_A[i], "lead", 0.4, 12),
-        ...melodyEvents(harm, "lead", 0.16, 12)
-      ]);
-    }
-    for (let i = 0; i < 8; i++) {
-      bars.push([...compBacking(COMP_B[i], { fill: i === 7 }), ...melodyEvents(MELODY_B[i], "lead", 0.44)]);
-    }
-    for (let i = 0; i < 8; i++) {
-      const mel = melodyEvents(MELODY_A[i], "lead", 0.46);
-      if (i === 3) mel.push(...melodyEvents(FILL, "lead", 0.24));
-      bars.push([...compBacking(COMP_A[i], { fill: i === 7 }), ...mel]);
-    }
-    return bars.map((b) => transposeBar(b, 5));
-  }
-  var INT_A = ["Am", "Am", "E", "Am", "Dm", "Am", "E", "Am"];
-  var INT_B = ["Am", "E", "Am", "E", "F", "G", "Am", "E"];
-  function intenseBacking(spec, { crash = false, fill = false } = {}) {
-    const events = [];
-    for (const seg of harmony(spec)) {
-      for (let s = 0; s < seg.len; s++) {
-        const up = s % 8 === 6;
-        events.push({ s: seg.at + s, l: 1, v: "bass", n: seg.ch.r + (up ? 12 : 0), g: s % 4 === 0 ? 0.4 : 0.26 });
-      }
-      for (const s of [0, 3, 6].filter((x) => x < seg.len)) {
-        for (const n of seg.ch.c) events.push({ s: seg.at + s, l: 1, v: "stab", n: n + 12, g: 0.13 });
-      }
-      for (const n of seg.ch.c) events.push({ s: seg.at, l: seg.len, v: "pad", n: n + 12, g: 0.05 });
-    }
-    events.push(...drum2("kick", [0, 4, 8, 10, 12], 0.85));
-    events.push(...drum2("snare", fill ? [4, 10, 11, 12, 13, 14, 15] : [4, 12], 0.6));
-    events.push(...drum2("hat", [...Array(16).keys()], 0.14));
-    if (crash) events.push(...drum2("crash", [0], 0.35));
-    return events;
-  }
-  function buildIntense() {
-    const bars = [];
-    for (let i = 0; i < 8; i++) {
-      bars.push([
-        ...intenseBacking(INT_A[i], { crash: i === 0, fill: i === 7 }),
-        ...melodyEvents(MELODY_A[i], "lead", 0.46, -12),
-        ...melodyEvents(MELODY_A[i], "lead", 0.12)
-      ]);
-    }
-    for (let i = 0; i < 8; i++) {
-      const harm = MELODY_A[i].map(([n, s, l]) => [thirdBelow(n), s, l]);
-      bars.push([
-        ...intenseBacking(INT_A[i], { crash: i === 0, fill: i === 7 }),
-        ...melodyEvents(MELODY_A[i], "lead", 0.42),
-        ...melodyEvents(harm, "lead", 0.18)
-      ]);
-    }
-    for (let i = 0; i < 8; i++) {
-      const chopped = MELODY_B[i].flatMap(([n, s, l]) => {
-        const out = [];
-        for (let k = 0; k < l; k += 2) out.push([n, s + k, 2]);
-        return out;
-      });
-      bars.push([
-        ...intenseBacking(INT_B[i], { crash: i === 0, fill: i === 7 }),
-        ...melodyEvents(chopped, "lead", 0.4, -12),
-        ...melodyEvents(chopped, "lead", 0.1)
-      ]);
-    }
-    return bars.map((b) => transposeBar(b, 7));
-  }
-  var CHIP_A = ["Am", "Am", "E", "Am", "Dm", "C", "E", "Am"];
-  var CHIP_B = ["Am", "G", "F", "E", "Am", "G", "Am", "E"];
-  function chipBacking(spec, { arp = false, drums = "none", fill = false } = {}) {
-    const events = [];
-    for (const seg of harmony(spec)) {
-      for (let s = 0; s < seg.len; s += 2) {
-        events.push({ s: seg.at + s, l: 2, v: "chipBass", n: seg.ch.r + (s % 4 === 2 ? 12 : 0), g: 0.52 });
-      }
-      const tones = seg.ch.c;
-      if (arp) {
-        for (let s = 0; s < seg.len; s++) {
-          events.push({ s: seg.at + s, l: 1, v: "chipHarm", n: tones[s % tones.length] + 12, g: 0.09 });
-        }
-      } else {
-        for (let s = 2; s < seg.len; s += 4) {
-          for (const n of tones.slice(1, 3)) events.push({ s: seg.at + s, l: 1, v: "chipHarm", n: n + 12, g: 0.09 });
-        }
-      }
-    }
-    if (drums !== "none") {
-      events.push(...drum2("chipKick", drums === "full" ? [0, 4, 8, 12] : [0, 8], 0.55));
-      events.push(...drum2("chipSnare", fill ? [4, 12, 13, 14, 15] : [4, 12], 0.34));
-      events.push(...drum2("chipHat", drums === "full" ? [2, 6, 10, 14] : [], 0.18));
-    }
-    return events;
-  }
-  function buildChip() {
-    const bars = [];
-    for (let i = 0; i < 8; i++) {
-      bars.push([...chipBacking(CHIP_A[i]), ...melodyEvents(MELODY_A[i], "chipLead", 0.35)]);
-    }
-    for (let i = 0; i < 8; i++) {
-      const harm = MELODY_A[i].map(([n, s, l]) => [thirdBelow(n), s, l]);
-      bars.push([
-        ...chipBacking(CHIP_A[i], { drums: "beat", fill: i === 7 }).filter((e) => e.v !== "chipHarm"),
-        ...melodyEvents(MELODY_A[i], "chipLead", 0.35),
-        ...melodyEvents(harm, "chipHarm", 0.13)
-      ]);
-    }
-    for (let i = 0; i < 8; i++) {
-      bars.push([...chipBacking(CHIP_B[i], { arp: true, drums: "beat", fill: i === 7 }), ...melodyEvents(MELODY_B[i], "chipLead", 0.35)]);
-    }
-    for (let i = 0; i < 8; i++) {
-      const mel = melodyEvents(MELODY_A[i], "chipLead", 0.3, 12);
-      if (i === 3 || i === 7) mel.push(...melodyEvents(FILL, "chipLead", 0.23, 12));
-      bars.push([...chipBacking(CHIP_A[i], { drums: "full", fill: i === 7 }), ...mel]);
-    }
-    return bars;
-  }
-  var TRACKS = {
-    calm: { bpm: 88, swing: 0.35, delay: 0.3, loopStart: 2, bars: buildCalm() },
-    competitive: { bpm: 150, swing: 0, delay: 0.12, loopStart: 2, bars: buildCompetitive() },
-    intense: { bpm: 176, swing: 0, delay: 0.08, loopStart: 0, bars: buildIntense() },
-    chip: { bpm: 150, swing: 0, delay: 0, loopStart: 0, bars: buildChip() }
-  };
-  var TRACK_NAMES = Object.keys(TRACKS);
-
-  // js/music.js
-  var TICK_MS = 25;
-  var LOOKAHEAD_S = 0.2;
-  var CROSSFADE_S = 1.5;
-  var TRACK_GAIN = 0.3;
-  function midiToFreq(midi) {
-    return 440 * Math.pow(2, (midi - 69) / 12);
-  }
-  function createNoiseBuffer(ctx) {
-    const noise = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
-    const data = noise.getChannelData(0);
-    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
-    return noise;
-  }
+  // js/voices.js
+  var KICKS2 = /* @__PURE__ */ new Set(["lofikick", "softkick", "kick", "hardkick"]);
   function createVoices(ctx, noise) {
+    const ksCache = /* @__PURE__ */ new Map();
     function env(param, t, peak, attack, hold, release) {
       param.setValueAtTime(1e-4, t);
       param.linearRampToValueAtTime(peak, t + attack);
@@ -3518,12 +6677,18 @@
       param.exponentialRampToValueAtTime(1e-4, t + attack + hold + release);
       return attack + hold + release;
     }
-    function osc(type, freq, t, end, dest, detune = 0) {
+    function osc(type, freq, t, end, dest, detune = 0, level = 1) {
       const o = ctx.createOscillator();
       o.type = type;
       o.frequency.setValueAtTime(freq, t);
       o.detune.value = detune;
-      o.connect(dest);
+      if (level === 1) o.connect(dest);
+      else {
+        const g = ctx.createGain();
+        g.gain.value = level;
+        o.connect(g);
+        g.connect(dest);
+      }
       o.start(t);
       o.stop(end);
       return o;
@@ -3538,20 +6703,85 @@
         };
       } };
     }
-    function noiseBurst(t, dur, vel, dest, filterType, freq, q = 1) {
-      const src = ctx.createBufferSource();
-      src.buffer = noise;
+    function biquad(type, freq, q, dest) {
       const f = ctx.createBiquadFilter();
-      f.type = filterType;
+      f.type = type;
       f.frequency.value = freq;
       f.Q.value = q;
-      const { g, done } = voiceGain(dest, () => f.disconnect());
-      env(g.gain, t, vel, 1e-3, 0, dur);
+      f.connect(dest);
+      return f;
+    }
+    function burst(t, dur, vel, dests, type, freq, q = 1, attack = 1e-3) {
+      const src = ctx.createBufferSource();
+      src.buffer = noise;
+      src.loop = true;
+      const f = ctx.createBiquadFilter();
+      f.type = type;
+      f.frequency.value = freq;
+      f.Q.value = q;
+      const { g, done } = voiceGain(dests[0], () => f.disconnect());
+      for (const d of dests.slice(1)) g.connect(d);
+      env(g.gain, t, vel, attack, 0, dur);
       src.connect(f);
       f.connect(g);
-      src.start(t);
-      src.stop(t + dur + 0.02);
+      src.start(t, Math.random() * 0.5);
+      src.stop(t + attack + dur + 0.02);
       done(src);
+    }
+    function fm(freq, ratio, from, to, over, t, end, dest, detune = 0) {
+      const car = osc("sine", freq, t, end, dest, detune);
+      const mod = ctx.createOscillator();
+      mod.frequency.value = freq * ratio;
+      const mg = ctx.createGain();
+      mg.gain.setValueAtTime(freq * from, t);
+      mg.gain.exponentialRampToValueAtTime(Math.max(0.01, freq * to), t + over);
+      mod.connect(mg);
+      mg.connect(car.frequency);
+      mod.start(t);
+      mod.stop(end);
+      return car;
+    }
+    function string(freq) {
+      const key = Math.round(freq * 2) / 2;
+      if (ksCache.has(key)) return ksCache.get(key);
+      const sr = ctx.sampleRate;
+      const period = Math.max(2, Math.round(sr / key));
+      const len = Math.floor(sr * 1.6);
+      const buffer = ctx.createBuffer(1, len, sr);
+      const out = buffer.getChannelData(0);
+      const line = new Float32Array(period);
+      let seed = 9301 + Math.round(key * 7);
+      for (let i = 0; i < period; i++) {
+        seed = seed * 1664525 + 1013904223 >>> 0;
+        line[i] = seed / 4294967296 * 2 - 1;
+      }
+      for (let i = 1; i < period; i++) line[i] = 0.55 * line[i] + 0.45 * line[i - 1];
+      let p = 0;
+      for (let i = 0; i < len; i++) {
+        const next = (p + 1) % period;
+        out[i] = line[p];
+        line[p] = (line[p] + line[next]) * 0.4985;
+        p = next;
+      }
+      const entry = { buffer, rate: key / (sr / period) };
+      ksCache.set(key, entry);
+      return entry;
+    }
+    function drive(amount) {
+      const shaper = ctx.createWaveShaper();
+      const curve = new Float32Array(1024);
+      for (let i = 0; i < curve.length; i++) curve[i] = Math.tanh((i / 511.5 - 1) * amount);
+      shaper.curve = curve;
+      return shaper;
+    }
+    function padNote(type, detunes, cutoff, attack, release, t, freq, dur, vel, bus) {
+      const f = biquad("lowpass", cutoff, 0.5, bus.pad);
+      f.connect(bus.verb);
+      const { g, done } = voiceGain(f, () => f.disconnect());
+      const len = env(g.gain, t, vel, attack, Math.max(0, dur - attack), release);
+      let last;
+      for (const d of detunes) last = osc(type, freq, t, t + len, g, d, 1 / Math.sqrt(detunes.length));
+      done(last);
     }
     function pulseNote(t, freq, dur, vel, bus, duty) {
       const { g, done } = voiceGain(bus.dry);
@@ -3565,86 +6795,136 @@
       done(o);
     }
     return {
-      /** FM electric piano: sine carrier, sine modulator at 1:1 with a decaying index. */
-      epiano(t, freq, dur, vel, bus) {
-        const { g, done } = voiceGain(bus.dry);
-        const len = env(g.gain, t, vel, 5e-3, Math.max(0, dur - 0.05), 0.6);
-        const mod = ctx.createOscillator();
-        const modGain = ctx.createGain();
-        mod.frequency.value = freq;
-        modGain.gain.setValueAtTime(freq * 1.2, t);
-        modGain.gain.exponentialRampToValueAtTime(freq * 0.1, t + 0.4);
-        mod.connect(modGain);
-        const car = osc("sine", freq, t, t + len, g);
-        modGain.connect(car.frequency);
-        mod.start(t);
-        mod.stop(t + len);
-        done(car);
-      },
-      /** Bell: FM at 1:3.5 for a glassy tone, with a delay send. */
-      bell(t, freq, dur, vel, bus) {
-        const { g, done } = voiceGain(bus.dry);
-        g.connect(bus.send);
-        const len = env(g.gain, t, vel, 3e-3, Math.min(dur, 0.1), 0.9 + dur * 0.5);
-        const mod = ctx.createOscillator();
-        const modGain = ctx.createGain();
-        mod.frequency.value = freq * 3.5;
-        modGain.gain.setValueAtTime(freq * 0.8, t);
-        modGain.gain.exponentialRampToValueAtTime(freq * 0.05, t + 0.8);
-        mod.connect(modGain);
-        const car = osc("sine", freq, t, t + len, g);
-        modGain.connect(car.frequency);
-        mod.start(t);
-        mod.stop(t + len);
-        done(car);
-      },
-      /** Detuned saws through a slow lowpass. */
-      pad(t, freq, dur, vel, bus) {
-        const f = ctx.createBiquadFilter();
-        f.type = "lowpass";
-        f.frequency.value = 1400;
-        f.connect(bus.dry);
+      // --- Keys and mallets ---
+      /** Dusty electric piano: two slightly detuned FM pairs through a low filter. */
+      lofikeys(t, freq, dur, vel, bus) {
+        const f = biquad("lowpass", 1700, 0.6, bus.dry);
+        f.connect(bus.verb);
         const { g, done } = voiceGain(f, () => f.disconnect());
-        const len = env(g.gain, t, vel, 0.25, Math.max(0, dur - 0.25), 0.5);
-        osc("sawtooth", freq, t, t + len, g, -8);
-        done(osc("sawtooth", freq, t, t + len, g, 8));
+        const len = env(g.gain, t, vel, 6e-3, Math.max(0, dur - 0.1), 0.55);
+        fm(freq, 1, 1, 0.1, 0.5, t, t + len, g, -7);
+        done(fm(freq, 1, 0.8, 0.1, 0.5, t, t + len, g, 7));
       },
-      softbass(t, freq, dur, vel, bus) {
-        const { g, done } = voiceGain(bus.dry);
-        const len = env(g.gain, t, vel, 0.01, Math.max(0, dur - 0.1), 0.25);
-        osc("sine", freq, t, t + len, g);
-        done(osc("triangle", freq * 2, t, t + len, g));
-      },
-      bass(t, freq, dur, vel, bus) {
-        const f = ctx.createBiquadFilter();
-        f.type = "lowpass";
-        f.frequency.setValueAtTime(1800, t);
-        f.frequency.exponentialRampToValueAtTime(300, t + 0.12);
-        f.connect(bus.dry);
+      /** Electric piano with a tine: FM with a bright start that settles, and a small knock. */
+      rhodes(t, freq, dur, vel, bus) {
+        const f = biquad("lowpass", 3400, 0.5, bus.dry);
+        f.connect(bus.verb);
         const { g, done } = voiceGain(f, () => f.disconnect());
-        const len = env(g.gain, t, vel, 4e-3, Math.max(0, dur * 0.7), 0.06);
-        osc("sine", freq, t, t + len, g);
-        done(osc("square", freq, t, t + len, g));
+        const len = env(g.gain, t, vel, 4e-3, Math.max(0, dur - 0.05), 0.6);
+        done(fm(freq, 1, 1.5, 0.14, 0.7, t, t + len, g));
+        burst(t, 0.03, vel * 0.25, [f], "bandpass", Math.min(9e3, freq * 6), 3);
       },
-      pluck(t, freq, dur, vel, bus) {
+      /** Vibraphone: a sine with a short bright overtone and a slow tremolo, ringing on. */
+      vibes(t, freq, dur, vel, bus) {
         const { g, done } = voiceGain(bus.dry);
-        g.connect(bus.send);
-        const len = env(g.gain, t, vel, 2e-3, 0, 0.12);
-        done(osc("square", freq, t, t + len, g));
+        g.connect(bus.verb);
+        const len = env(g.gain, t, vel, 3e-3, Math.min(dur, 0.25), 0.9 + dur * 0.35);
+        const tremolo = ctx.createOscillator();
+        const depth = ctx.createGain();
+        tremolo.frequency.value = 5.2;
+        depth.gain.value = vel * 0.22;
+        tremolo.connect(depth);
+        depth.connect(g.gain);
+        tremolo.start(t);
+        tremolo.stop(t + len);
+        const top = ctx.createGain();
+        top.gain.setValueAtTime(0.28, t);
+        top.gain.exponentialRampToValueAtTime(1e-3, t + 0.4);
+        top.connect(g);
+        osc("sine", freq * 3.98, t, t + len, top);
+        done(osc("sine", freq, t, t + len, g));
       },
+      /** Flute: a sine and a soft triangle with a little breath and a vibrato that arrives late. */
+      flute(t, freq, dur, vel, bus) {
+        const f = biquad("lowpass", 5200, 0.5, bus.dry);
+        f.connect(bus.verb);
+        f.connect(bus.send);
+        const { g, done } = voiceGain(f, () => f.disconnect());
+        const len = env(g.gain, t, vel, 0.05, Math.max(0, dur - 0.08), 0.18);
+        const vib = ctx.createOscillator();
+        const vibDepth = ctx.createGain();
+        vib.frequency.value = 5.3;
+        vibDepth.gain.setValueAtTime(0, t);
+        vibDepth.gain.linearRampToValueAtTime(freq * 7e-3, t + 0.3);
+        vib.connect(vibDepth);
+        vib.start(t);
+        vib.stop(t + len);
+        const a = osc("sine", freq, t, t + len, g);
+        const b = osc("triangle", freq, t, t + len, g, 0, 0.3);
+        vibDepth.connect(a.frequency);
+        vibDepth.connect(b.frequency);
+        burst(t, len, vel * 0.12, [f], "bandpass", Math.min(8e3, freq * 2.5), 1.5, 0.05);
+        done(a);
+      },
+      /** Nylon guitar: a modelled plucked string. */
+      nylon(t, freq, dur, vel, bus) {
+        const { buffer, rate } = string(freq);
+        const src = ctx.createBufferSource();
+        src.buffer = buffer;
+        src.playbackRate.value = rate;
+        const f = biquad("lowpass", 3800, 0.5, bus.dry);
+        f.connect(bus.verb);
+        const { g, done } = voiceGain(f, () => f.disconnect());
+        g.gain.setValueAtTime(vel * 1.6, t);
+        g.gain.setValueAtTime(vel * 1.6, t + Math.max(0.12, dur));
+        g.gain.exponentialRampToValueAtTime(1e-4, t + Math.max(0.12, dur) + 0.35);
+        src.connect(g);
+        src.start(t);
+        src.stop(t + Math.max(0.12, dur) + 0.4);
+        done(src);
+      },
+      // --- Pads and synths ---
+      warmpad(t, freq, dur, vel, bus) {
+        padNote("triangle", [-6, 6], 1e3, 0.5, 0.8, t, freq, dur, vel, bus);
+      },
+      strings(t, freq, dur, vel, bus) {
+        padNote("sawtooth", [-10, 0, 10], 2200, 0.3, 0.5, t, freq, dur, vel, bus);
+      },
+      superpad(t, freq, dur, vel, bus) {
+        padNote("sawtooth", [-18, -9, 0, 9, 18], 2600, 0.14, 0.4, t, freq, dur, vel, bus);
+      },
+      /** Five detuned saws: the wide lead of trance and house. */
+      supersaw(t, freq, dur, vel, bus) {
+        const f = biquad("lowpass", 5200, 0.5, bus.dry);
+        f.connect(bus.send);
+        f.connect(bus.verb);
+        const { g, done } = voiceGain(f, () => f.disconnect());
+        const len = env(g.gain, t, vel, 6e-3, Math.max(0, dur - 0.02), 0.14);
+        let last;
+        for (const d of [-16, -8, 0, 8, 16]) last = osc("sawtooth", freq, t, t + len, g, d, 0.45);
+        done(last);
+      },
+      /** A saw whose filter closes as it decays: the arpeggio voice. */
+      sawpluck(t, freq, dur, vel, bus) {
+        const f = biquad("lowpass", 4500, 1.2, bus.pad);
+        f.frequency.setValueAtTime(4500, t);
+        f.frequency.exponentialRampToValueAtTime(700, t + 0.17);
+        f.connect(bus.send);
+        const { g, done } = voiceGain(f, () => f.disconnect());
+        const len = env(g.gain, t, vel, 2e-3, 0, 0.22);
+        osc("sawtooth", freq, t, t + len, g, -6, 0.6);
+        done(osc("sawtooth", freq, t, t + len, g, 6, 0.6));
+      },
+      /** A short, dry, funky keyboard: a pulse-ish tone through a band. */
+      clav(t, freq, dur, vel, bus) {
+        const f = biquad("bandpass", 1900, 1.1, bus.dry);
+        const { g, done } = voiceGain(f, () => f.disconnect());
+        const len = env(g.gain, t, vel * 2.2, 1e-3, 0, 0.09);
+        osc("square", freq, t, t + len, g, 0, 0.5);
+        done(osc("sawtooth", freq, t, t + len, g, 8, 0.5));
+      },
+      /** A short chord hit from two detuned saws. */
       stab(t, freq, dur, vel, bus) {
-        const { g, done } = voiceGain(bus.dry);
-        const len = env(g.gain, t, vel, 2e-3, 0.03, 0.08);
+        const { g, done } = voiceGain(bus.pad);
+        const len = env(g.gain, t, vel, 2e-3, 0.03, 0.09);
         osc("sawtooth", freq, t, t + len, g, -10);
         done(osc("sawtooth", freq, t, t + len, g, 10));
       },
-      /** Square/saw lead with delayed vibrato. */
+      /** Square and saw lead with a vibrato that arrives late. */
       lead(t, freq, dur, vel, bus) {
-        const f = ctx.createBiquadFilter();
-        f.type = "lowpass";
-        f.frequency.value = 3200;
-        f.connect(bus.dry);
+        const f = biquad("lowpass", 3200, 0.7, bus.dry);
         f.connect(bus.send);
+        f.connect(bus.verb);
         const { g, done } = voiceGain(f, () => f.disconnect());
         const len = env(g.gain, t, vel, 8e-3, Math.max(0, dur - 0.03), 0.12);
         const lfo = ctx.createOscillator();
@@ -3661,6 +6941,101 @@
         lfo.stop(t + len);
         done(a);
       },
+      /** The trance "hoover": wide saws that start a fourth high and swoop down into the note. */
+      hoover(t, freq, dur, vel, bus) {
+        const f = biquad("lowpass", 3600, 0.9, bus.dry);
+        f.connect(bus.send);
+        const { g, done } = voiceGain(f, () => f.disconnect());
+        const len = env(g.gain, t, vel, 0.01, Math.max(0, dur - 0.03), 0.14);
+        let last;
+        for (const d of [-28, 0, 28]) {
+          const o = osc("sawtooth", freq * 1.335, t, t + len, g, d, 0.55);
+          o.frequency.exponentialRampToValueAtTime(freq, t + 0.06);
+          last = o;
+        }
+        done(last);
+      },
+      // --- Bass ---
+      /** A pure low sine with a soft edge. */
+      sub(t, freq, dur, vel, bus) {
+        const { g, done } = voiceGain(bus.dry);
+        const len = env(g.gain, t, vel, 0.01, Math.max(0, dur - 0.1), 0.12);
+        done(osc("sine", freq, t, t + len, g));
+      },
+      /** Upright bass: a plucked triangle and sine with a little finger noise. */
+      upright(t, freq, dur, vel, bus) {
+        const f = biquad("lowpass", 950, 0.7, bus.dry);
+        const { g, done } = voiceGain(f, () => f.disconnect());
+        const len = env(g.gain, t, vel * 1.3, 6e-3, 0, Math.max(0.3, dur * 1.2));
+        osc("triangle", freq, t, t + len, g);
+        done(osc("sine", freq * 2, t, t + len, g, 0, 0.3));
+        burst(t, 0.015, vel * 0.3, [bus.dry], "bandpass", 1800, 1);
+      },
+      /** Synthwave bass: a saw with a filter that snaps shut, over a sine. */
+      synthbass(t, freq, dur, vel, bus) {
+        const f = biquad("lowpass", 1800, 1.5, bus.dry);
+        f.frequency.setValueAtTime(1800, t);
+        f.frequency.exponentialRampToValueAtTime(320, t + 0.14);
+        const { g, done } = voiceGain(f, () => f.disconnect());
+        const len = env(g.gain, t, vel, 4e-3, Math.max(0, dur * 0.7), 0.06);
+        osc("sawtooth", freq, t, t + len, g, 0, 0.7);
+        osc("sine", freq, t, t + len, bus.dry, 0, vel * 0.8);
+        done(osc("square", freq, t, t + len, g, 4, 0.3));
+      },
+      /** Funk bass: a quick pop from a filter that opens and shuts, over a sine. */
+      funkbass(t, freq, dur, vel, bus) {
+        const f = biquad("lowpass", 2600, 2, bus.dry);
+        f.frequency.setValueAtTime(2600, t);
+        f.frequency.exponentialRampToValueAtTime(380, t + 0.1);
+        const { g, done } = voiceGain(f, () => f.disconnect());
+        const len = env(g.gain, t, vel, 2e-3, Math.max(0, dur * 0.4), 0.09);
+        osc("sawtooth", freq, t, t + len, g, 0, 0.6);
+        osc("square", freq, t, t + len, g, 0, 0.3);
+        done(osc("sine", freq, t, t + len, g, 0, 0.8));
+      },
+      /** Reese: detuned saws that beat against each other through a low filter, over a sub. */
+      reese(t, freq, dur, vel, bus) {
+        const f = biquad("lowpass", 520, 1.4, bus.dry);
+        f.frequency.setValueAtTime(380, t);
+        f.frequency.linearRampToValueAtTime(700, t + Math.max(0.2, dur * 0.5));
+        const { g, done } = voiceGain(f, () => f.disconnect());
+        const len = env(g.gain, t, vel, 0.012, Math.max(0, dur - 0.05), 0.08);
+        osc("sawtooth", freq, t, t + len, g, -22, 0.5);
+        osc("sawtooth", freq, t, t + len, g, 22, 0.5);
+        osc("sawtooth", freq * 2, t, t + len, g, 11, 0.2);
+        osc("sine", freq, t, t + len, bus.dry, 0, vel * 0.7);
+        done(osc("square", freq / 2, t, t + len, g, 0, 0.2));
+      },
+      /** Trance bass: a short saw on the off-beat 16ths, closing fast. */
+      rollbass(t, freq, dur, vel, bus) {
+        const f = biquad("lowpass", 1500, 1, bus.dry);
+        f.frequency.setValueAtTime(1500, t);
+        f.frequency.exponentialRampToValueAtTime(260, t + 0.1);
+        const { g, done } = voiceGain(f, () => f.disconnect());
+        const len = env(g.gain, t, vel, 2e-3, 0.02, 0.07);
+        osc("sawtooth", freq, t, t + len, g, -5, 0.6);
+        done(osc("sawtooth", freq, t, t + len, g, 5, 0.6));
+      },
+      /** The bass-music wobble: saws through a resonant filter that an eighth-note LFO opens and closes. */
+      wobble(t, freq, dur, vel, bus) {
+        const f = biquad("lowpass", 700, 7, bus.dry);
+        const lfo = ctx.createOscillator();
+        const depth = ctx.createGain();
+        lfo.frequency.value = (bus.bpm || 140) / 60 * 2;
+        depth.gain.value = 620;
+        f.frequency.value = 760;
+        lfo.connect(depth);
+        depth.connect(f.frequency);
+        const { g, done } = voiceGain(f, () => f.disconnect());
+        const len = env(g.gain, t, vel, 8e-3, Math.max(0, dur - 0.04), 0.06);
+        lfo.start(t);
+        lfo.stop(t + len);
+        osc("sawtooth", freq, t, t + len, g, -12, 0.5);
+        osc("sawtooth", freq, t, t + len, g, 12, 0.5);
+        osc("sine", freq, t, t + len, bus.dry, 0, vel * 0.6);
+        done(osc("square", freq, t, t + len, g, 0, 0.25));
+      },
+      // --- Drums and percussion ---
       kick(t, _f, _d, vel, bus) {
         const { g, done } = voiceGain(bus.dry);
         env(g.gain, t, vel, 1e-3, 0.02, 0.25);
@@ -3668,6 +7043,7 @@
         o.frequency.exponentialRampToValueAtTime(45, t + 0.12);
         done(o);
       },
+      /** Boom-bap kick: soft and round. */
       lofikick(t, _f, _d, vel, bus) {
         const { g, done } = voiceGain(bus.dry);
         env(g.gain, t, vel, 4e-3, 0.02, 0.3);
@@ -3675,25 +7051,144 @@
         o.frequency.exponentialRampToValueAtTime(40, t + 0.15);
         done(o);
       },
+      /** Jazz kick: a feathered thump you feel more than hear. */
+      softkick(t, _f, _d, vel, bus) {
+        const { g, done } = voiceGain(bus.dry);
+        env(g.gain, t, vel, 4e-3, 0, 0.16);
+        const o = osc("sine", 95, t, t + 0.2, g);
+        o.frequency.exponentialRampToValueAtTime(50, t + 0.08);
+        done(o);
+      },
+      /** A hard, driven kick with a click on the front. */
+      hardkick(t, _f, _d, vel, bus) {
+        const shaper = drive(2.6);
+        shaper.connect(bus.dry);
+        const { g, done } = voiceGain(shaper, () => shaper.disconnect());
+        env(g.gain, t, vel * 0.85, 1e-3, 0.05, 0.22);
+        const o = osc("sine", 210, t, t + 0.32, g);
+        o.frequency.exponentialRampToValueAtTime(48, t + 0.13);
+        burst(t, 0.012, vel * 0.35, [bus.dry], "highpass", 3e3);
+        done(o);
+      },
+      softsnare(t, _f, _d, vel, bus) {
+        burst(t, 0.17, vel, [bus.dry, bus.verb], "bandpass", 1700, 0.5);
+        const { g, done } = voiceGain(bus.dry);
+        env(g.gain, t, vel * 0.45, 1e-3, 0, 0.1);
+        done(osc("triangle", 175, t, t + 0.12, g));
+      },
+      /** Brushes swept across the snare. */
+      brushsnare(t, _f, _d, vel, bus) {
+        burst(t, 0.2, vel, [bus.dry], "bandpass", 4500, 0.5, 0.014);
+      },
+      /** Gated-reverb snare: a big burst that is cut off short. */
+      gsnare(t, _f, _d, vel, bus) {
+        const src = ctx.createBufferSource();
+        src.buffer = noise;
+        src.loop = true;
+        const f = biquad("bandpass", 1600, 0.6, bus.dry);
+        f.connect(bus.verb);
+        const { g, done } = voiceGain(f, () => f.disconnect());
+        g.gain.setValueAtTime(1e-4, t);
+        g.gain.linearRampToValueAtTime(vel, t + 2e-3);
+        g.gain.setValueAtTime(vel * 0.8, t + 0.13);
+        g.gain.linearRampToValueAtTime(1e-4, t + 0.19);
+        src.connect(f);
+        f.connect(g);
+        src.start(t, Math.random() * 0.5);
+        src.stop(t + 0.22);
+        done(src);
+        const { g: tone, done: toneDone } = voiceGain(bus.dry);
+        env(tone.gain, t, vel * 0.5, 1e-3, 0, 0.12);
+        toneDone(osc("triangle", 205, t, t + 0.14, tone));
+      },
+      /** Drum and bass snare: a tight crack. */
+      dnbsnare(t, _f, _d, vel, bus) {
+        burst(t, 0.13, vel, [bus.dry], "bandpass", 2300, 0.7);
+        burst(t, 0.01, vel * 0.5, [bus.dry], "highpass", 5e3);
+        const { g, done } = voiceGain(bus.dry);
+        env(g.gain, t, vel * 0.55, 1e-3, 0, 0.1);
+        const o = osc("triangle", 250, t, t + 0.12, g);
+        o.frequency.exponentialRampToValueAtTime(175, t + 0.08);
+        done(o);
+      },
       snare(t, _f, _d, vel, bus) {
-        noiseBurst(t, 0.16, vel, bus.dry, "bandpass", 1800, 0.8);
+        burst(t, 0.16, vel, [bus.dry], "bandpass", 1800, 0.8);
         const { g, done } = voiceGain(bus.dry);
         env(g.gain, t, vel * 0.5, 1e-3, 0, 0.08);
         done(osc("triangle", 190, t, t + 0.1, g));
       },
-      rim(t, _f, _d, vel, bus) {
-        noiseBurst(t, 0.05, vel, bus.dry, "bandpass", 2500, 4);
+      /** A clap: three quick bursts and a tail. */
+      clap(t, _f, _d, vel, bus) {
+        for (const at2 of [0, 0.011, 0.022]) burst(t + at2, 0.012, vel * 0.8, [bus.dry], "bandpass", 1500, 1.2);
+        burst(t + 0.03, 0.16, vel * 0.7, [bus.dry, bus.verb], "bandpass", 1400, 1);
+      },
+      /** Cross-stick: the rim click of a bossa nova. */
+      xstick(t, _f, _d, vel, bus) {
+        burst(t, 0.045, vel, [bus.dry, bus.verb], "bandpass", 2e3, 5);
+        const { g, done } = voiceGain(bus.dry);
+        env(g.gain, t, vel * 0.4, 1e-3, 0, 0.03);
+        const o = osc("sine", 820, t, t + 0.05, g);
+        o.frequency.exponentialRampToValueAtTime(600, t + 0.03);
+        done(o);
+      },
+      hatc(t, _f, _d, vel, bus) {
+        burst(t, 0.028, vel, [bus.dry], "highpass", 8e3);
       },
       hat(t, _f, _d, vel, bus) {
-        noiseBurst(t, 0.035, vel, bus.dry, "highpass", 7500);
+        burst(t, 0.035, vel, [bus.dry], "highpass", 7500);
       },
-      brush(t, _f, _d, vel, bus) {
-        noiseBurst(t, 0.12, vel, bus.dry, "bandpass", 5e3, 0.6);
+      openhat(t, _f, _d, vel, bus) {
+        burst(t, 0.22, vel, [bus.dry], "highpass", 7e3);
+      },
+      pedal(t, _f, _d, vel, bus) {
+        burst(t, 0.05, vel, [bus.dry], "highpass", 4500);
+      },
+      /** Ride cymbal: bright noise with a few inharmonic sines in it. */
+      ride(t, _f, _d, vel, bus) {
+        burst(t, 0.5, vel * 0.6, [bus.dry, bus.verb], "highpass", 5500);
+        const { g, done } = voiceGain(bus.dry);
+        env(g.gain, t, vel * 0.1, 1e-3, 0, 0.45);
+        osc("sine", 4300, t, t + 0.5, g);
+        osc("sine", 5900, t, t + 0.5, g);
+        done(osc("sine", 7400, t, t + 0.5, g));
+      },
+      shaker(t, _f, _d, vel, bus) {
+        burst(t, 0.045, vel, [bus.dry], "bandpass", 7e3, 0.8, 6e-3);
+      },
+      /** A tom: a sine that falls from its pitch. */
+      tom(t, freq, _d, vel, bus) {
+        const { g, done } = voiceGain(bus.dry);
+        env(g.gain, t, vel, 2e-3, 0, 0.26);
+        const o = osc("sine", freq * 1.4, t, t + 0.3, g);
+        o.frequency.exponentialRampToValueAtTime(freq * 0.85, t + 0.14);
+        done(o);
       },
       crash(t, _f, _d, vel, bus) {
-        noiseBurst(t, 1.2, vel, bus.dry, "highpass", 4e3);
+        burst(t, 1.2, vel, [bus.dry, bus.verb], "highpass", 4e3);
       },
-      // --- 8-bit voices (the chip track) ---
+      /** A riser: noise whose band sweeps up over the note's length, getting louder. */
+      riser(t, _f, dur, vel, bus) {
+        const src = ctx.createBufferSource();
+        src.buffer = noise;
+        src.loop = true;
+        const f = biquad("bandpass", 300, 1.5, bus.dry);
+        f.frequency.setValueAtTime(300, t);
+        f.frequency.exponentialRampToValueAtTime(9e3, t + dur);
+        const { g, done } = voiceGain(f, () => f.disconnect());
+        g.gain.setValueAtTime(1e-4, t);
+        g.gain.linearRampToValueAtTime(vel, t + dur * 0.97);
+        g.gain.linearRampToValueAtTime(1e-4, t + dur + 0.04);
+        src.connect(f);
+        f.connect(g);
+        src.start(t, Math.random() * 0.5);
+        src.stop(t + dur + 0.06);
+        done(src);
+      },
+      /** A tick of vinyl crackle. */
+      tick(t, _f, _d, vel, bus) {
+        burst(t, 3e-3, vel, [bus.dry], "highpass", 2500);
+      },
+      // --- 8-bit chip (the Classic track) ---
       /** Lead: 50 percent pulse. */
       chipLead(t, freq, dur, vel, bus) {
         pulseNote(t, freq, dur, vel, bus, 0.5);
@@ -3717,12 +7212,46 @@
         done(o);
       },
       chipSnare(t, _f, _d, vel, bus) {
-        noiseBurst(t, 0.09, vel, bus.dry, "highpass", 1500);
+        burst(t, 0.09, vel, [bus.dry], "highpass", 1500);
       },
       chipHat(t, _f, _d, vel, bus) {
-        noiseBurst(t, 0.03, vel, bus.dry, "highpass", 8e3);
+        burst(t, 0.03, vel, [bus.dry], "highpass", 8e3);
       }
     };
+  }
+
+  // js/music.js
+  var TICK_MS = 25;
+  var LOOKAHEAD_S = 0.2;
+  var HANDOFF_S = 0.12;
+  var TRACK_GAIN = 0.3;
+  function midiToFreq(midi2) {
+    return 440 * Math.pow(2, (midi2 - 69) / 12);
+  }
+  function createNoiseBuffer(ctx) {
+    const noise = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
+    const data = noise.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+    return noise;
+  }
+  var impulses = /* @__PURE__ */ new WeakMap();
+  function impulse(ctx) {
+    if (!impulses.has(ctx)) {
+      const length = Math.floor(ctx.sampleRate * 1.8);
+      const buffer = ctx.createBuffer(2, length, ctx.sampleRate);
+      for (let c = 0; c < 2; c++) {
+        const data = buffer.getChannelData(c);
+        let seed = 7 + c * 13;
+        let dark = 0;
+        for (let i = 0; i < length; i++) {
+          seed = seed * 1664525 + 1013904223 >>> 0;
+          dark += (seed / 4294967296 * 2 - 1 - dark) * 0.4;
+          data[i] = dark * Math.pow(1 - i / length, 3.2);
+        }
+      }
+      impulses.set(ctx, buffer);
+    }
+    return impulses.get(ctx);
   }
   function createBus(ctx, track, destination) {
     const gain = ctx.createGain();
@@ -3745,15 +7274,34 @@
     feedback.connect(delay);
     delay.connect(wet);
     wet.connect(comp);
-    return { gain, bus: { dry: comp, send: delay }, nodes: [comp, delay, feedback, wet] };
+    const verb = ctx.createGain();
+    verb.gain.value = track.verb;
+    const room = ctx.createConvolver();
+    room.buffer = impulse(ctx);
+    verb.connect(room);
+    room.connect(comp);
+    const pad2 = ctx.createGain();
+    pad2.connect(comp);
+    return {
+      gain,
+      bus: { dry: comp, send: delay, verb, pad: pad2, bpm: track.bpm },
+      pump: pad2.gain,
+      nodes: [comp, delay, feedback, wet, verb, room, pad2]
+    };
   }
-  function scheduleBar(voices, track, bus, events, barStart, tempoScale) {
-    const step = 60 / (track.bpm * tempoScale) / 4;
-    for (const e of events) {
-      let start = e.s;
-      if (track.swing && e.s % 4 === 2) start += track.swing;
-      voices[e.v]?.(barStart + start * step, e.n === null ? 0 : midiToFreq(e.n), e.l * step, e.g, bus);
+  function scheduleBar(voices, track, bus, pump, events, barStart, tempoScale) {
+    const bpm = track.bpm * tempoScale;
+    const step = 60 / bpm / 4;
+    bus.bpm = bpm;
+    const when = (e) => barStart + (e.s + (track.swing && e.s % 4 === 2 ? track.swing : 0)) * step;
+    if (track.pump > 0) {
+      const kicks = events.filter((e) => KICKS2.has(e.v)).map(when).sort((a, b) => a - b);
+      for (const t of kicks) {
+        pump.setValueAtTime(1 - track.pump, t);
+        pump.linearRampToValueAtTime(1, t + Math.min(0.25, step * 4));
+      }
     }
+    for (const e of events) voices[e.v]?.(when(e), e.n === null ? 0 : midiToFreq(e.n), e.l * step, e.g, bus);
     return 16 * step;
   }
   function nextBar(track, bar) {
@@ -3768,9 +7316,13 @@
     let timer = null;
     const players = [];
     let wanted = null;
+    let mode = "off";
+    let playlist = [];
+    let playlistKey = "";
     let paused = false;
     let tempoScale = 1;
     let isSuppressed = () => false;
+    const listeners = /* @__PURE__ */ new Set();
     function init() {
       if (ctx) return;
       const AudioContext = window.AudioContext || window.webkitAudioContext;
@@ -3791,10 +7343,17 @@
       if (settingsRef.musicMuted) return 0;
       return (settingsRef.masterVolume ?? 100) / 100 * ((settingsRef.musicVolume ?? 100) / 100);
     }
-    function createPlayer(name) {
-      const track = TRACKS[name];
-      const { gain, bus, nodes } = createBus(ctx, track, duckGain);
-      return { name, track, gain, bus, nodes, bar: 0, nextBarTime: ctx.currentTime + 0.1, stopping: false };
+    function createPlayer(id, startAt) {
+      const track = getTrack(id);
+      const { gain, bus, pump, nodes } = createBus(ctx, track, duckGain);
+      const level = TRACK_GAIN * track.gain;
+      gain.gain.value = level;
+      return { id, track, level, gain, bus, pump, nodes, bar: 0, nextBarTime: startAt, barStart: null, barLen: 0, stopAt: null };
+    }
+    function nextBeat(p, now) {
+      if (p.barStart === null) return now + 0.1;
+      const beat = p.barLen / 4;
+      return p.barStart + Math.ceil((now + 0.06 - p.barStart) / beat) * beat;
     }
     function tick() {
       const now = ctx.currentTime;
@@ -3802,39 +7361,53 @@
       const vol = suppressed ? 0 : targetVolume();
       if (Math.abs(out.gain.value - vol) > 1e-3) out.gain.setTargetAtTime(vol, now, 0.05);
       for (const p of players) {
-        if (p.stopping || suppressed) continue;
-        while (p.nextBarTime < now + LOOKAHEAD_S) {
+        if (suppressed) continue;
+        const until = p.stopAt === null ? now + LOOKAHEAD_S : Math.min(now + LOOKAHEAD_S, p.stopAt);
+        while (p.nextBarTime < until) {
           if (p.nextBarTime < now - 0.05) p.nextBarTime = now + 0.02;
-          p.nextBarTime += scheduleBar(voices, p.track, p.bus, p.track.bars[p.bar], p.nextBarTime, tempoScale);
+          p.barStart = p.nextBarTime;
+          p.barLen = scheduleBar(voices, p.track, p.bus, p.pump, p.track.bars[p.bar], p.nextBarTime, tempoScale);
+          p.nextBarTime += p.barLen;
+          const finished = p.bar + 1 >= p.track.bars.length;
           p.bar = nextBar(p.track, p.bar);
+          if (finished && p.stopAt === null && mode === "playlist" && playlist.length > 1 && p.id === wanted) {
+            setWanted(playlist[(playlist.indexOf(wanted) + 1) % playlist.length], p.nextBarTime);
+          }
         }
       }
-      if (suppressed) for (const p of players) p.nextBarTime = now + 0.1;
+      if (suppressed) {
+        for (const p of players) if (p.stopAt === null) p.nextBarTime = now + 0.1;
+      }
     }
-    function fadeTo(p, value, seconds) {
+    function release(p, at2) {
       const now = ctx.currentTime;
+      p.stopAt = at2;
       p.gain.gain.cancelScheduledValues(now);
-      p.gain.gain.setValueAtTime(Math.max(p.gain.gain.value, 1e-4), now);
-      p.gain.gain.exponentialRampToValueAtTime(Math.max(value, 1e-4), now + seconds);
+      p.gain.gain.setValueAtTime(p.level, at2);
+      p.gain.gain.linearRampToValueAtTime(0, at2 + HANDOFF_S);
+      setTimeout(() => {
+        p.gain.disconnect();
+        p.nodes.forEach((n) => n.disconnect());
+        players.splice(players.indexOf(p), 1);
+      }, (at2 - now + HANDOFF_S) * 1e3 + 1500);
     }
-    function applyTrack() {
+    function applyTrack(at2 = null) {
       if (!ctx) return;
-      for (const p of players) {
-        if (p.name !== wanted && !p.stopping) {
-          p.stopping = true;
-          fadeTo(p, 1e-4, CROSSFADE_S);
-          setTimeout(() => {
-            p.gain.disconnect();
-            p.nodes.forEach((n) => n.disconnect());
-            players.splice(players.indexOf(p), 1);
-          }, CROSSFADE_S * 1e3 + 3e3);
-        }
+      const now = ctx.currentTime;
+      const live = players.find((p) => p.stopAt === null);
+      if (live && live.id === wanted) return;
+      let startAt = now + 0.1;
+      if (live) {
+        startAt = at2 ?? (wanted && !isSuppressed() ? nextBeat(live, now) : now + 0.05);
+        release(live, startAt);
       }
-      if (wanted && !players.some((p) => p.name === wanted && !p.stopping)) {
-        const p = createPlayer(wanted);
-        players.push(p);
-        fadeTo(p, TRACK_GAIN, players.length > 1 ? CROSSFADE_S : 0.3);
-      }
+      if (wanted) players.push(createPlayer(wanted, startAt));
+    }
+    function setWanted(id, at2 = null) {
+      if (id === wanted) return;
+      wanted = id;
+      applyTrack(at2);
+      listeners.forEach((cb) => cb(wanted));
     }
     return {
       /** Create the AudioContext. Call from a user gesture (click or key). */
@@ -3843,14 +7416,48 @@
         if (ctx.state === "suspended") ctx.resume();
         applyTrack();
       },
-      /** Switch to a track ('calm' | 'competitive' | 'intense'), or null for silence. */
-      setTrack(name) {
-        if (name === wanted) return;
-        wanted = name && TRACKS[name] ? name : null;
-        applyTrack();
+      /** Loop one track (an id from tracks.js), or pass null for silence. */
+      setTrack(id) {
+        const known = id && TRACK_INFO[id] ? id : null;
+        mode = known ? "pinned" : "off";
+        playlist = [];
+        playlistKey = "";
+        setWanted(known);
       },
+      /**
+       * Play a playlist: its tracks in order, each handed to the next on the bar line when it
+       * ends. Asking again for the same list changes nothing, so the game can ask every frame;
+       * a new list starts on a random one of its tracks, unless the one playing is in it.
+       * @param {string[]} ids
+       */
+      setPlaylist(ids) {
+        const list = ids.filter((id) => TRACK_INFO[id]);
+        const key = list.join();
+        if (mode === "playlist" && key === playlistKey) return;
+        mode = list.length ? "playlist" : "off";
+        playlist = list;
+        playlistKey = key;
+        setWanted(list.length ? list.includes(wanted) ? wanted : list[Math.floor(Math.random() * list.length)] : null);
+      },
+      /** Do what musicPlan() in tracks.js says: silence, one track, or a playlist. */
+      play(plan) {
+        if (plan.off) this.setTrack(null);
+        else if (plan.track) this.setTrack(plan.track);
+        else this.setPlaylist(plan.playlist);
+      },
+      /** Move on to the next track of the playlist, on the next beat. */
+      skip() {
+        if (mode !== "playlist" || playlist.length < 2) return;
+        setWanted(playlist[(playlist.indexOf(wanted) + 1) % playlist.length]);
+      },
+      /** The id of the track that is (or is about to be) playing, or null. */
       getTrack() {
         return wanted;
+      },
+      /** Call `cb(id)` whenever the playing track changes. Returns a function that stops it. */
+      onTrack(cb) {
+        listeners.add(cb);
+        return () => listeners.delete(cb);
       },
       /** Muffle and lower the music while the game is paused. */
       setPaused(value) {
@@ -3873,6 +7480,1150 @@
         if (timer) clearInterval(timer);
         if (ctx) ctx.close();
         ctx = null;
+      }
+    };
+  }
+
+  // js/ambience-synth.js
+  var TAU = Math.PI * 2;
+  function stereo(sr, seconds) {
+    const n = Math.round(sr * seconds);
+    return [new Float32Array(n), new Float32Array(n)];
+  }
+  function mix2(out, start, grain, len, pan) {
+    const [left, right] = out;
+    const n = left.length;
+    const angle = (Math.max(-1, Math.min(1, pan)) + 1) * Math.PI / 4;
+    const gl = Math.cos(angle);
+    const gr = Math.sin(angle);
+    let j = (start % n + n) % n;
+    for (let i = 0; i < len; i++) {
+      left[j] += grain[i] * gl;
+      right[j] += grain[i] * gr;
+      if (++j >= n) j = 0;
+    }
+  }
+  function sineGrain(buf, sr, f0, f1, tau, amp) {
+    const len = Math.min(buf.length, Math.ceil(tau * 6 * sr));
+    const attack = Math.max(2, Math.round(sr * 3e-4));
+    const decay = Math.exp(-1 / (tau * sr));
+    let phase = 0;
+    let env = amp;
+    for (let i = 0; i < len; i++) {
+      phase += TAU * (f0 + (f1 - f0) * i / len) / sr;
+      buf[i] = Math.sin(phase) * env * Math.min(1, i / attack);
+      env *= decay;
+    }
+    return len;
+  }
+  function noiseGrain(buf, sr, r, freq, q, attackS, decayS, amp) {
+    const len = Math.min(buf.length, Math.ceil((attackS + decayS * 5) * sr));
+    const w = TAU * Math.min(freq, sr * 0.45) / sr;
+    const alpha = Math.sin(w) / (2 * q);
+    const a0 = 1 + alpha;
+    const a1 = -2 * Math.cos(w) / a0;
+    const a2 = (1 - alpha) / a0;
+    const b0 = alpha / a0;
+    const gain = amp * Math.sqrt(q) * 2.2;
+    const attack = Math.max(1, attackS * sr);
+    const decay = Math.exp(-1 / (decayS * sr));
+    let x1 = 0, x2 = 0, y1 = 0, y2 = 0, env = 1;
+    for (let i = 0; i < len; i++) {
+      const x = r() * 2 - 1;
+      const y = b0 * x - b0 * x2 - a1 * y1 - a2 * y2;
+      x2 = x1;
+      x1 = x;
+      y2 = y1;
+      y1 = y;
+      if (i < attack) buf[i] = y * gain * (i / attack);
+      else {
+        buf[i] = y * gain * env;
+        env *= decay;
+      }
+    }
+    return len;
+  }
+  function* addBand(ch, sr, r, { rate, hp, lp, level }, breathe, gustPhase) {
+    const n = ch.length;
+    const shot = new Float32Array(n);
+    for (let i = Math.round(rate * n / sr); i > 0; i--) shot[Math.floor(r() * n)] += (r() * 2 - 1) * (0.6 + 0.8 * r() ** 2);
+    const kLp = 1 - Math.exp(-TAU * lp / sr);
+    const kHp = 1 - Math.exp(-TAU * hp / sr);
+    let l1 = 0, l2 = 0, a = 0, b = 0;
+    const run = (x) => {
+      l1 += (x - l1) * kLp;
+      l2 += (l1 - l2) * kLp;
+      a += (l2 - a) * kHp;
+      const v = l2 - a;
+      b += (v - b) * kHp;
+      return v - b;
+    };
+    const warm = Math.min(n, Math.round(sr * 0.25));
+    for (let i = n - warm; i < n; i++) run(shot[i]);
+    const p1 = r() * TAU, p2 = r() * TAU;
+    const c1 = 2 + Math.floor(r() * 2), c2 = 5 + Math.floor(r() * 3), c3 = 13 + Math.floor(r() * 6);
+    const p3 = r() * TAU;
+    for (let i = 0; i < n; i++) {
+      const mod = 1 + breathe * (0.55 * Math.sin(TAU * c1 * i / n + p1 + gustPhase) + 0.35 * Math.sin(TAU * c2 * i / n + p2) + 0.25 * Math.sin(TAU * c3 * i / n + p3));
+      ch[i] += run(shot[i]) * level * mod;
+      if (i % 65536 === 0) yield;
+    }
+  }
+  function normalize(out, targetRms) {
+    let sum = 0;
+    for (const ch of out) for (let i = 0; i < ch.length; i++) sum += ch[i] * ch[i];
+    const rms = Math.sqrt(sum / (out[0].length * out.length)) || 1;
+    const k = targetRms / rms;
+    for (const ch of out) {
+      for (let i = 0; i < ch.length; i++) {
+        const v = ch[i] * k;
+        const a = Math.abs(v);
+        ch[i] = a <= 0.8 ? v : Math.sign(v) * (0.8 + 0.19 * Math.tanh((a - 0.8) / 0.19));
+      }
+    }
+    return out;
+  }
+  function* rainLoop(sr, { seconds = 6.5, bands: bands2 = [], breathe = 0.2, ticks = 16, leaves = 8, drips = 1, gusts = 0, seed = 1 } = {}) {
+    const out = stereo(sr, seconds);
+    const n = out[0].length;
+    const r = rng(seed);
+    const gustPhase = r() * TAU;
+    for (const ch of out) {
+      for (const band of bands2) {
+        yield* addBand(ch, sr, r, band, breathe, gustPhase);
+      }
+    }
+    let sum = 0;
+    for (const ch of out) for (let i = 0; i < n; i++) sum += ch[i] * ch[i];
+    const k = 1 / (Math.sqrt(sum / (n * out.length)) || 1);
+    for (const ch of out) for (let i = 0; i < n; i++) ch[i] *= k;
+    const g = new Float32Array(Math.ceil(sr * 0.1));
+    let made = 0;
+    const when = () => {
+      let at2 = Math.floor(r() * n);
+      if (gusts > 0) {
+        for (let tries = 0; tries < 4; tries++) {
+          const wave = 0.5 + 0.5 * Math.sin(TAU * 2 * at2 / n + gustPhase);
+          if (r() < 1 - gusts + gusts * wave) break;
+          at2 = Math.floor(r() * n);
+        }
+      }
+      return at2;
+    };
+    const loud = () => 0.25 + 0.75 * r() ** 2;
+    for (let i = Math.round(ticks * seconds); i > 0; i--) {
+      const len = noiseGrain(g, sr, r, 3e3 + r() * 4200, 2.5 + r() * 2, 2e-4, 12e-4 + r() * 2e-3, loud() * 3.1);
+      mix2(out, when(), g, len, r() * 2 - 1);
+      if (++made % 64 === 0) yield;
+    }
+    for (let i = Math.round(leaves * seconds); i > 0; i--) {
+      const len = noiseGrain(g, sr, r, 1100 + r() * 1500, 1.2 + r(), 6e-4, 4e-3 + r() * 5e-3, loud() * 3.1);
+      mix2(out, when(), g, len, r() * 2 - 1);
+      if (++made % 64 === 0) yield;
+    }
+    for (let i = Math.round(drips * seconds); i > 0; i--) {
+      const at2 = when();
+      const pan = r() * 1.6 - 0.8;
+      let len = noiseGrain(g, sr, r, 4200, 2, 2e-4, 1e-3, 3);
+      mix2(out, at2, g, len, pan);
+      len = noiseGrain(g, sr, r, 2400 + r() * 1800, 14, 4e-4, 6e-3 + r() * 6e-3, 3.5);
+      mix2(out, at2, g, len, pan);
+    }
+    yield;
+    return normalize(out, 0.085);
+  }
+  function gustCurve(n, sr, r, count, widthMin, widthMax) {
+    const out = new Float32Array(n);
+    for (let k = 0; k < count; k++) {
+      const half = (widthMin + r() * (widthMax - widthMin)) * sr;
+      const from = Math.floor(r() * n - half);
+      const amp = 0.55 + 0.45 * r();
+      for (let d = 0; d < half * 2; d++) {
+        const i = ((from + d) % n + n) % n;
+        out[i] += amp * 0.5 * (1 - Math.cos(Math.PI * d / half));
+      }
+    }
+    for (let i = 0; i < n; i++) out[i] = Math.min(1, out[i]);
+    return out;
+  }
+  function noiseArray(n, r) {
+    const out = new Float32Array(n);
+    for (let i = 0; i < n; i++) out[i] = r() * 2 - 1;
+    return out;
+  }
+  function unitRms(a) {
+    let sum = 0;
+    for (let i = 0; i < a.length; i++) sum += a[i] * a[i];
+    const k = 1 / (Math.sqrt(sum / a.length) || 1);
+    for (let i = 0; i < a.length; i++) a[i] *= k;
+  }
+  function* windLoop(sr, { seconds = 10, seed = 41, gusty = 0.7, howl = 0 } = {}) {
+    const out = stereo(sr, seconds);
+    const n = out[0].length;
+    const r = rng(seed);
+    const gust = gustCurve(n, sr, r, Math.max(2, Math.round(seconds / 3)), 1.1, 2.6);
+    const phase = [r() * TAU, r() * TAU, r() * TAU];
+    const cycles = [Math.max(1, Math.round(seconds * 0.5)), Math.max(2, Math.round(seconds * 1.4))];
+    const strength = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const mixed = (1 - gusty) * 0.5 + gusty * gust[i];
+      const flutter = 1 + 0.14 * Math.sin(TAU * cycles[1] * i / n + phase[1]) + 0.08 * Math.sin(TAU * cycles[1] * 2.9 * i / n + phase[2]);
+      strength[i] = (0.16 + 0.84 * mixed) * flutter;
+    }
+    const kRum = 1 - Math.exp(-TAU * 110 / sr);
+    const warm = Math.min(n, Math.round(sr * 0.6));
+    for (let ch = 0; ch < 2; ch++) {
+      const x = noiseArray(n, rng(seed * 13 + ch * 101));
+      const y = out[ch];
+      let low1 = 0, band1 = 0, low2 = 0, band2 = 0, rum1 = 0, rum2 = 0;
+      const step = (i) => {
+        const s = strength[i];
+        const f1 = 2 * Math.sin(Math.PI * (170 + 900 * s ** 1.3) / sr);
+        low1 += f1 * band1;
+        band1 += f1 * (x[i] - low1 - 0.72 * band1);
+        rum1 += (x[i] - rum1) * kRum;
+        rum2 += (rum1 - rum2) * kRum;
+        let v = band1 * 0.85 + rum2 * 3.2 * s;
+        if (howl > 0) {
+          const f2 = 2 * Math.sin(Math.PI * (340 + 560 * s + 30 * Math.sin(TAU * cycles[1] * 3 * i / n + phase[0])) / sr);
+          low2 += f2 * band2;
+          band2 += f2 * (x[i] - low2 - 0.05 * band2);
+          v += band2 * howl * 0.9 * s * s;
+        }
+        return v * s ** 1.15;
+      };
+      for (let i = n - warm; i < n; i++) step(i);
+      for (let i = 0; i < n; i++) {
+        const tilt = 1 + (ch === 0 ? 1 : -1) * 0.22 * Math.sin(TAU * cycles[0] * i / n + phase[0]);
+        y[i] = step(i) * tilt;
+        if (i % 65536 === 0) yield;
+      }
+    }
+    return normalize(out, 0.085);
+  }
+  function* wheatLoop(sr, { seconds = 11, seed = 7 } = {}) {
+    const out = stereo(sr, seconds);
+    const n = out[0].length;
+    const r = rng(seed);
+    const g = new Float32Array(Math.ceil(sr * 0.5));
+    const gust = gustCurve(n, sr, r, Math.max(2, Math.round(seconds / 2.4)), 0.9, 2.2);
+    let made = 0;
+    for (let i = Math.round(200 * seconds); i > 0; i--) {
+      const at2 = Math.floor(r() * n);
+      const s = gust[at2];
+      if (r() > 0.1 + 0.9 * s ** 1.3) continue;
+      const len = noiseGrain(g, sr, r, 1600 + r() * 3e3, 0.8 + r() * 0.7, 0.012 + r() * 0.03, 0.035 + r() * 0.08, (0.3 + 0.7 * r()) * (0.3 + 0.7 * s));
+      mix2(out, at2, g, len, (r() * 2 - 1) * 0.85);
+      if (++made % 48 === 0) yield;
+    }
+    for (let i = Math.round(5 * seconds); i > 0; i--) {
+      const at2 = Math.floor(r() * n);
+      if (r() > 0.15 + 0.85 * gust[at2]) continue;
+      const len = noiseGrain(g, sr, r, 1800 + r() * 1800, 1.2, 2e-3, 0.01 + r() * 0.012, 0.16 * (0.4 + 0.6 * r()));
+      mix2(out, at2, g, len, (r() * 2 - 1) * 0.85);
+      if (++made % 48 === 0) yield;
+    }
+    yield;
+    return normalize(out, 0.05);
+  }
+  function* surfLoop(sr, { seconds = 30, waves = 3, size = 1, seed = 51 } = {}) {
+    const out = stereo(sr, seconds);
+    const n = out[0].length;
+    const r = rng(seed);
+    const slot = n / waves;
+    const [left, right] = out;
+    const lp = (fc) => 1 - Math.exp(-TAU * fc / sr);
+    for (let w = 0; w < waves; w++) {
+      const crashAt = Math.floor((w + 0.35 + r() * 0.35) * slot);
+      const build = 2.4 + r() * 1.6;
+      const wash = 4 + r() * 2.2;
+      const big = size * (0.75 + 0.45 * r());
+      const p0 = r() < 0.5 ? -0.6 : 0.6;
+      const p1 = -p0 * (0.3 + 0.5 * r());
+      const length = Math.round((build + wash + 0.8) * sr);
+      const start = crashAt - Math.round(build * sr);
+      let a1 = 0, a2 = 0;
+      let h = 0;
+      let c1 = 0, c2 = 0;
+      let t1 = 0;
+      let w1 = 0, w2 = 0, wh = 0;
+      let fz = 0;
+      for (let i = 0; i < length; i++) {
+        const t = (i - Math.round(build * sr)) / sr;
+        const white = r() * 2 - 1;
+        let v = 0;
+        if (t < 0) {
+          const u = Math.max(0, (t + build) / build);
+          const e = 0.6 * u ** 2.3;
+          a1 += (white - a1) * lp(180 + 700 * u);
+          a2 += (a1 - a2) * lp(180 + 700 * u);
+          h += (white - h) * lp(1800);
+          v += a2 * e * 5 + (white - h) * e * 0.12 * u;
+        }
+        if (t >= 0) {
+          const attack = 1 - Math.exp(-t / 0.035);
+          const crash = attack * Math.exp(-t / 0.55);
+          const fc = 1100 + 3100 * Math.exp(-t / 0.7);
+          c1 += (white - c1) * lp(fc);
+          c2 += (c1 - c2) * lp(fc);
+          t1 += (white - t1) * lp(240);
+          v += c2 * crash * 2.4 + t1 * attack * Math.exp(-t / 0.5) * 4.5;
+        }
+        if (t >= 0.05) {
+          const span = Math.max(0, 1 - t / wash);
+          const e = (1 - Math.exp(-t / 0.3)) * span ** 1.7;
+          const fc = 900 + 2600 * span;
+          w1 += (white - w1) * lp(fc);
+          w2 += (w1 - w2) * lp(fc);
+          wh += (w2 - wh) * lp(450);
+          v += (w2 - wh) * e * 1.5;
+          const pops = (420 * span * span + 12) / sr;
+          fz += ((r() < pops ? (r() * 2 - 1) * (0.3 + 0.7 * r()) * (0.3 + span) : 0) - fz) * 0.6;
+          v += fz * 0.7;
+        }
+        const k = Math.max(0, Math.min(1, t / wash));
+        const pan = t < 0 ? p0 : p0 + (p1 - p0) * k;
+        const angle = (pan + 1) * Math.PI / 4;
+        const j = ((start + i) % n + n) % n;
+        left[j] += v * big * Math.cos(angle);
+        right[j] += v * big * Math.sin(angle);
+        if (i % 65536 === 0) yield;
+      }
+    }
+    const roarPhase = r() * TAU;
+    const kRoar = lp(280);
+    for (const ch of out) {
+      let a = 0, b = 0;
+      for (let i = 0; i < n; i++) {
+        a += (r() * 2 - 1 - a) * kRoar;
+        b += (a - b) * kRoar;
+        ch[i] += b * 0.75 * (1 + 0.35 * Math.sin(TAU * 3 * i / n + roarPhase));
+        if (i % 65536 === 0) yield;
+      }
+    }
+    return normalize(out, 0.06);
+  }
+  var BELL_PARTIALS = [
+    [0.5, 0.55, 3.6],
+    [1, 1, 4.6],
+    [1.19, 0.6, 3.3],
+    [1.5, 0.45, 2.6],
+    [2, 0.5, 2.3],
+    [2.51, 0.22, 1.4],
+    [3, 0.2, 1.1],
+    [4.15, 0.12, 0.65],
+    [5.43, 0.08, 0.42],
+    [6.8, 0.05, 0.27]
+  ];
+  function* bellStrike(sr, { freq = 146.8, seconds = 11, seed = 5 } = {}) {
+    const out = stereo(sr, seconds);
+    const n = out[0].length;
+    const r = rng(seed);
+    const [left, right] = out;
+    for (const [ratio, level, tau] of BELL_PARTIALS) {
+      for (const twin of [0, 1]) {
+        const f = freq * ratio * (twin ? 1 + 9e-4 + r() * 32e-4 : 1);
+        const w = TAU * f / sr;
+        const decay = Math.exp(-1 / (tau * (0.85 + 0.3 * r()) * sr));
+        const amp = level * (twin ? 0.7 : 1);
+        const c = 2 * decay * Math.cos(w);
+        const d2 = decay * decay;
+        const attack = Math.max(8, Math.round(sr * (ratio < 1.2 ? 0.012 : 4e-3)));
+        const pan = (r() * 2 - 1) * 0.5;
+        const gl = Math.cos((pan + 1) * Math.PI / 4);
+        const gr = Math.sin((pan + 1) * Math.PI / 4);
+        let y1 = amp * decay * Math.sin(w);
+        let y2 = 0;
+        for (let i = 1; i < n; i++) {
+          const v = y1 * (i < attack ? i / attack : 1);
+          left[i] += v * gl;
+          right[i] += v * gr;
+          const y0 = c * y1 - d2 * y2;
+          y2 = y1;
+          y1 = y0;
+          if (i % 131072 === 0) yield;
+        }
+      }
+    }
+    const g = new Float32Array(Math.ceil(sr * 0.1));
+    const len = noiseGrain(g, sr, r, 900, 0.8, 8e-4, 0.01, 0.6);
+    mix2(out, 0, g, len, 0);
+    const fade = Math.round(sr * 1.5);
+    let peak = 0;
+    for (let i = 0; i < n; i++) {
+      const k = n - i < fade ? (n - i) / fade : 1;
+      left[i] *= k;
+      right[i] *= k;
+      peak = Math.max(peak, Math.abs(left[i]), Math.abs(right[i]));
+    }
+    const scale = 0.4 / (peak || 1);
+    for (let i = 0; i < n; i++) {
+      left[i] *= scale;
+      right[i] *= scale;
+    }
+    return out;
+  }
+  function* thunderClap(sr, { distance = 0.4, seed = 1 } = {}) {
+    const r = rng(seed);
+    const near = 1 - distance;
+    const seconds = 5.5 + r() * 2.5 + distance * 2;
+    const out = stereo(sr, seconds);
+    const n = out[0].length;
+    const env = new Float32Array(n);
+    const bumps = [{ t: 0, a: 1, rise: 0.05 + distance * 0.45, fall: 0.9 + r() * 0.5 + distance * 0.7 }];
+    for (let k2 = 3 + Math.floor(r() * 4); k2 > 0; k2--) {
+      const t = 0.5 + r() * seconds * 0.55;
+      bumps.push({ t, a: (0.3 + r() * 0.5) * (1 - t / seconds), rise: 0.15 + r() * 0.4, fall: 0.7 + r() * 1.3 });
+    }
+    for (const b of bumps) {
+      const start = Math.floor(b.t * sr);
+      for (let i = start; i < n; i++) {
+        const t = (i - start) / sr;
+        const v = t < b.rise ? (t / b.rise) ** 1.5 : Math.exp(-(t - b.rise) / b.fall);
+        if (t > b.rise && v < 2e-3) break;
+        env[i] += v * b.a;
+      }
+      yield;
+    }
+    const lp = (fc) => 1 - Math.exp(-TAU * fc / sr);
+    const kDeep = lp(105 + near * 80);
+    const kBody = lp(300 + near * 250);
+    const kSlow = lp(2.5);
+    const kOut = lp(330 + near * 450);
+    for (const ch of out) {
+      const deep = new Float32Array(n);
+      let a = 0, b = 0, c = 0, d = 0;
+      for (let i = 0; i < n; i++) {
+        const w = r() * 2 - 1;
+        a += (w - a) * kDeep;
+        b += (a - b) * kDeep;
+        c += (b - c) * kDeep;
+        d += (c - d) * kDeep;
+        deep[i] = d;
+        if (i % 65536 === 0) yield;
+      }
+      unitRms(deep);
+      const body = new Float32Array(n);
+      let e = 0, f = 0;
+      for (let i = 0; i < n; i++) {
+        const w = r() * 2 - 1;
+        e += (w - e) * kBody;
+        f += (e - f) * kBody;
+        body[i] = f;
+      }
+      unitRms(body);
+      let s1 = 0, s2 = 0, o1 = 0, o2 = 0;
+      for (let i = 0; i < n; i++) {
+        s1 += (r() * 2 - 1 - s1) * kSlow;
+        s2 += (s1 - s2) * kSlow;
+        const roll = Math.max(0.25, Math.min(1.7, 0.8 + s2 * 7));
+        const fade = Math.min(1, (n - i) / (sr * 1.2));
+        const x = Math.tanh(2.1 * (deep[i] + body[i] * 0.5) * env[i] * roll * fade);
+        o1 += (x - o1) * kOut;
+        o2 += (o1 - o2) * kOut;
+        ch[i] = o2;
+        if (i % 65536 === 0) yield;
+      }
+    }
+    const g = new Float32Array(Math.ceil(sr * 0.6));
+    if (near > 0.25) {
+      for (let k2 = 2 + Math.floor(r() * 2); k2 > 0; k2--) {
+        const at2 = Math.floor(r() * 0.05 * sr);
+        const len2 = noiseGrain(g, sr, r, 350 + r() * 600, 0.7, 4e-4, 4e-3 + r() * 0.012, near * (0.5 + r() * 0.5) * 2.2);
+        mix2(out, at2, g, Math.min(len2, n - at2), r() * 0.6 - 0.3);
+      }
+    }
+    const low = 42 + r() * 20;
+    let len = sineGrain(g, sr, low * 1.25, low * 0.8, 0.22 + near * 0.1, 1.2);
+    mix2(out, 0, g, Math.min(len, n), 0);
+    len = sineGrain(g, sr, low * 2.4, low * 1.8, 0.12, 0.45);
+    mix2(out, 0, g, Math.min(len, n), 0);
+    for (let k2 = 2 + Math.floor(r() * 2); k2 > 0; k2--) {
+      const at2 = Math.floor((0.5 + r() * seconds * 0.4) * sr);
+      len = sineGrain(g, sr, (low + 6) * 1.1, low * 0.85, 0.3, 0.5 * (1 - at2 / n));
+      mix2(out, at2, g, Math.min(len, n - at2), r() * 0.8 - 0.4);
+    }
+    let peak = 0;
+    for (const ch of out) for (let i = 0; i < n; i++) peak = Math.max(peak, Math.abs(ch[i]));
+    const k = 0.95 * (1 - 0.3 * distance) / (peak || 1);
+    for (const ch of out) for (let i = 0; i < n; i++) ch[i] *= k;
+    return out;
+  }
+  var RAIN_KINDS = {
+    rain: [
+      {
+        seconds: 6.1,
+        seed: 11,
+        breathe: 0.3,
+        ticks: 26,
+        leaves: 14,
+        drips: 2,
+        bands: [
+          { rate: 19800, hp: 1500, lp: 5e3, level: 0.3 },
+          { rate: 8400, hp: 350, lp: 1800, level: 1.12 },
+          { rate: 4e3, hp: 100, lp: 500, level: 0.6 }
+        ]
+      },
+      {
+        seconds: 7.7,
+        seed: 12,
+        breathe: 0.32,
+        ticks: 18,
+        leaves: 11,
+        drips: 1.4,
+        bands: [
+          { rate: 17600, hp: 1600, lp: 5200, level: 0.3 },
+          { rate: 9100, hp: 400, lp: 1600, level: 1.11 },
+          { rate: 3500, hp: 90, lp: 450, level: 0.6 }
+        ]
+      }
+    ],
+    storm: [
+      {
+        seconds: 5.9,
+        seed: 21,
+        breathe: 0.5,
+        gusts: 0.6,
+        ticks: 52,
+        leaves: 18,
+        drips: 3,
+        bands: [
+          { rate: 26400, hp: 1500, lp: 5600, level: 0.4 },
+          { rate: 11200, hp: 320, lp: 2e3, level: 1.28 },
+          { rate: 5e3, hp: 70, lp: 450, level: 1 }
+        ]
+      },
+      {
+        seconds: 7.3,
+        seed: 22,
+        breathe: 0.55,
+        gusts: 0.8,
+        ticks: 40,
+        leaves: 14,
+        drips: 2.4,
+        bands: [
+          { rate: 24200, hp: 1600, lp: 5400, level: 0.4 },
+          { rate: 10500, hp: 340, lp: 1900, level: 1.25 },
+          { rate: 4500, hp: 60, lp: 400, level: 1.02 }
+        ]
+      }
+    ],
+    water: [
+      {
+        seconds: 6.7,
+        seed: 31,
+        breathe: 0.08,
+        ticks: 5,
+        leaves: 0,
+        drips: 0,
+        bands: [
+          { rate: 19800, hp: 500, lp: 5200, level: 0.51 },
+          { rate: 9100, hp: 160, lp: 1400, level: 1.06 },
+          { rate: 4e3, hp: 60, lp: 320, level: 0.76 }
+        ]
+      },
+      {
+        seconds: 8.3,
+        seed: 32,
+        breathe: 0.1,
+        ticks: 4,
+        leaves: 0,
+        drips: 0,
+        bands: [
+          { rate: 17600, hp: 600, lp: 5e3, level: 0.51 },
+          { rate: 8400, hp: 180, lp: 1300, level: 1.01 },
+          { rate: 3500, hp: 60, lp: 300, level: 0.76 }
+        ]
+      }
+    ]
+  };
+
+  // js/ambience.js
+  var BEDS = ["rain", "storm", "wind", "gale", "wheat", "water", "surf", "hum", "city"];
+  var CALLS = ["birds", "crickets", "owl", "gulls", "bell", "traffic", "cabinets"];
+  var FLAGS = ["thunder", "arcade"];
+  var AMBIENCE_LAYERS = [...BEDS, ...CALLS, ...FLAGS];
+  var GLIDE_S = 0.9;
+  var TICK_MS2 = 200;
+  var LOOKAHEAD_S2 = 0.6;
+  var MASTER_GAIN = 0.5;
+  var IDLE_S = 8;
+  var CLAPS = [[0.12, 1], [0.12, 2], [0.42, 3], [0.42, 4], [0.75, 5], [0.75, 6]];
+  var SOUND_LAG_MIN_S = 0.55;
+  var SOUND_LAG_S = 3;
+  var BELLS = [[146.8, 5], [130.8, 6], [164.8, 7]];
+  var FIRST_CALL_S = { bell: [6, 16] };
+  var rand = (min, max) => min + Math.random() * (max - min);
+  var pick = (list) => list[Math.floor(Math.random() * list.length)];
+  function createNoiseBuffer2(ctx) {
+    const buffer = ctx.createBuffer(1, ctx.sampleRate * 3, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+    return buffer;
+  }
+  function inSlices(gen) {
+    return new Promise((resolve) => {
+      function step() {
+        const start = performance.now();
+        let result;
+        do {
+          result = gen.next();
+        } while (!result.done && performance.now() - start < 3);
+        if (result.done) resolve(result.value);
+        else setTimeout(step, 0);
+      }
+      step();
+    });
+  }
+  function createSources(ctx, noise) {
+    function noiseSource(nodes) {
+      const src = ctx.createBufferSource();
+      src.buffer = noise;
+      src.loop = true;
+      src.start(0, Math.random() * 2);
+      nodes.push(src);
+      return src;
+    }
+    function filter(type, freq, q, nodes) {
+      const f = ctx.createBiquadFilter();
+      f.type = type;
+      f.frequency.value = freq;
+      if (q) f.Q.value = q;
+      nodes.push(f);
+      return f;
+    }
+    function gain(value, nodes) {
+      const g = ctx.createGain();
+      g.gain.value = value;
+      nodes.push(g);
+      return g;
+    }
+    function lfo(param, hz, depth, nodes) {
+      const o = ctx.createOscillator();
+      o.frequency.value = hz;
+      const g = gain(depth, nodes);
+      o.connect(g);
+      g.connect(param);
+      o.start();
+      nodes.push(o);
+    }
+    function noisePath(nodes, dest, level, ...filters) {
+      let node = noiseSource(nodes);
+      for (const f of filters) {
+        node.connect(f);
+        node = f;
+      }
+      const g = gain(level, nodes);
+      node.connect(g);
+      g.connect(dest);
+      return g;
+    }
+    const loops = /* @__PURE__ */ new Map();
+    function toBuffer([left, right]) {
+      const buffer = ctx.createBuffer(2, left.length, ctx.sampleRate);
+      buffer.copyToChannel(left, 0);
+      buffer.copyToChannel(right, 1);
+      return buffer;
+    }
+    function loop(key, make) {
+      if (!loops.has(key)) loops.set(key, inSlices(make()).then(toBuffer));
+      return loops.get(key);
+    }
+    async function loopBed(dest, nodes, isStopped, builders, level) {
+      const buffers = await Promise.all(builders.map(([key, make]) => loop(key, make)));
+      if (isStopped()) return;
+      for (const buffer of buffers) {
+        const src = ctx.createBufferSource();
+        src.buffer = buffer;
+        src.loop = true;
+        src.start(0, Math.random() * buffer.duration);
+        const g = gain(level, nodes);
+        src.connect(g);
+        g.connect(dest);
+        nodes.push(src);
+      }
+    }
+    const rainBuilders = (kind) => RAIN_KINDS[kind].map((o, i) => [`${kind}${i}`, () => rainLoop(ctx.sampleRate, o)]);
+    const wheatBuilders = [
+      ["wheat0", () => wheatLoop(ctx.sampleRate, { seconds: 10.4, seed: 7 })],
+      ["wheat1", () => wheatLoop(ctx.sampleRate, { seconds: 13.7, seed: 8 })]
+    ];
+    const windBuilders = [
+      ["wind0", () => windLoop(ctx.sampleRate, { seconds: 9.7, seed: 41, gusty: 0.55 })],
+      ["wind1", () => windLoop(ctx.sampleRate, { seconds: 12.9, seed: 42, gusty: 0.65 })]
+    ];
+    const galeBuilders = [
+      ["gale0", () => windLoop(ctx.sampleRate, { seconds: 8.3, seed: 43, gusty: 0.9, howl: 0.8 })],
+      ["gale1", () => windLoop(ctx.sampleRate, { seconds: 11.1, seed: 44, gusty: 0.95, howl: 0.7 })]
+    ];
+    const surfBuilders = [
+      ["surf0", () => surfLoop(ctx.sampleRate, { seconds: 30.5, waves: 3, size: 1, seed: 51 })],
+      ["surf1", () => surfLoop(ctx.sampleRate, { seconds: 38.3, waves: 4, size: 0.7, seed: 52 })]
+    ];
+    const beds = {
+      rain(dest, nodes, isStopped) {
+        noisePath(nodes, dest, 0.03, filter("lowpass", 500, 0, nodes));
+        return loopBed(dest, nodes, isStopped, rainBuilders("rain"), 0.7);
+      },
+      storm(dest, nodes, isStopped) {
+        noisePath(nodes, dest, 0.05, filter("lowpass", 700, 0, nodes));
+        return loopBed(dest, nodes, isStopped, rainBuilders("storm"), 0.7);
+      },
+      // A breeze that swells and eases, and a gale with heavy gusts and a faint howl
+      wind(dest, nodes, isStopped) {
+        return loopBed(dest, nodes, isStopped, windBuilders, 0.8);
+      },
+      gale(dest, nodes, isStopped) {
+        return loopBed(dest, nodes, isStopped, galeBuilders, 0.9);
+      },
+      // Ears and leaves brushing past each other, very quiet, in swells as each gust passes
+      wheat(dest, nodes, isStopped) {
+        return loopBed(dest, nodes, isStopped, wheatBuilders, 0.45);
+      },
+      water(dest, nodes, isStopped) {
+        noisePath(nodes, dest, 0.3, filter("lowpass", 1500, 0, nodes), filter("highpass", 120, 0, nodes));
+        return loopBed(dest, nodes, isStopped, rainBuilders("water"), 0.6);
+      },
+      // Waves that build, break and wash back down the beach
+      surf(dest, nodes, isStopped) {
+        return loopBed(dest, nodes, isStopped, surfBuilders, 0.6);
+      },
+      hum(dest, nodes) {
+        for (const [freq, level] of [[55, 0.1], [110.6, 0.04], [165.2, 0.015]]) {
+          const o = ctx.createOscillator();
+          o.frequency.value = freq;
+          const g = gain(level, nodes);
+          o.connect(g);
+          g.connect(dest);
+          o.start();
+          nodes.push(o);
+          lfo(g.gain, 0.09 + freq / 900, level * 0.4, nodes);
+        }
+      },
+      city(dest, nodes) {
+        const g = noisePath(nodes, dest, 0.7, filter("lowpass", 210, 0, nodes));
+        lfo(g.gain, 0.05, 0.15, nodes);
+      }
+    };
+    function tone(dest, t, { type = "sine", wave = null, from, to = from, len, peak, attack = 5e-3, pan = 0 }) {
+      const o = ctx.createOscillator();
+      if (wave) o.setPeriodicWave(wave);
+      else o.type = type;
+      o.frequency.setValueAtTime(from, t);
+      if (to !== from) o.frequency.exponentialRampToValueAtTime(to, t + len);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(1e-4, t);
+      g.gain.linearRampToValueAtTime(peak, t + attack);
+      g.gain.exponentialRampToValueAtTime(1e-4, t + len);
+      o.connect(g);
+      let out = g;
+      if (pan && ctx.createStereoPanner) {
+        out = ctx.createStereoPanner();
+        out.pan.value = pan;
+        g.connect(out);
+      }
+      out.connect(dest);
+      o.start(t);
+      o.stop(t + len + 0.02);
+      o.onended = () => {
+        g.disconnect();
+        out.disconnect();
+      };
+      return o;
+    }
+    function burst(dest, t, len, type, freq, q, shape) {
+      const src = ctx.createBufferSource();
+      src.buffer = noise;
+      src.loop = true;
+      const f = ctx.createBiquadFilter();
+      f.type = type;
+      f.frequency.setValueAtTime(freq, t);
+      f.Q.value = q;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(1e-4, t);
+      shape(g.gain, f);
+      src.connect(f);
+      f.connect(g);
+      g.connect(dest);
+      src.start(t, Math.random() * 2);
+      src.stop(t + len);
+      src.onended = () => {
+        f.disconnect();
+        g.disconnect();
+      };
+    }
+    const pulses = /* @__PURE__ */ new Map();
+    function pulse(duty) {
+      if (!pulses.has(duty)) {
+        const size = 48;
+        const real = new Float32Array(size);
+        const imag = new Float32Array(size);
+        for (let k = 1; k < size; k++) real[k] = 2 / (k * Math.PI) * Math.sin(k * Math.PI * duty);
+        pulses.set(duty, ctx.createPeriodicWave(real, imag));
+      }
+      return pulses.get(duty);
+    }
+    function chipRun(dest, t, notes, { duty = 0.25, peak = 0.05, cutoff = 2600, pan = 0 }) {
+      const f = ctx.createBiquadFilter();
+      f.type = "lowpass";
+      f.frequency.value = cutoff;
+      f.connect(dest);
+      let end = 0;
+      for (const [freq, at2, len] of notes) {
+        tone(f, t + at2, { wave: pulse(duty), from: freq, len, peak, attack: 2e-3, pan });
+        end = Math.max(end, at2 + len);
+      }
+      setTimeout(() => f.disconnect(), (t - ctx.currentTime + end + 0.5) * 1e3);
+    }
+    const cues = {
+      move(t, dest) {
+        chipRun(dest, t, [[440, 0, 0.022]], { duty: 0.125, peak: 0.03, cutoff: 5e3 });
+      },
+      rotate(t, dest) {
+        chipRun(dest, t, [[660, 0, 0.03], [990, 0.03, 0.03]], { duty: 0.25, peak: 0.04, cutoff: 5e3 });
+      },
+      drop(t, dest) {
+        tone(dest, t, { wave: pulse(0.5), from: 880, to: 160, len: 0.1, peak: 0.05, attack: 2e-3 });
+      },
+      lock(t, dest) {
+        tone(dest, t, { wave: pulse(0.5), from: 150, to: 90, len: 0.07, peak: 0.07, attack: 2e-3 });
+        burst(dest, t, 0.04, "bandpass", 2400, 1, (g) => {
+          g.linearRampToValueAtTime(0.05, t + 2e-3);
+          g.exponentialRampToValueAtTime(1e-4, t + 0.035);
+        });
+      },
+      land(t, dest) {
+        tone(dest, t, { wave: pulse(0.5), from: 110, to: 70, len: 0.1, peak: 0.06, attack: 2e-3 });
+      },
+      // Four rows gone: a rising arpeggio and a held top note, with a bass under it
+      tetris(t, dest) {
+        const notes = [523.25, 659.25, 783.99, 1046.5, 1318.5, 1567.98];
+        chipRun(dest, t, [...notes.map((f, i) => [f, i * 0.065, 0.07]), [2093, notes.length * 0.065, 0.55]], { duty: 0.25, peak: 0.06, cutoff: 6e3 });
+        chipRun(dest, t, [[261.63, 0, 0.2], [523.25, notes.length * 0.065, 0.45]], { duty: 0.5, peak: 0.035, cutoff: 3e3 });
+        tone(dest, t, { type: "triangle", from: 130.81, len: 0.5, peak: 0.07, attack: 4e-3 });
+      }
+    };
+    const calls = {
+      // Somewhere else in the arcade, other machines: coin, laser, power-up, blips, a jingle, a boom
+      cabinets(t, dest) {
+        const pan = rand(-0.85, 0.85);
+        const far = { duty: pick([0.125, 0.25, 0.5]), peak: rand(0.03, 0.05), cutoff: rand(1800, 3e3), pan };
+        const kind = pick(["coin", "laser", "power", "blips", "jingle", "boom"]);
+        if (kind === "coin") chipRun(dest, t, [[987.77, 0, 0.07], [1318.51, 0.07, 0.32]], far);
+        else if (kind === "laser") {
+          const f = ctx.createBiquadFilter();
+          f.type = "lowpass";
+          f.frequency.value = far.cutoff;
+          f.connect(dest);
+          tone(f, t, { wave: pulse(0.5), from: rand(1600, 2200), to: rand(180, 320), len: rand(0.14, 0.26), peak: far.peak, attack: 2e-3, pan });
+          setTimeout(() => f.disconnect(), (t - ctx.currentTime + 1) * 1e3);
+        } else if (kind === "power") {
+          const base = pick([392, 440, 523.25]);
+          chipRun(dest, t, [0, 4, 7, 12, 16, 19].map((s, i) => [base * 2 ** (s / 12), i * 0.055, 0.06]), far);
+        } else if (kind === "blips") {
+          const n = 2 + Math.floor(Math.random() * 3);
+          chipRun(dest, t, Array.from({ length: n }, (_, i) => [rand(500, 1400), i * rand(0.09, 0.14), 0.05]), far);
+        } else if (kind === "jingle") {
+          const scale = [0, 2, 4, 7, 9, 12];
+          const base = pick([262, 294, 330]);
+          chipRun(dest, t, Array.from({ length: 7 }, (_, i) => [base * 2 ** (pick(scale) / 12), i * 0.12, 0.1]), far);
+        } else {
+          burst(dest, t, 0.5, "lowpass", 900, 0.7, (g, f) => {
+            g.linearRampToValueAtTime(far.peak * 6, t + 0.01);
+            g.exponentialRampToValueAtTime(1e-4, t + 0.45);
+            f.frequency.exponentialRampToValueAtTime(180, t + 0.45);
+          });
+        }
+        return rand(4, 11);
+      },
+      birds(t, dest) {
+        const pan = rand(-0.7, 0.7);
+        const base = rand(2600, 4600);
+        const song = Math.random();
+        if (song < 0.45) {
+          const n = 2 + Math.floor(Math.random() * 4);
+          for (let i = 0; i < n; i++) {
+            tone(dest, t + i * rand(0.1, 0.15), { from: base, to: base * rand(1.2, 1.5), len: 0.07, peak: 0.22, pan });
+          }
+        } else if (song < 0.75) {
+          const n = 7 + Math.floor(Math.random() * 8);
+          for (let i = 0; i < n; i++) {
+            tone(dest, t + i * 0.045, { from: base * 1.1, to: base * 0.9, len: 0.035, peak: 0.16, pan });
+          }
+        } else {
+          tone(dest, t, { from: base * 0.9, to: base * 0.8, len: 0.22, peak: 0.18, attack: 0.03, pan });
+          tone(dest, t + 0.3, { from: base * 0.72, to: base * 0.66, len: 0.3, peak: 0.18, attack: 0.03, pan });
+        }
+        return rand(1.2, 5.5);
+      },
+      crickets(t, dest) {
+        const freq = pick([4300, 4650, 4900]);
+        const pan = rand(-0.8, 0.8);
+        for (let i = 0; i < 3; i++) tone(dest, t + i * 0.05, { from: freq, len: 0.03, peak: 0.2, attack: 4e-3, pan });
+        return rand(0.35, 0.8);
+      },
+      owl(t, dest) {
+        const base = rand(330, 390);
+        const pan = rand(-0.5, 0.5);
+        [0, 0.5, 0.74].forEach((offset, i) => {
+          tone(dest, t + offset, { from: base, to: base * 0.93, len: i === 0 ? 0.36 : 0.22, peak: 0.26, attack: 0.05, pan });
+        });
+        return rand(11, 26);
+      },
+      gulls(t, dest) {
+        const pan = rand(-0.7, 0.7);
+        const n = 2 + Math.floor(Math.random() * 3);
+        for (let i = 0; i < n; i++) {
+          const start = t + i * 0.42;
+          const o = tone(dest, start, { type: "triangle", from: 1500, to: 1150, len: 0.36, peak: 0.2, attack: 0.04, pan });
+          o.frequency.setValueAtTime(1500, start);
+          o.frequency.linearRampToValueAtTime(2050, start + 0.09);
+        }
+        return rand(6, 15);
+      },
+      // A temple bell struck far off, once in a long while
+      bell(t, dest) {
+        const buffer = bells.length ? pick(bells) : null;
+        if (!buffer) return 3;
+        const src = ctx.createBufferSource();
+        src.buffer = buffer;
+        const g = ctx.createGain();
+        g.gain.value = 0.75;
+        src.connect(g);
+        g.connect(dest);
+        src.start(t);
+        src.onended = () => g.disconnect();
+        return rand(26, 46);
+      },
+      // A car passing on the highway
+      traffic(t, dest) {
+        const len = rand(2.2, 3.6);
+        burst(dest, t, len, "bandpass", 260, 0.8, (g, f) => {
+          g.linearRampToValueAtTime(0.55, t + len * 0.5);
+          g.linearRampToValueAtTime(1e-4, t + len - 0.05);
+          f.frequency.linearRampToValueAtTime(620, t + len * 0.5);
+          f.frequency.linearRampToValueAtTime(240, t + len);
+        });
+        return rand(2.5, 7);
+      }
+    };
+    const claps = [];
+    let clapsStarted = false;
+    const bells = [];
+    let bellsStarted = null;
+    return {
+      bed(name, dest) {
+        const nodes = [];
+        let stopped = false;
+        const ready = Promise.resolve(beds[name](dest, nodes, () => stopped));
+        return {
+          ready,
+          stop() {
+            stopped = true;
+            for (const n of nodes) {
+              try {
+                n.stop?.();
+              } catch {
+              }
+              n.disconnect();
+            }
+          }
+        };
+      },
+      call(name, t, dest) {
+        return calls[name](t, dest);
+      },
+      /** Play one of the stacker's cues ('move', 'rotate', 'drop', 'lock', 'land', 'tetris') at time t. */
+      cue(kind, t, dest) {
+        cues[kind]?.(t, dest);
+      },
+      /** Start building the bells. Safe to call again; it only runs once. Resolves when all are ready. */
+      prepareBells() {
+        if (!bellsStarted) {
+          bellsStarted = (async () => {
+            for (const [freq, seed] of BELLS) {
+              const samples = await inSlices(bellStrike(ctx.sampleRate, { freq, seed }));
+              bells.push(toBuffer(samples));
+            }
+          })();
+        }
+        return bellsStarted;
+      },
+      /** Start building the thunderclaps. Safe to call again; it only runs once. */
+      prepareClaps() {
+        if (clapsStarted) return;
+        clapsStarted = true;
+        (async () => {
+          for (const [distance, seed] of CLAPS) {
+            const samples = await inSlices(thunderClap(ctx.sampleRate, { distance, seed }));
+            claps.push({ distance, buffer: toBuffer(samples) });
+          }
+        })();
+      },
+      /** The built clap closest to a distance (0 overhead, 1 far), or null if none is ready. */
+      clapFor(distance) {
+        if (!claps.length) return null;
+        const near = claps.filter((c) => Math.abs(c.distance - distance) < 0.2);
+        return pick(near.length ? near : claps).buffer;
+      }
+    };
+  }
+  function createAmbience(settings2) {
+    let ctx = null;
+    let master = null;
+    let sources = null;
+    let timer = null;
+    let wanted = {};
+    const layers = /* @__PURE__ */ new Map();
+    function targetVolume() {
+      if (!settings2.ambience || settings2.background === "off" || document.hidden) return 0;
+      return (settings2.masterVolume ?? 100) / 100 * ((settings2.ambienceVolume ?? 60) / 100) * MASTER_GAIN;
+    }
+    function ensureLayer(name) {
+      if (layers.has(name)) return layers.get(name);
+      const g = ctx.createGain();
+      g.gain.value = 0;
+      g.connect(master);
+      const [firstMin, firstMax] = FIRST_CALL_S[name] || [0.3, 2.5];
+      const layer2 = { gain: g, level: 0, idleSince: 0, next: ctx.currentTime + rand(firstMin, firstMax) };
+      layer2.stop = BEDS.includes(name) ? sources.bed(name, g).stop : () => {
+      };
+      layers.set(name, layer2);
+      if (name === "thunder") sources.prepareClaps();
+      if (name === "bell") sources.prepareBells();
+      return layer2;
+    }
+    function apply() {
+      if (!ctx) return;
+      const now = ctx.currentTime;
+      for (const name of AMBIENCE_LAYERS) {
+        const level = wanted[name] || 0;
+        if (level === 0 && !layers.has(name)) continue;
+        const layer2 = ensureLayer(name);
+        if (layer2.level === level) continue;
+        layer2.level = level;
+        layer2.idleSince = level === 0 ? now : 0;
+        layer2.gain.gain.setTargetAtTime(level, now, GLIDE_S / 3);
+      }
+    }
+    function tick() {
+      const now = ctx.currentTime;
+      const vol = targetVolume();
+      if (Math.abs(master.gain.value - vol) > 1e-3) master.gain.setTargetAtTime(vol, now, 0.15);
+      for (const [name, layer2] of layers) {
+        if (layer2.level === 0) {
+          if (now - layer2.idleSince > IDLE_S) {
+            layer2.stop();
+            layer2.gain.disconnect();
+            layers.delete(name);
+          }
+          continue;
+        }
+        if (!CALLS.includes(name) || vol === 0) continue;
+        if (layer2.next < now) layer2.next = now + 0.05;
+        while (layer2.next < now + LOOKAHEAD_S2) {
+          layer2.next += sources.call(name, layer2.next, layer2.gain) / Math.max(0.3, layer2.level);
+        }
+      }
+    }
+    return {
+      /** Create the AudioContext. Call from a user gesture (click or key). */
+      unlock() {
+        if (!ctx) {
+          const AudioContext = window.AudioContext || window.webkitAudioContext;
+          ctx = new AudioContext();
+          master = ctx.createGain();
+          master.gain.value = 0;
+          master.connect(ctx.destination);
+          sources = createSources(ctx, createNoiseBuffer2(ctx));
+          timer = setInterval(tick, TICK_MS2);
+        }
+        if (ctx.state === "suspended") ctx.resume();
+        apply();
+      },
+      /** Glide to a scene's layers: `{ rain: 1, birds: 0.2 }`. Unknown names are ignored. */
+      setScene(levels) {
+        wanted = levels || {};
+        apply();
+      },
+      /**
+       * Lightning struck. Plays a thunderclap after a delay that grows with distance,
+       * if the scene has thunder and a clap has been built.
+       * @param {number} distance - 0 (overhead) to 1 (far away)
+       */
+      strike(distance = 0.4) {
+        const layer2 = layers.get("thunder");
+        if (!ctx || !layer2 || layer2.level === 0 || targetVolume() === 0) return;
+        const buffer = sources.clapFor(distance);
+        if (!buffer) return;
+        const src = ctx.createBufferSource();
+        src.buffer = buffer;
+        const g = ctx.createGain();
+        g.gain.value = 1.3 - 0.45 * distance;
+        src.connect(g);
+        g.connect(layer2.gain);
+        src.start(ctx.currentTime + SOUND_LAG_MIN_S + distance * SOUND_LAG_S);
+        src.onended = () => g.disconnect();
+      },
+      /**
+       * The Neon Fall stacker did something. Plays its little arcade sound if the scene has them.
+       * @param {string} kind - 'move', 'rotate', 'drop', 'lock', 'land' or 'tetris'
+       */
+      cue(kind) {
+        const layer2 = layers.get("arcade");
+        if (!ctx || !layer2 || layer2.level === 0 || targetVolume() === 0) return;
+        sources.cue(kind, ctx.currentTime + 0.03, layer2.gain);
+      },
+      dispose() {
+        if (timer) clearInterval(timer);
+        if (ctx) ctx.close();
+        ctx = null;
+      }
+    };
+  }
+
+  // js/touch.js
+  function createTouchControls(roots, settings2) {
+    const coarse = window.matchMedia?.("(pointer: coarse)");
+    const held = /* @__PURE__ */ new Map();
+    function send(type, code) {
+      document.dispatchEvent(new KeyboardEvent(type, { code, key: code, bubbles: true, cancelable: true }));
+    }
+    function press(e) {
+      const btn = e.target.closest("[data-key]");
+      if (!btn) return;
+      e.preventDefault();
+      if (held.has(e.pointerId)) return;
+      held.set(e.pointerId, btn);
+      btn.setPointerCapture?.(e.pointerId);
+      btn.classList.add("pressed");
+      navigator.vibrate?.(8);
+      send("keydown", btn.dataset.key);
+    }
+    function release(e) {
+      const btn = held.get(e.pointerId);
+      if (!btn) return;
+      held.delete(e.pointerId);
+      btn.classList.remove("pressed");
+      send("keyup", btn.dataset.key);
+    }
+    for (const root of roots) {
+      root.addEventListener("pointerdown", press);
+      root.addEventListener("pointerup", release);
+      root.addEventListener("pointercancel", release);
+      root.addEventListener("lostpointercapture", release);
+      root.addEventListener("contextmenu", (e) => e.preventDefault());
+    }
+    return {
+      /**
+       * Whether the buttons should show: forced on or off by the setting, otherwise
+       * on when the main pointer is a finger. Also sets the `touch-ui` body class.
+       */
+      refresh() {
+        const mode = settings2.touchControls || "auto";
+        const active = mode === "on" || mode === "auto" && !!coarse?.matches;
+        document.body.classList.toggle("touch-ui", active);
+        return active;
       }
     };
   }
@@ -4017,28 +8768,28 @@
       name: "40 LINES",
       subtitle: "SPRINT",
       description: "Clear 40 lines as fast as possible.",
-      track: "competitive",
+      music: "casual",
       icon: "\u23F1"
     },
     [MODE_BLITZ]: {
       name: "BLITZ",
       subtitle: "2 MINUTES",
       description: "Score as many points as you can before time runs out.",
-      track: "intense",
+      music: "intense",
       icon: "\u26A1"
     },
     [MODE_CLASSIC]: {
       name: "CASUAL",
       subtitle: "ENDLESS",
       description: "Relaxed endless play. Gravity rises and the scenery changes as you level up.",
-      track: "calm",
+      music: "casual",
       icon: "\u221E"
     },
     [MODE_OG]: {
       name: "CLASSIC",
       subtitle: "OG RULES",
       description: "The original rules: next piece only, no hold, no wall kicks. Points for lines, nothing for T-spins.",
-      track: "chip",
+      music: "chip",
       icon: "\u25A3"
     }
   };
@@ -4274,13 +9025,6 @@
         if (modeId === MODE_BLITZ) return BLITZ_MS - timer.getRemaining();
         return timer.getElapsed();
       },
-      /**
-       * Whether Casual has reached the intense track (level 10+). Sprint and Blitz keep
-       * one track for the whole run, so a switch mid-game never breaks their pace.
-       */
-      isHeated() {
-        return modeId === MODE_CLASSIC && stats.level >= 10;
-      },
       /** Get results for the game-over screen */
       getResults() {
         const r = { ...stats };
@@ -4299,228 +9043,755 @@
   }
 
   // js/menu.js
-  function createClassicIcon() {
-    const size = 14;
-    const canvas = document.createElement("canvas");
-    canvas.width = size * 3;
-    canvas.height = size * 2;
-    canvas.className = "mode-icon-pixel";
-    const ctx = canvas.getContext("2d");
-    const palette = nesPalette(0);
-    [["light", 0, 0], ["dark", 1, 0], ["ring", 2, 0], ["light", 1, 1]].forEach(([kind, col, row]) => {
-      paintNesBlock(ctx, col * size, row * size, size, kind, palette);
-    });
-    return canvas;
+  var pad = (n) => String(n + 1).padStart(2, "0");
+  var esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+  var capital = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+  var clock = (seconds) => Number.isFinite(seconds) ? `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}` : "-:--";
+  function copyCanvas(source) {
+    const c = document.createElement("canvas");
+    c.width = source.width;
+    c.height = source.height;
+    c.getContext("2d").drawImage(source, 0, 0);
+    return c;
   }
-  function createMenuSystem(container) {
-    let currentScreen = null;
-    let onModeSelectCallback = null;
-    let onResumeCallback = null;
-    let onRestartCallback = null;
-    let onQuitCallback = null;
-    const screens = {};
-    const mainMenu = createElement("div", "menu-screen menu-main");
-    mainMenu.innerHTML = `
-        <div class="menu-content">
-            <h1 class="menu-title">
-                <span class="title-u">u</span><span class="title-lol">lol</span><span class="title-tris">Tris</span>
-            </h1>
-            <p class="menu-subtitle">A cozy block stacker</p>
-            <div class="menu-buttons">
-                <button class="menu-btn menu-btn-primary" data-action="play">PLAY</button>
-                <button class="menu-btn" data-action="settings">SETTINGS</button>
-            </div>
-            <div class="menu-footer">
-                <span class="menu-hint">Press any key or click PLAY to start</span>
-            </div>
-        </div>
-    `;
-    screens.main = mainMenu;
-    container.appendChild(mainMenu);
-    const modeSelect = createElement("div", "menu-screen menu-mode-select");
-    const modesHtml = [MODE_SPRINT, MODE_BLITZ, MODE_CLASSIC, MODE_OG].map((id) => {
-      const info = MODE_INFO[id];
-      return `
-            <button class="mode-card" data-mode="${id}">
-                <div class="mode-icon">${info.icon}</div>
-                <div class="mode-card-text">
-                    <h3>${info.name}</h3>
-                    <span class="mode-subtitle">${info.subtitle}</span>
-                    <p>${info.description}</p>
-                </div>
-            </button>
-        `;
-    }).join("");
-    modeSelect.innerHTML = `
-        <div class="menu-content">
-            <h2 class="menu-heading">SELECT MODE</h2>
-            ${modesHtml}
-            <button class="menu-btn menu-btn-back" data-action="back">BACK</button>
-        </div>
-    `;
-    modeSelect.querySelector(`[data-mode="${MODE_OG}"] .mode-icon`).replaceChildren(createClassicIcon());
-    screens.modeSelect = modeSelect;
-    container.appendChild(modeSelect);
-    const pauseOverlay = createElement("div", "menu-screen menu-pause");
-    pauseOverlay.innerHTML = `
-        <div class="menu-content pause-content">
-            <h2 class="menu-heading">PAUSED</h2>
-            <div class="menu-buttons">
-                <button class="menu-btn menu-btn-primary" data-action="resume">RESUME</button>
-                <button class="menu-btn" data-action="restart">RESTART</button>
-                <button class="menu-btn" data-action="quit">QUIT TO MENU</button>
-            </div>
-            <span class="menu-hint">Press ESC to resume</span>
-        </div>
-    `;
-    screens.pause = pauseOverlay;
-    container.appendChild(pauseOverlay);
-    const resultsScreen = createElement("div", "menu-screen menu-results");
-    resultsScreen.innerHTML = `
-        <div class="menu-content">
-            <h2 class="results-title" id="results-title">GAME OVER</h2>
-            <div class="results-grid" id="results-grid"></div>
-            <div class="menu-buttons">
-                <button class="menu-btn menu-btn-primary" data-action="retry">RETRY</button>
-                <button class="menu-btn" data-action="quit">MENU</button>
+  var MODE_DETAIL = {
+    [MODE_SPRINT]: { goal: "Clear 40 lines. Your time is your score.", scenery: "Midnight Circuit" },
+    [MODE_BLITZ]: { goal: "Score as much as you can in 2 minutes.", scenery: "Thunder Peak" },
+    [MODE_CLASSIC]: { goal: "Endless. Gravity rises every 10 lines.", scenery: "Changes every level" },
+    [MODE_OG]: { goal: "Endless. Points for lines; gravity rises every 10 lines.", scenery: "Changes every level" }
+  };
+  var CONTROL_ROWS = [
+    ["MOVE", "\u25C0 \u25B6"],
+    ["SOFT DROP", "\u25BC"],
+    ["HARD DROP", "SPACE"],
+    ["ROTATE RIGHT", "\u25B2 or X"],
+    ["ROTATE LEFT", "Z"],
+    ["HOLD", "C or SHIFT"],
+    ["PAUSE", "ESC"]
+  ];
+  function createMenuSystem(container, options) {
+    const { settings: settings2, tabs, setSetting, resetSettings: resetSettings2, openMusic, music: music2 = null, sound = {} } = options;
+    const cb = {};
+    const root = document.createElement("div");
+    root.className = "ac";
+    root.hidden = true;
+    root.innerHTML = `
+        <div class="ac-shade"></div>
+        <header class="ac-head">
+            <div class="ac-logo"><span class="title-u">u</span><span class="title-lol">lol</span><span class="title-tris">Tris</span></div>
+            <div class="ac-crumbs"></div>
+        </header>
+        <div class="ac-stage">
+            <nav class="ac-tabs" role="tablist"></nav>
+            <div class="ac-banner" hidden></div>
+            <div class="ac-body">
+                <section class="ac-list" role="list"></section>
+                <aside class="ac-info"></aside>
             </div>
         </div>
-    `;
-    screens.results = resultsScreen;
-    container.appendChild(resultsScreen);
-    Object.values(screens).forEach((s) => s.style.display = "none");
-    container.addEventListener("click", (e) => {
-      const btn = e.target.closest("[data-action]");
-      const modeCard = e.target.closest("[data-mode]");
-      if (modeCard) {
-        const modeId = modeCard.dataset.mode;
-        if (onModeSelectCallback) onModeSelectCallback(modeId);
+        <footer class="ac-foot"><div class="ac-keys"></div><div class="ac-scene"></div></footer>`;
+    container.appendChild(root);
+    const el = {
+      crumbs: root.querySelector(".ac-crumbs"),
+      tabs: root.querySelector(".ac-tabs"),
+      banner: root.querySelector(".ac-banner"),
+      list: root.querySelector(".ac-list"),
+      info: root.querySelector(".ac-info"),
+      keys: root.querySelector(".ac-keys"),
+      scene: root.querySelector(".ac-scene")
+    };
+    const state = {
+      screen: null,
+      // 'main' | 'pause' | 'results' | null (closed)
+      tab: 0,
+      focus: "list",
+      // 'row' (the tabs) or 'list'
+      levels: [],
+      // stack of { title, nodes, index }
+      banner: null,
+      // { text, sub, tone }
+      lines: null
+      // info panel lines that stay whatever is focused (results)
+    };
+    const level = () => state.levels[state.levels.length - 1];
+    const focusable = (n) => n.kind !== "info";
+    const firstFocusable = (nodes) => Math.max(0, nodes.findIndex(focusable));
+    function settingNode(key) {
+      const def = findSetting(key);
+      return { kind: def.type, label: def.label, def, info: { title: def.label, text: def.hint } };
+    }
+    const backNode = () => ({ kind: "action", label: "BACK", hint: "", run: back, info: { title: "BACK", text: "Go back one step." } });
+    function briefing(modeId) {
+      const info = MODE_INFO[modeId];
+      const nodes = [{
+        kind: "action",
+        label: "START",
+        hint: info.name,
+        info: { title: "START", text: `Begin ${info.name}.` },
+        run: () => {
+          hideAll();
+          cb.modeSelect?.(modeId);
+        }
+      }];
+      if (modeId === MODE_OG) {
+        nodes.push(settingNode("classicStartLevel"), settingNode("classicScene"), settingNode("classicFont"), backNode());
+        return nodes;
+      }
+      nodes.push(settingNode("gameStyle"));
+      if (modeId === MODE_CLASSIC) nodes.push(settingNode("casualScene"));
+      nodes.push(settingNode("weather"), settingNode("nextPreviewCount"), backNode());
+      return nodes;
+    }
+    function modeNodes() {
+      return [MODE_SPRINT, MODE_BLITZ, MODE_CLASSIC, MODE_OG].map((id) => {
+        const info = MODE_INFO[id];
+        return {
+          kind: "menu",
+          label: info.name,
+          hint: info.subtitle,
+          title: info.name,
+          info: {
+            title: info.name,
+            text: info.description,
+            lines: [
+              { label: "GOAL", value: MODE_DETAIL[id].goal },
+              { label: "MUSIC", value: (CATEGORIES[info.music]?.label || capital(info.music)) + " playlist" },
+              { label: "SCENERY", value: MODE_DETAIL[id].scenery }
+            ]
+          },
+          children: () => briefing(id)
+        };
+      });
+    }
+    function settingsNodes(withBack) {
+      const nodes = tabs.map((tab) => ({
+        kind: "menu",
+        label: tab.label,
+        hint: `${tab.settings.length} options`,
+        title: tab.label,
+        info: { title: tab.label, text: tab.settings.map((s) => s.label).join(" / ") },
+        children: () => [...tab.settings.map((s) => settingNode(s.key)), backNode()]
+      }));
+      nodes.push({
+        kind: "action",
+        label: "RESET DEFAULTS",
+        hint: "",
+        armable: true,
+        info: { title: "RESET DEFAULTS", text: "Put every setting back to its default. Press twice to confirm." },
+        run() {
+          resetSettings2();
+          render();
+        }
+      });
+      if (withBack) nodes.push(backNode());
+      return nodes;
+    }
+    function claudeTrackNode(id) {
+      const t = TRACK_INFO[id];
+      const pinned = settings2.track === id;
+      return {
+        kind: "action",
+        label: t.name.toUpperCase(),
+        hint: `${t.genre.toUpperCase()}  ${t.bpm}`,
+        thumb: () => coverArt(t.art),
+        mark: () => music2.current() === id && !music2.userPlaying() ? "\u25B6" : "",
+        info: {
+          title: t.name,
+          art: () => coverArt(t.art),
+          credit: true,
+          text: t.blurb,
+          lines: [
+            { label: "GENRE", value: t.genre },
+            { label: "TEMPO", value: `${t.bpm} BPM` },
+            { label: "KEY", value: capital(t.key) },
+            { label: "PLAYLIST", value: CATEGORIES[t.category].label },
+            { label: "STATUS", value: music2.current() === id && !music2.userPlaying() ? pinned ? "Playing on a loop" : "Playing" : "Select to play" }
+          ]
+        },
+        run() {
+          music2.pick(id);
+        }
+      };
+    }
+    function claudeNodes() {
+      const nodes = [{
+        kind: "action",
+        label: "AUTO PLAYLIST",
+        hint: settings2.track === "auto" ? "ON" : "SELECT",
+        thumb: sparkMark,
+        mark: () => settings2.track === "auto" && !music2.userPlaying() ? "\u25B6" : "",
+        info: {
+          title: "AUTO PLAYLIST",
+          art: sparkMark,
+          credit: true,
+          text: "Each mode plays its own playlist and moves on to the next track by itself: casual in the menu, Casual and 40 Lines, intense in Blitz. Choose which playlist with SOUNDTRACK."
+        },
+        run() {
+          music2.pick("auto");
+        }
+      }];
+      for (const [id, cat] of Object.entries(CATEGORIES)) {
+        nodes.push({ kind: "info", label: cat.label.toUpperCase(), value: `${cat.tracks.length} TRACK${cat.tracks.length === 1 ? "" : "S"}` });
+        for (const track of cat.tracks) nodes.push(claudeTrackNode(track));
+      }
+      nodes.push(backNode());
+      return nodes;
+    }
+    function yoursNodes() {
+      const u = music2.user;
+      const tracks = u.tracks();
+      const nodes = [{
+        kind: "action",
+        label: "ADD FILES",
+        hint: "OPEN",
+        thumb: noteMark,
+        info: {
+          title: "ADD FILES",
+          art: noteMark,
+          text: "Choose songs from your device (MP3, FLAC, M4A, OGG, WAV), or drop them anywhere on this window. Nothing is uploaded: they play from your own browser and are gone when you close the page. Cover art inside a file is shown as pixel art."
+        },
+        run: () => u.add()
+      }];
+      if (!tracks.length) nodes.push({ kind: "info", label: "NO SONGS YET", value: "" });
+      tracks.forEach((t, i) => nodes.push({
+        kind: "action",
+        label: t.name.toUpperCase(),
+        hint: clock(t.duration),
+        thumb: () => copyCanvas(t.cover),
+        mark: () => u.index() === i ? u.playing() ? "\u25B6" : "\u23F8" : "",
+        info: {
+          title: t.name,
+          art: () => copyCanvas(t.cover),
+          text: [t.artist, t.album].filter(Boolean).join(" / ") || "This file has no title or artist tags.",
+          lines: [
+            { label: "LENGTH", value: clock(t.duration) },
+            { label: "COVER", value: t.hasArt ? "From the file, pixelated" : "Made from the name" },
+            { label: "STATUS", value: u.index() === i ? u.playing() ? "Playing" : "Paused" : "Select to play" }
+          ]
+        },
+        run() {
+          if (u.index() === i) u.toggle();
+          else u.play(i);
+        }
+      }));
+      if (tracks.length) {
+        nodes.push({
+          kind: "action",
+          label: "CLEAR LIST",
+          hint: "",
+          armable: true,
+          info: { title: "CLEAR LIST", text: "Stop the music and take every song off the list. Press twice to confirm. Your files are not touched." },
+          run() {
+            u.clear();
+          }
+        });
+      }
+      nodes.push(backNode());
+      return nodes;
+    }
+    function musicNodes() {
+      if (!music2) return [settingNode("soundtrack"), settingNode("musicVolume"), settingNode("musicMuted")];
+      const current = music2.current();
+      const nowName = current && TRACK_INFO[current] ? TRACK_INFO[current].name.toUpperCase() : "";
+      const yours = music2.user.tracks().length;
+      return [
+        {
+          kind: "menu",
+          label: "MADE WITH CLAUDE",
+          hint: music2.userPlaying() ? `${TRACK_IDS.length} TRACKS` : nowName || `${TRACK_IDS.length} TRACKS`,
+          title: "MADE WITH CLAUDE",
+          thumb: sparkMark,
+          mark: () => music2.userPlaying() ? "" : "\u25B6",
+          live: true,
+          info: {
+            title: "MADE WITH CLAUDE",
+            art: sparkMark,
+            credit: true,
+            text: "Nine original tracks in three playlists: lo-fi, jazz and cafe music; synthwave, house and funk; drum and bass, trance and bass music. Plus the 8-bit Classic arrangement of Korobeiniki. Written for this game and synthesized live in your browser. Nothing is sampled or downloaded.",
+            lines: [{ label: "TRACKS", value: TRACK_IDS.length }, { label: "NOW", value: nowName || "Silence" }]
+          },
+          children: claudeNodes
+        },
+        {
+          kind: "menu",
+          label: "YOUR MUSIC",
+          hint: yours ? `${yours} SONG${yours === 1 ? "" : "S"}` : "ADD SONGS",
+          title: "YOUR MUSIC",
+          thumb: noteMark,
+          mark: () => music2.userPlaying() ? "\u25B6" : "",
+          live: true,
+          info: {
+            title: "YOUR MUSIC",
+            art: noteMark,
+            text: "Play songs from your own device instead of the soundtrack. Their cover art becomes pixel art here. Pick a Made with Claude track, or the auto playlist, to go back to the soundtrack.",
+            lines: [{ label: "SONGS", value: yours }]
+          },
+          children: yoursNodes
+        },
+        settingNode("soundtrack"),
+        settingNode("musicVolume"),
+        settingNode("musicMuted"),
+        { kind: "action", label: "PLAYER PANEL", hint: "OPEN", info: { title: "PLAYER PANEL", text: "The small player with seek, shuffle, repeat and crossfade for your own songs." }, run: () => openMusic() }
+      ];
+    }
+    function controlNodes() {
+      const nodes = CONTROL_ROWS.map(([label, value]) => ({ kind: "info", label, value }));
+      nodes.push({ kind: "info", label: "TOUCH", value: "On-screen buttons" });
+      return nodes;
+    }
+    const MAIN_TABS = [
+      { label: "PLAY", info: { title: "PLAY", text: "Pick a mode, then set it up before you start." }, children: modeNodes },
+      { label: "SETTINGS", info: { title: "SETTINGS", text: "Handling, sound, visuals and game options. Changes save at once." }, children: () => settingsNodes(false) },
+      { label: "CONTROLS", info: { title: "CONTROLS", text: "How to play on a keyboard. On phones and tablets, use the on-screen buttons." }, children: controlNodes },
+      { label: "MUSIC", info: { title: "MUSIC", text: "The soundtrack made for this game, your own songs, and the volume." }, children: musicNodes, live: true }
+    ];
+    function rootLevel(tabIndex) {
+      const tab = MAIN_TABS[tabIndex];
+      const nodes = tab.children();
+      return { title: tab.label, nodes, index: firstFocusable(nodes), rebuild: tab.live ? tab.children : null };
+    }
+    function valueText(n) {
+      if (n.kind === "toggle") return settings2[n.def.key] ? "ON" : "OFF";
+      if (n.kind === "range" || n.kind === "enum") {
+        const v = settings2[n.def.key];
+        return n.def.describe ? n.def.describe(v) : String(v);
+      }
+      return n.value ?? n.hint ?? "";
+    }
+    function gaugePercent(n) {
+      const c = getConstraint(n.def.key);
+      return Math.max(0, Math.min(100, (settings2[n.def.key] - c.min) / (c.max - c.min) * 100));
+    }
+    function change(n, value) {
+      setSetting(n.def.key, value);
+      patchRow(level().nodes.indexOf(n));
+      renderInfo();
+    }
+    function adjust(n, dir, big = false) {
+      if (n.kind === "toggle") return change(n, !settings2[n.def.key]);
+      if (n.kind === "enum") {
+        const values = n.def.values;
+        const at2 = values.indexOf(settings2[n.def.key]);
+        return change(n, values[(at2 + dir + values.length) % values.length]);
+      }
+      if (n.kind === "range") {
+        const c = getConstraint(n.def.key);
+        const next = settings2[n.def.key] + dir * c.step * (big ? 5 : 1);
+        return change(n, Math.max(c.min, Math.min(c.max, Number(next.toFixed(3)))));
+      }
+    }
+    function setFromGauge(n, clientX, gauge) {
+      const c = getConstraint(n.def.key);
+      const rect3 = gauge.getBoundingClientRect();
+      const k = Math.max(0, Math.min(1, (clientX - rect3.left) / rect3.width));
+      const raw = c.min + k * (c.max - c.min);
+      const snapped = c.min + Math.round((raw - c.min) / c.step) * c.step;
+      const value = Math.max(c.min, Math.min(c.max, Number(snapped.toFixed(3))));
+      if (value !== settings2[n.def.key]) change(n, value);
+    }
+    function activate(n) {
+      if (n.kind === "menu") {
+        state.levels.push({ title: n.title || n.label, nodes: n.children(), index: 0, rebuild: n.live ? n.children : null });
+        const lvl = level();
+        lvl.index = firstFocusable(lvl.nodes);
+        state.focus = "list";
+        sound.select?.();
+        render();
+      } else if (n.kind === "action") {
+        if (n.armable && !n.armed) {
+          n.armed = true;
+          n.label = "PRESS AGAIN TO CONFIRM";
+          sound.move?.();
+          return render();
+        }
+        sound.select?.();
+        n.run();
+      } else if (n.kind === "toggle" || n.kind === "enum") {
+        adjust(n, 1);
+        sound.move?.();
+      }
+    }
+    function back() {
+      if (state.levels.length > 1) {
+        state.levels.pop();
+        state.focus = "list";
+        sound.move?.();
+        render();
+      } else if (state.screen === "main" && state.focus === "list") {
+        state.focus = "row";
+        sound.move?.();
+        refreshFocus();
+      } else if (state.screen === "pause") {
+        hideAll();
+        cb.resume?.();
+      }
+    }
+    function selectTab(i) {
+      state.tab = (i + MAIN_TABS.length) % MAIN_TABS.length;
+      state.levels = [rootLevel(state.tab)];
+      render();
+    }
+    function move(dir) {
+      const lvl = level();
+      const count = lvl.nodes.length;
+      let i = lvl.index;
+      for (let step = 0; step < count; step++) {
+        i = (i + dir + count) % count;
+        if (focusable(lvl.nodes[i])) break;
+      }
+      if (i !== lvl.index) {
+        lvl.index = i;
+        sound.move?.();
+        refreshFocus();
+      }
+    }
+    function rowHtml(n, i) {
+      let right;
+      if (n.kind === "range") {
+        right = `<span class="ac-ctl"><button class="ac-step" data-step="-1" tabindex="-1" aria-label="Lower">\u25C0</button><span class="ac-gauge"><span class="ac-fill" style="width:${gaugePercent(n)}%"></span></span><button class="ac-step" data-step="1" tabindex="-1" aria-label="Raise">\u25B6</button></span><span class="ac-read">${esc(valueText(n))}</span>`;
+      } else if (n.kind === "toggle") {
+        right = `<span class="ac-switch${settings2[n.def.key] ? " on" : ""}"><i></i></span><span class="ac-read">${valueText(n)}</span>`;
+      } else if (n.kind === "enum") {
+        right = `<span class="ac-ctl"><button class="ac-step" data-step="-1" tabindex="-1" aria-label="Previous">\u25C0</button><button class="ac-step" data-step="1" tabindex="-1" aria-label="Next">\u25B6</button></span><span class="ac-read ac-wide">${esc(valueText(n))}</span>`;
+      } else if (n.kind === "menu") {
+        right = `<span class="ac-read">${esc(n.hint ?? "")}</span><span class="ac-arrow">\u25B6</span>`;
+      } else {
+        right = `<span class="ac-read">${esc(valueText(n))}</span>`;
+      }
+      const thumb = n.thumb ? '<span class="ac-thumb"></span>' : "";
+      const mark = n.mark ? `<span class="ac-mark">${n.mark()}</span>` : "";
+      return `<div class="ac-row ack-${n.kind}${n.thumb ? " has-thumb" : ""}" role="listitem" data-i="${i}" style="--i:${i}"><span class="ac-num">${pad(i)}</span>${thumb}<span class="ac-label">${esc(n.label)}</span>${right}${mark}</div>`;
+    }
+    function patchRow(i) {
+      const n = level().nodes[i];
+      const row = el.list.querySelector(`[data-i="${i}"]`);
+      if (!n || !row) return;
+      const read = row.querySelector(".ac-read");
+      if (read) read.textContent = valueText(n);
+      if (n.kind === "range") row.querySelector(".ac-fill").style.width = `${gaugePercent(n)}%`;
+      if (n.kind === "toggle") row.querySelector(".ac-switch").classList.toggle("on", !!settings2[n.def.key]);
+    }
+    function renderTabs() {
+      el.tabs.innerHTML = MAIN_TABS.map((t, i) => `<button class="ac-tab${i === state.tab ? " on" : ""}" role="tab" data-tab="${i}" style="--i:${i}"><span class="ac-tab-num">${pad(i)}</span><span>${t.label}</span></button>`).join("");
+    }
+    function renderCrumbs() {
+      const parts = state.screen === "main" ? ["MAIN MENU", MAIN_TABS[state.tab].label, ...state.levels.slice(1).map((l) => l.title)] : state.levels.map((l) => l.title);
+      el.crumbs.innerHTML = parts.map((p, i) => i === parts.length - 1 ? `<b>${esc(p)}</b>` : esc(p)).join(" <em>//</em> ");
+    }
+    function renderInfo() {
+      const n = state.focus === "row" ? null : level().nodes[level().index];
+      const info = n ? n.info || { title: n.label } : MAIN_TABS[state.tab]?.info || {};
+      let html = "";
+      if (info.art) html += '<div class="ac-art"></div>';
+      if (info.title) html += `<div class="ac-info-title">${esc(info.title)}</div>`;
+      if (n && (n.kind === "range" || n.kind === "toggle" || n.kind === "enum")) {
+        html += `<div class="ac-info-value">${esc(valueText(n))}</div>`;
+        if (n.kind === "range") html += `<div class="ac-meter"><i style="width:${gaugePercent(n)}%"></i></div>`;
+      }
+      if (info.text) html += `<p class="ac-info-text">${esc(info.text)}</p>`;
+      const lines = state.lines || info.lines;
+      if (lines) {
+        html += '<dl class="ac-lines">' + lines.map((l) => `<div${l.big ? ' class="big"' : ""}><dt>${esc(l.label)}</dt><dd>${esc(l.value)}</dd></div>`).join("") + "</dl>";
+      }
+      if (info.credit) html += '<div class="ac-credit"><span class="ac-credit-mark"></span>MADE WITH CLAUDE</div>';
+      el.info.innerHTML = html;
+      if (info.art) el.info.querySelector(".ac-art").appendChild(info.art());
+      if (info.credit) el.info.querySelector(".ac-credit-mark").appendChild(sparkMark());
+    }
+    function refreshFocus() {
+      const lvl = level();
+      el.list.classList.toggle("idle", state.focus === "row");
+      el.list.querySelectorAll(".ac-row").forEach((row, i) => row.classList.toggle("focus", state.focus === "list" && i === lvl.index));
+      el.tabs.querySelectorAll(".ac-tab").forEach((tab) => tab.classList.toggle("focus", state.focus === "row"));
+      root.querySelector(".ac-row.focus")?.scrollIntoView({ block: "nearest" });
+      renderKeys();
+      renderInfo();
+    }
+    function renderKeys() {
+      const k = (label) => `<kbd>${label}</kbd>`;
+      const onRow = state.focus === "row";
+      el.keys.innerHTML = onRow ? `${k("\u25C0")}${k("\u25B6")} CHOOSE &nbsp; ${k("\u25BC")} OPEN` : `${k("\u25B2")}${k("\u25BC")} SELECT &nbsp; ${k("\u25C0")}${k("\u25B6")} ADJUST &nbsp; ${k("ENTER")} CONFIRM &nbsp; ${k("ESC")} BACK`;
+    }
+    function render(quiet = false) {
+      const main = state.screen === "main";
+      root.classList.toggle("over", !main);
+      el.tabs.hidden = !main;
+      el.banner.hidden = main || !state.banner;
+      if (main) renderTabs();
+      else if (state.banner) {
+        el.banner.className = `ac-banner ${state.banner.tone || ""}`;
+        el.banner.innerHTML = `<span class="ac-banner-main">${esc(state.banner.text)}</span><span class="ac-banner-sub">${esc(state.banner.sub || "")}</span>`;
+      }
+      renderCrumbs();
+      el.list.classList.toggle("quiet", quiet);
+      el.list.innerHTML = level().nodes.map(rowHtml).join("");
+      level().nodes.forEach((n, i) => {
+        if (n.thumb) el.list.querySelector(`[data-i="${i}"] .ac-thumb`)?.appendChild(n.thumb());
+      });
+      refreshFocus();
+    }
+    function onKey(e) {
+      if (root.hidden || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (/^(INPUT|SELECT|TEXTAREA)$/.test(e.target?.tagName || "")) return;
+      const lvl = level();
+      const n = state.focus === "list" ? lvl.nodes[lvl.index] : null;
+      let handled = true;
+      switch (e.code) {
+        case "ArrowUp":
+          if (state.focus === "list" && state.screen === "main" && state.levels.length === 1 && lvl.index === firstFocusable(lvl.nodes)) {
+            state.focus = "row";
+            sound.move?.();
+            refreshFocus();
+          } else if (state.focus === "list") move(-1);
+          break;
+        case "ArrowDown":
+          if (state.focus === "row") {
+            state.focus = "list";
+            sound.move?.();
+            refreshFocus();
+          } else move(1);
+          break;
+        case "ArrowLeft":
+          if (state.focus === "row") {
+            selectTab(state.tab - 1);
+            sound.move?.();
+          } else if (n && ["range", "enum", "toggle"].includes(n.kind)) {
+            adjust(n, -1, e.shiftKey);
+            sound.move?.();
+          }
+          break;
+        case "ArrowRight":
+          if (state.focus === "row") {
+            selectTab(state.tab + 1);
+            sound.move?.();
+          } else if (n && ["range", "enum", "toggle"].includes(n.kind)) {
+            adjust(n, 1, e.shiftKey);
+            sound.move?.();
+          }
+          break;
+        case "Enter":
+        case "Space":
+        case "NumpadEnter":
+          if (state.focus === "row") {
+            state.focus = "list";
+            sound.select?.();
+            refreshFocus();
+          } else if (n) activate(n);
+          break;
+        case "Escape":
+        case "Backspace":
+          back();
+          break;
+        default:
+          handled = false;
+      }
+      if (handled) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    }
+    document.addEventListener("keydown", onKey, true);
+    root.addEventListener("click", (e) => {
+      const tab = e.target.closest(".ac-tab");
+      if (tab) {
+        state.focus = "row";
+        selectTab(Number(tab.dataset.tab));
+        sound.move?.();
         return;
       }
-      if (!btn) return;
-      const action = btn.dataset.action;
-      switch (action) {
-        case "play":
-          showScreen("modeSelect");
-          break;
-        case "settings":
-          document.dispatchEvent(new CustomEvent("uloltris-open-settings"));
-          break;
-        case "back":
-          showScreen("main");
-          break;
-        case "resume":
-          hideAll();
-          if (onResumeCallback) onResumeCallback();
-          break;
-        case "restart":
-          hideAll();
-          if (onRestartCallback) onRestartCallback();
-          break;
-        case "retry":
-          hideAll();
-          if (onRestartCallback) onRestartCallback();
-          break;
-        case "quit":
-          if (onQuitCallback) onQuitCallback();
-          showScreen("main");
-          break;
-      }
+      const rowEl = e.target.closest(".ac-row");
+      if (!rowEl) return;
+      const i = Number(rowEl.dataset.i);
+      const n = level().nodes[i];
+      if (!n || !focusable(n)) return;
+      level().index = i;
+      state.focus = "list";
+      const step = e.target.closest(".ac-step");
+      if (step) {
+        adjust(n, Number(step.dataset.step));
+        sound.move?.();
+        refreshFocus();
+      } else if (!e.target.closest(".ac-gauge")) {
+        refreshFocus();
+        activate(n);
+      } else refreshFocus();
     });
-    document.addEventListener("keydown", (e) => {
-      if (currentScreen === "main" && !e.repeat) {
-        if (e.code !== "Escape" && !e.code.startsWith("F")) {
-          showScreen("modeSelect");
-        }
-      }
+    root.addEventListener("pointerover", (e) => {
+      if (e.pointerType !== "mouse") return;
+      const rowEl = e.target.closest(".ac-row");
+      if (!rowEl) return;
+      const i = Number(rowEl.dataset.i);
+      const n = level().nodes[i];
+      if (!n || !focusable(n) || state.focus === "list" && level().index === i) return;
+      level().index = i;
+      state.focus = "list";
+      sound.move?.();
+      refreshFocus();
     });
-    function createElement(tag, className) {
-      const el = document.createElement(tag);
-      el.className = className;
-      return el;
-    }
-    function showScreen(name) {
-      hideAll();
-      if (screens[name]) {
-        screens[name].style.display = "flex";
-        currentScreen = name;
-      }
+    root.addEventListener("pointerdown", (e) => {
+      const gauge = e.target.closest(".ac-gauge");
+      if (!gauge) return;
+      const n = level().nodes[Number(gauge.closest(".ac-row").dataset.i)];
+      if (!n) return;
+      e.preventDefault();
+      level().index = level().nodes.indexOf(n);
+      state.focus = "list";
+      refreshFocus();
+      setFromGauge(n, e.clientX, gauge);
+      const drag = (ev2) => setFromGauge(n, ev2.clientX, gauge);
+      const stop = () => {
+        window.removeEventListener("pointermove", drag);
+        window.removeEventListener("pointerup", stop);
+        window.removeEventListener("pointercancel", stop);
+      };
+      window.addEventListener("pointermove", drag);
+      window.addEventListener("pointerup", stop);
+      window.addEventListener("pointercancel", stop);
+    });
+    function open() {
+      root.hidden = false;
+      document.body.classList.add("menu-open");
     }
     function hideAll() {
-      Object.values(screens).forEach((s) => s.style.display = "none");
-      currentScreen = null;
+      root.hidden = true;
+      state.screen = null;
+      document.body.classList.remove("menu-open");
+    }
+    function showScreen(name, data = {}) {
+      if (name === "modeSelect") return showScreen("main", { tab: 0, focus: "list" });
+      state.lines = null;
+      state.banner = null;
+      if (name === "main") {
+        state.screen = "main";
+        state.tab = data.tab ?? 0;
+        state.focus = data.focus ?? "row";
+        state.levels = [rootLevel(state.tab)];
+      } else if (name === "pause") {
+        state.screen = "pause";
+        state.focus = "list";
+        state.banner = { text: "PAUSED", sub: data.modeName || "", tone: "neutral" };
+        state.lines = CONTROL_ROWS.map(([label, value]) => ({ label, value }));
+        const nodes = [
+          { kind: "action", label: "RESUME", hint: "", info: { title: "RESUME", text: "Back to the game." }, run: () => {
+            hideAll();
+            cb.resume?.();
+          } },
+          { kind: "action", label: "RESTART", hint: "", info: { title: "RESTART", text: "Start this mode again from the beginning." }, run: () => {
+            hideAll();
+            cb.restart?.();
+          } },
+          { kind: "menu", label: "SETTINGS", hint: "", title: "SETTINGS", info: { title: "SETTINGS", text: "Change handling, sound and visuals without leaving the game." }, children: () => settingsNodes(true) },
+          { kind: "action", label: "QUIT TO MENU", hint: "", info: { title: "QUIT TO MENU", text: "Leave this game." }, run: () => {
+            cb.quit?.();
+            showScreen("main");
+          } }
+        ];
+        state.levels = [{ title: "PAUSED", nodes, index: 0 }];
+      }
+      open();
+      render();
     }
     function showResults(results) {
-      const titleEl = resultsScreen.querySelector("#results-title");
-      const gridEl = resultsScreen.querySelector("#results-grid");
-      if (results.completed) {
-        titleEl.textContent = results.modeId === "sprint" ? "SPRINT COMPLETE!" : "TIME'S UP!";
-        titleEl.className = "results-title results-complete";
-      } else {
-        titleEl.textContent = "GAME OVER";
-        titleEl.className = "results-title results-gameover";
-      }
-      const stats = [];
+      state.screen = "results";
+      state.focus = "list";
+      const won = results.completed;
+      state.banner = {
+        text: won ? results.modeId === "sprint" ? "SPRINT COMPLETE" : "TIME'S UP" : "GAME OVER",
+        sub: results.modeName || "",
+        tone: won ? "ok" : "fail"
+      };
+      const lines = [];
       if (results.modeId === MODE_OG) {
-        stats.push({ label: "SCORE", value: results.score.toLocaleString(), highlight: true });
-        stats.push({ label: "LINES", value: results.linesCleared });
-        stats.push({ label: "LEVEL", value: results.level });
-        stats.push({ label: "PIECES", value: results.piecesPlaced });
-        stats.push({ label: "TETRIS RATE", value: `${Math.round(results.tetrisRate)}%` });
-        stats.push({ label: "PPS", value: (results.pps ?? 0).toFixed(2) });
-        stats.push({ label: "TIME", value: results.finalTime });
+        lines.push(
+          { label: "SCORE", value: results.score.toLocaleString(), big: true },
+          { label: "LINES", value: results.linesCleared },
+          { label: "LEVEL", value: results.level },
+          { label: "PIECES", value: results.piecesPlaced },
+          { label: "TETRIS RATE", value: `${Math.round(results.tetrisRate)}%` },
+          { label: "PPS", value: (results.pps ?? 0).toFixed(2) },
+          { label: "TIME", value: results.finalTime }
+        );
       } else {
-        if (results.modeId === "sprint") {
-          stats.push({ label: "TIME", value: results.finalTimePrecise || results.finalTime, highlight: true });
-        } else {
-          stats.push({ label: "SCORE", value: results.score.toLocaleString(), highlight: true });
-        }
-        stats.push({ label: "LINES", value: results.linesCleared });
-        stats.push({ label: "LEVEL", value: results.level });
-        stats.push({ label: "PIECES", value: results.piecesPlaced });
-        if (results.tSpins > 0) {
-          stats.push({ label: "T-SPINS", value: results.tSpins });
-        }
-        if (results.tetrises > 0) {
-          stats.push({ label: "QUADS", value: results.tetrises });
-        }
-        if (results.maxCombo > 0) {
-          stats.push({ label: "MAX COMBO", value: results.maxCombo });
-        }
-        if (results.perfectClears > 0) {
-          stats.push({ label: "PERFECT CLEARS", value: results.perfectClears });
-        }
-        stats.push({ label: "LINES SENT", value: results.linesSent });
-        stats.push({ label: "APM", value: results.apm.toFixed(1) });
-        stats.push({ label: "PPS", value: (results.pps ?? 0).toFixed(2) });
-        stats.push({ label: "FINESSE", value: `${(results.finesse ?? 100).toFixed(1)}%` });
-        if (results.modeId !== "sprint") {
-          stats.push({ label: "TIME", value: results.finalTime });
-        }
+        if (results.modeId === "sprint") lines.push({ label: "TIME", value: results.finalTimePrecise || results.finalTime, big: true });
+        else lines.push({ label: "SCORE", value: results.score.toLocaleString(), big: true });
+        lines.push({ label: "LINES", value: results.linesCleared }, { label: "LEVEL", value: results.level }, { label: "PIECES", value: results.piecesPlaced });
+        if (results.tSpins > 0) lines.push({ label: "T-SPINS", value: results.tSpins });
+        if (results.tetrises > 0) lines.push({ label: "QUADS", value: results.tetrises });
+        if (results.maxCombo > 0) lines.push({ label: "MAX COMBO", value: results.maxCombo });
+        if (results.perfectClears > 0) lines.push({ label: "PERFECT CLEARS", value: results.perfectClears });
+        lines.push(
+          { label: "LINES SENT", value: results.linesSent },
+          { label: "APM", value: results.apm.toFixed(1) },
+          { label: "PPS", value: (results.pps ?? 0).toFixed(2) },
+          { label: "FINESSE", value: `${(results.finesse ?? 100).toFixed(1)}%` }
+        );
+        if (results.modeId !== "sprint") lines.push({ label: "TIME", value: results.finalTime });
       }
-      gridEl.innerHTML = stats.map((s) => `
-            <div class="results-stat ${s.highlight ? "results-stat-highlight" : ""}">
-                <span class="results-stat-label">${s.label}</span>
-                <span class="results-stat-value">${s.value}</span>
-            </div>
-        `).join("");
-      showScreen("results");
+      state.lines = lines;
+      const nodes = [
+        { kind: "action", label: "RETRY", hint: "", info: { title: "RETRY", text: "Play this mode again." }, run: () => {
+          hideAll();
+          cb.restart?.();
+        } },
+        { kind: "action", label: "CHANGE MODE", hint: "", info: { title: "CHANGE MODE", text: "Pick another mode." }, run: () => {
+          cb.quit?.();
+          showScreen("main", { tab: 0, focus: "list" });
+        } },
+        { kind: "menu", label: "SETTINGS", hint: "", title: "SETTINGS", info: { title: "SETTINGS", text: "Adjust handling, sound and visuals." }, children: () => settingsNodes(true) },
+        { kind: "action", label: "MAIN MENU", hint: "", info: { title: "MAIN MENU", text: "Back to the title screen." }, run: () => {
+          cb.quit?.();
+          showScreen("main");
+        } }
+      ];
+      state.levels = [{ title: state.banner.text, nodes, index: 0 }];
+      open();
+      render();
+    }
+    function openSettings() {
+      if (root.hidden) showScreen("main", { tab: 1, focus: "list" });
+      else if (state.screen === "main") {
+        if (state.tab !== 1 || state.levels.length > 1) selectTab(1);
+        state.focus = "list";
+        refreshFocus();
+      } else if (!state.levels.some((l) => l.title === "SETTINGS")) {
+        const nodes = settingsNodes(true);
+        state.levels.push({ title: "SETTINGS", nodes, index: 0 });
+        state.focus = "list";
+        render();
+      }
     }
     return {
       showScreen,
-      hideAll,
       showResults,
-      onModeSelect(callback) {
-        onModeSelectCallback = callback;
+      hideAll,
+      openSettings,
+      isOpen: () => !root.hidden,
+      /** Redraw after settings changed from outside (for example a reset). */
+      refresh() {
+        if (root.hidden) return;
+        const lvl = level();
+        if (lvl.rebuild) {
+          lvl.nodes = lvl.rebuild();
+          lvl.index = Math.max(0, Math.min(lvl.index, lvl.nodes.length - 1));
+          if (!focusable(lvl.nodes[lvl.index])) lvl.index = firstFocusable(lvl.nodes);
+        }
+        render(true);
       },
-      onResume(callback) {
-        onResumeCallback = callback;
+      /** The line at the bottom right naming the scene and weather behind the menu. */
+      setSceneTag(text2) {
+        el.scene.textContent = text2;
       },
-      onRestart(callback) {
-        onRestartCallback = callback;
+      onModeSelect(fn) {
+        cb.modeSelect = fn;
       },
-      onQuit(callback) {
-        onQuitCallback = callback;
+      onResume(fn) {
+        cb.resume = fn;
+      },
+      onRestart(fn) {
+        cb.restart = fn;
+      },
+      onQuit(fn) {
+        cb.quit = fn;
       }
     };
   }
@@ -5645,8 +10916,8 @@
         const kpp = s.pieces > 0 ? s.keys / s.pieces : 0;
         const vs = sec > 0 ? s.linesSent / sec * 100 : 0;
         const finessePct = s.finesseJudged > 0 ? (s.finesseJudged - s.finesseFaults) / s.finesseJudged * 100 : 100;
-        const clock = formatClock(s.clockMs);
-        const timeRow = row("TIME", clock.main, clock.sub, `stat-time${s.urgent ? " urgent" : ""}`);
+        const clock2 = formatClock(s.clockMs);
+        const timeRow = row("TIME", clock2.main, clock2.sub, `stat-time${s.urgent ? " urgent" : ""}`);
         const levelRow = modeId === "classic" || isOg ? row("LEVEL", s.level) : "";
         const tetrisRate = s.lines > 0 ? Math.round(s.tetrises * 4 / s.lines * 100) : 0;
         let rows = "";
@@ -6116,14 +11387,8 @@
     }
     function updateMusic() {
       if (!music2) return;
-      const choice = settings2.soundtrack || "auto";
-      if (choice === "off") {
-        music2.setTrack(null);
-        return;
-      }
-      const heated = choice === "auto" && modeState.isHeated();
-      music2.setTrack(heated ? "intense" : choice === "auto" ? MODE_INFO[modeId].track : choice);
-      const levelBoost = modeId === "classic" && !heated ? (modeState.stats.level - 1) * 0.012 : 0;
+      music2.play(musicPlan(settings2, MODE_INFO[modeId].music));
+      const levelBoost = modeId === "classic" ? (modeState.stats.level - 1) * 0.012 : 0;
       music2.setTempoScale(1 + Math.min(levelBoost, 0.12));
     }
     function update(time = 0) {
@@ -6325,20 +11590,29 @@
 
   // js/main.js
   var settings = loadSettings();
-  var settingsListenersBound = false;
   var currentGame = null;
   var soundEngine = null;
+  var menu = null;
+  var sceneTag = "";
   var gameContainer = document.getElementById("game-container");
   var menuContainer = document.getElementById("menu-container");
-  var settingsPanel = document.getElementById("settings-panel");
   var settingsToggle = document.getElementById("settings-toggle");
-  var settingsClose = document.getElementById("settings-close");
   var musicPlayerContainer = document.getElementById("music-player-container");
   var playfield = document.getElementById("playfield");
+  var ambience = createAmbience(settings);
   var background = createBackground(
     document.getElementById("bg-canvas"),
     document.getElementById("bg-layer"),
-    settings
+    settings,
+    {
+      onScene: (info) => {
+        ambience.setScene(info.sounds);
+        sceneTag = info.weatherName ? `${info.sceneName.toUpperCase()} / ${info.weatherName.toUpperCase()}` : info.sceneName.toUpperCase();
+        menu?.setSceneTag(sceneTag);
+      },
+      onStrike: (strike) => ambience.strike(strike.distance),
+      onCue: (cue) => ambience.cue(cue.kind)
+    }
   );
   background.showMenu();
   var canvases = {
@@ -6357,25 +11631,78 @@
   }
   var music = createMusicEngine(settings);
   if (musicPlayer) music.setSuppressor(() => musicPlayer.isPlaying());
-  function menuTrack() {
-    const choice = settings.soundtrack || "auto";
-    if (choice === "off") return null;
-    return choice === "auto" ? "calm" : choice;
+  function playMenuMusic() {
+    music.play(musicPlan(settings, "casual"));
   }
   function unlockAudio() {
     music.unlock();
+    ambience.unlock();
     document.removeEventListener("pointerdown", unlockAudio);
     document.removeEventListener("keydown", unlockAudio);
   }
   document.addEventListener("pointerdown", unlockAudio);
   document.addEventListener("keydown", unlockAudio);
-  music.setTrack(menuTrack());
-  var menu = createMenuSystem(menuContainer);
+  playMenuMusic();
+  function applySetting(key, value) {
+    settings[key] = value;
+    saveSettings(settings);
+    if ((key === "soundtrack" || key === "track") && !currentGame?.isRunning()) playMenuMusic();
+    if (key === "soundPack") soundEngine?.play("rotate");
+    if (key === "touchControls") fitGame();
+    if (key === "classicFont") applyClassicFont();
+    if (key === "casualScene" || key === "weather") background.refresh();
+  }
+  function pickTrack(id) {
+    musicPlayer?.stop();
+    applySetting("track", id);
+    menu?.refresh();
+  }
+  function resetSettings() {
+    Object.assign(settings, DEFAULT_SETTINGS);
+    saveSettings(settings);
+    fitGame();
+    background.refresh();
+    if (!currentGame?.isRunning()) playMenuMusic();
+  }
+  menu = createMenuSystem(menuContainer, {
+    settings,
+    tabs: SETTINGS_TABS,
+    setSetting: applySetting,
+    resetSettings,
+    openMusic: () => musicPlayer?.toggle(),
+    music: {
+      current: () => music.getTrack(),
+      userPlaying: () => !!musicPlayer?.isPlaying(),
+      pick: pickTrack,
+      user: {
+        tracks: () => musicPlayer?.getTracks() ?? [],
+        index: () => musicPlayer?.getIndex() ?? -1,
+        playing: () => !!musicPlayer?.isPlaying(),
+        play: (i) => musicPlayer?.play(i),
+        toggle: () => musicPlayer?.pauseToggle(),
+        add: () => musicPlayer?.openPicker(),
+        clear: () => musicPlayer?.clear()
+      }
+    },
+    sound: {
+      move: () => soundEngine?.play("menuMove"),
+      select: () => soundEngine?.play("menuSelect")
+    }
+  });
+  menu.setSceneTag(sceneTag);
+  music.onTrack(() => menu.refresh());
+  musicPlayer?.onChange(() => menu.refresh());
+  window.addEventListener("dragover", (e) => {
+    if (e.dataTransfer?.types?.includes("Files")) e.preventDefault();
+  });
+  window.addEventListener("drop", (e) => {
+    if (e.defaultPrevented || !e.dataTransfer?.files?.length) return;
+    e.preventDefault();
+    musicPlayer?.addFiles(e.dataTransfer.files);
+  });
   menu.onModeSelect((modeId) => {
-    menu.hideAll();
     gameContainer.classList.remove("game-hidden");
     startNewGame(modeId);
-    if (soundEngine) soundEngine.play("menuSelect");
   });
   menu.onResume(() => {
     if (currentGame) {
@@ -6395,9 +11722,18 @@
     }
     gameContainer.classList.add("game-hidden");
     music.setTempoScale(1);
-    music.setTrack(menuTrack());
+    playMenuMusic();
     background.showMenu();
   });
+  settingsToggle.addEventListener("click", () => {
+    if (currentGame?.isRunning() && !menu.isOpen()) currentGame.pause();
+    menu.openSettings();
+  });
+  var touchControls = createTouchControls(
+    [document.getElementById("touch-controls"), document.getElementById("touch-pause")],
+    settings
+  );
+  var LAYOUT = { height: 780, classicHeight: 700, width: 700, touchWidth: 590, touchButtons: 176 };
   var ogFontLoaded = false;
   function applyClassicFont() {
     gameContainer.classList.toggle("og-font", settings.classicFont === "og" && ogFontLoaded);
@@ -6408,11 +11744,17 @@
   }).catch(() => {
   });
   function fitGame() {
-    const height = gameContainer.classList.contains("mode-og") ? 700 : 780;
-    const scale = Math.min(1, (window.innerHeight - 16) / height, (window.innerWidth - 16) / 700);
+    const touch = touchControls.refresh();
+    const portrait = touch && window.innerHeight >= window.innerWidth;
+    document.body.classList.toggle("touch-portrait", portrait);
+    const height = window.innerHeight - 16 - (portrait ? LAYOUT.touchButtons : 0);
+    const width = window.innerWidth - (touch ? 8 : 16);
+    const layoutHeight = gameContainer.classList.contains("mode-og") ? LAYOUT.classicHeight : LAYOUT.height;
+    const scale = Math.min(1, height / layoutHeight, width / (touch ? LAYOUT.touchWidth : LAYOUT.width));
     gameContainer.style.transform = scale < 1 ? `scale(${scale})` : "";
   }
   window.addEventListener("resize", fitGame);
+  window.matchMedia?.("(pointer: coarse)").addEventListener?.("change", fitGame);
   fitGame();
   gameContainer.classList.add("game-hidden");
   menu.showScreen("main");
@@ -6433,11 +11775,11 @@
       music,
       onGameOver(results) {
         music.setTempoScale(1);
-        music.setTrack(menuTrack());
+        playMenuMusic();
         menu.showResults(results);
       },
       onPause() {
-        menu.showScreen("pause");
+        menu.showScreen("pause", { modeName: MODE_INFO[modeId].name });
       },
       onLevelUp(level) {
         background.onLevel(modeId, level);
@@ -6446,195 +11788,11 @@
     currentGame._modeId = modeId;
     currentGame.start();
   }
-  var SOUND_PACK_LABELS = { ulol: "uloltris", arcade: "Arcade (Jstris-style)", bubbly: "Bubbly (PPT-style)", nes: "8-bit (console-style)" };
-  function describeSoundPack(val) {
-    return SOUND_PACK_LABELS[val] || val;
-  }
-  function buildSettingsUI() {
-    const tabContainer = settingsPanel.querySelector(".settings-tabs");
-    const contentContainer = settingsPanel.querySelector(".settings-tab-content");
-    if (!tabContainer || !contentContainer) return;
-    const tabs = [
-      { id: "handling", label: "HANDLING", settings: [
-        { key: "arr", label: "ARR", type: "range", describe: describeArr },
-        { key: "das", label: "DAS", type: "range", describe: describeFrames },
-        { key: "dcd", label: "DCD", type: "range", describe: describeDcd },
-        { key: "sdf", label: "SDF", type: "range", describe: describeSoftDrop },
-        { key: "cancelDasOnDirectionChange", label: "CANCEL DAS ON TURN", type: "toggle" },
-        { key: "preferSoftDrop", label: "PREFER SOFT DROP", type: "toggle" }
-      ] },
-      { id: "audio", label: "AUDIO", settings: [
-        { key: "masterVolume", label: "MASTER", type: "range", describe: describeVolume },
-        { key: "sfxVolume", label: "SFX", type: "range", describe: describeVolume },
-        { key: "musicVolume", label: "MUSIC", type: "range", describe: describeVolume },
-        { key: "sfxMuted", label: "MUTE SFX", type: "toggle" },
-        { key: "musicMuted", label: "MUTE MUSIC", type: "toggle" },
-        { key: "soundPack", label: "SOUND PACK", type: "enum", values: ["ulol", "arcade", "bubbly", "nes"], describe: describeSoundPack },
-        { key: "soundtrack", label: "SOUNDTRACK", type: "enum", values: ["auto", "calm", "competitive", "intense", "chip", "off"], describe: describeSoundtrack },
-        { key: "crossfadeDuration", label: "CROSSFADE", type: "range", describe: describeCrossfade }
-      ] },
-      { id: "visual", label: "VISUAL", settings: [
-        { key: "blockSkin", label: "BLOCK SKIN", type: "enum", values: SKINS, describe: describeSkin },
-        { key: "statsDisplay", label: "STATS DISPLAY", type: "enum", values: ["off", "time", "speed", "efficiency", "versus"], describe: describeStatsDisplay },
-        { key: "background", label: "BACKGROUND", type: "enum", values: ["on", "dim", "off"], describe: describeEnum },
-        { key: "casualScene", label: "CASUAL SCENE", type: "enum", values: ["cycle", ...CASUAL_SCENES], describe: describeScene },
-        { key: "classicScene", label: "CLASSIC SCENE", type: "enum", values: ["cycle", ...CLASSIC_SCENES], describe: describeScene },
-        { key: "classicFont", label: "CLASSIC FONT", type: "enum", values: ["og", "ulol"], describe: describeClassicFont },
-        { key: "ghostOpacity", label: "GHOST OPACITY", type: "range", describe: describeOpacity },
-        { key: "showActionText", label: "CLEAR TEXT", type: "toggle" }
-      ] },
-      { id: "effects", label: "FX", settings: [
-        { key: "boardBounce", label: "BOARD BOUNCE", type: "enum", values: ["off", "low", "medium", "high"], describe: describeEnum },
-        { key: "placeImpact", label: "PLACE IMPACT", type: "enum", values: ["off", "low", "medium", "high"], describe: describeEnum },
-        { key: "clearEffects", label: "CLEAR EFFECTS", type: "enum", values: ["off", "low", "medium", "high"], describe: describeEnum },
-        { key: "screenShake", label: "SCREEN SHAKE", type: "enum", values: ["off", "low", "medium", "high"], describe: describeEnum }
-      ] },
-      { id: "gameplay", label: "GAME", settings: [
-        { key: "gameStyle", label: "GAME STYLE", type: "enum", values: ["modern", "battle"], describe: describeGameStyle },
-        { key: "nextPreviewCount", label: "NEXT PIECES", type: "range", describe: describePreviewCount },
-        { key: "lockDelay", label: "LOCK DELAY", type: "range", describe: describeLockDelay },
-        { key: "classicStartLevel", label: "CLASSIC START LEVEL", type: "range", describe: describeStartLevel }
-      ] }
-    ];
-    tabContainer.innerHTML = "";
-    tabs.forEach((tab, i) => {
-      const btn = document.createElement("button");
-      btn.className = `settings-tab-btn ${i === 0 ? "active" : ""}`;
-      btn.textContent = tab.label;
-      btn.dataset.tab = tab.id;
-      btn.type = "button";
-      tabContainer.appendChild(btn);
-    });
-    contentContainer.innerHTML = "";
-    tabs.forEach((tab, i) => {
-      const section = document.createElement("div");
-      section.className = `settings-tab-section ${i === 0 ? "active" : ""}`;
-      section.dataset.tab = tab.id;
-      for (const s of tab.settings) {
-        const row = document.createElement("label");
-        row.className = "setting-row";
-        if (s.type === "range") {
-          const c = getConstraint(s.key);
-          row.innerHTML = `
-                    <span class="setting-name">${s.label}</span>
-                    <input type="range" min="${c.min}" max="${c.max}" step="${c.step}" value="${settings[s.key]}" data-key="${s.key}">
-                    <span class="setting-readout" data-readout="${s.key}">${s.describe(settings[s.key])}</span>
-                `;
-        } else if (s.type === "toggle") {
-          row.innerHTML = `
-                    <span class="setting-name">${s.label}</span>
-                    <button type="button" class="setting-toggle ${settings[s.key] ? "on" : ""}" data-toggle="${s.key}">
-                        ${settings[s.key] ? "ON" : "OFF"}
-                    </button>
-                `;
-        } else if (s.type === "enum") {
-          const options = s.values.map(
-            (v) => `<option value="${v}" ${settings[s.key] === v ? "selected" : ""}>${s.describe(v)}</option>`
-          ).join("");
-          row.innerHTML = `
-                    <span class="setting-name">${s.label}</span>
-                    <select data-enum="${s.key}">${options}</select>
-                    <span class="setting-readout" data-readout="${s.key}">${s.describe(settings[s.key])}</span>
-                `;
-        }
-        section.appendChild(row);
-      }
-      contentContainer.appendChild(section);
-    });
-    const resetBtn = document.createElement("button");
-    resetBtn.className = "menu-btn settings-reset-btn";
-    resetBtn.textContent = "RESET DEFAULTS";
-    resetBtn.type = "button";
-    resetBtn.addEventListener("click", () => {
-      Object.assign(settings, DEFAULT_SETTINGS);
-      saveSettings(settings);
-      buildSettingsUI();
-    });
-    contentContainer.appendChild(resetBtn);
-    if (settingsListenersBound) return;
-    settingsListenersBound = true;
-    tabContainer.addEventListener("click", (e) => {
-      const btn = e.target.closest(".settings-tab-btn");
-      if (!btn) return;
-      tabContainer.querySelectorAll(".settings-tab-btn").forEach((b) => b.classList.remove("active"));
-      contentContainer.querySelectorAll(".settings-tab-section").forEach((s) => s.classList.remove("active"));
-      btn.classList.add("active");
-      const section = contentContainer.querySelector(`[data-tab="${btn.dataset.tab}"]`);
-      if (section) section.classList.add("active");
-      if (soundEngine) soundEngine.play("menuMove");
-    });
-    contentContainer.addEventListener("input", (e) => {
-      const input = e.target;
-      const key = input.dataset.key;
-      if (!key) return;
-      const tab = tabs.find((t) => t.settings.some((s) => s.key === key));
-      const settingDef = tab?.settings.find((s) => s.key === key);
-      if (!settingDef) return;
-      const val = Number(input.value);
-      settings[key] = val;
-      saveSettings(settings);
-      const readout = contentContainer.querySelector(`[data-readout="${key}"]`);
-      if (readout && settingDef.describe) {
-        readout.textContent = settingDef.describe(val);
-      }
-    });
-    contentContainer.addEventListener("click", (e) => {
-      const toggleBtn = e.target.closest("[data-toggle]");
-      if (toggleBtn) {
-        const key = toggleBtn.dataset.toggle;
-        settings[key] = !settings[key];
-        saveSettings(settings);
-        toggleBtn.classList.toggle("on", settings[key]);
-        toggleBtn.textContent = settings[key] ? "ON" : "OFF";
-        if (soundEngine) soundEngine.play("menuMove");
-      }
-    });
-    contentContainer.addEventListener("change", (e) => {
-      const select = e.target.closest("[data-enum]");
-      if (select) {
-        const key = select.dataset.enum;
-        settings[key] = select.value;
-        saveSettings(settings);
-        if (key === "soundtrack" && !currentGame?.isRunning()) music.setTrack(menuTrack());
-        if (key === "soundPack") soundEngine?.play("rotate");
-        if (key === "classicFont") applyClassicFont();
-        const tab = tabs.find((t) => t.settings.some((s) => s.key === key));
-        const settingDef = tab?.settings.find((s) => s.key === key);
-        const readout = contentContainer.querySelector(`[data-readout="${key}"]`);
-        if (readout && settingDef?.describe) {
-          readout.textContent = settingDef.describe(select.value);
-        }
-        if (soundEngine) soundEngine.play("menuMove");
-      }
-    });
-  }
-  buildSettingsUI();
-  function setSettingsOpen(open) {
-    settingsPanel.classList.toggle("open", open);
-    settingsPanel.setAttribute("aria-hidden", String(!open));
-  }
-  settingsToggle.addEventListener("click", () => {
-    const isOpen = settingsPanel.classList.contains("open");
-    setSettingsOpen(!isOpen);
-    if (soundEngine) soundEngine.play("menuMove");
-  });
-  settingsClose.addEventListener("click", () => {
-    setSettingsOpen(false);
-  });
-  document.addEventListener("keydown", (e) => {
-    if (e.code === "Escape" && settingsPanel.classList.contains("open")) {
-      setSettingsOpen(false);
-      e.stopPropagation();
-    }
-  });
-  document.addEventListener("uloltris-open-settings", () => {
-    setSettingsOpen(true);
-  });
   var musicToggle = document.getElementById("music-toggle");
   if (musicToggle && musicPlayer) {
     musicToggle.addEventListener("click", () => {
       musicPlayer.toggle();
-      if (soundEngine) soundEngine.play("menuMove");
+      soundEngine?.play("menuMove");
     });
   }
 })();

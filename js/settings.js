@@ -3,6 +3,8 @@
  * Persists all settings to localStorage.
  */
 
+import { TRACK_IDS } from './tracks.js';
+
 const STORAGE_KEY = 'uloltris-settings';
 const FRAME_MS = 1000 / 60;
 
@@ -32,7 +34,10 @@ export const DEFAULT_SETTINGS = {
     sfxMuted: false,
     musicMuted: false,
     crossfadeDuration: 2,
-    soundtrack: 'auto',        // 'auto', 'calm', 'competitive', 'intense', 'chip', 'off'
+    soundtrack: 'auto',        // 'auto' (by mode), 'casual', 'competitive', 'intense', 'chip', 'off'
+    track: 'auto',             // 'auto' (play the playlist) or the id of one track to loop
+    ambience: true,            // background sounds that match the scene (rain, birds, wind)
+    ambienceVolume: 60,
 
     // Visual
     screenShake: 'medium',     // 'off', 'low', 'medium', 'high'
@@ -44,6 +49,7 @@ export const DEFAULT_SETTINGS = {
     casualScene: 'cycle',      // 'cycle' or one of CASUAL_SCENES
     classicScene: 'cycle',     // 'cycle' (by level) or one of CLASSIC_SCENES
     classicFont: 'og',         // Classic HUD font: 'og' (8-bit pixel font) or 'ulol' (the uloltris fonts)
+    weather: 'default',        // 'default' (each scene's own look), 'cycle' (by level), or one of VARIANTS
     ghostOpacity: 40,          // 0-100
     showActionText: true,
     blockSkin: 'ulol',         // one of SKINS in skins.js
@@ -54,6 +60,7 @@ export const DEFAULT_SETTINGS = {
     lockDelay: 500,            // ms
     gameStyle: 'modern',       // 'modern' (TETR.IO, Jstris) or 'battle' (Tetris 99, PPT)
     classicStartLevel: 0,      // Classic mode: level to begin on, 0-19
+    touchControls: 'auto',     // on-screen buttons: 'auto' (touch devices), 'on', 'off'
 };
 
 /** Constraints for numeric settings */
@@ -65,6 +72,7 @@ const CONSTRAINTS = {
     masterVolume:     { min: 0, max: 100, step: 1 },
     sfxVolume:        { min: 0, max: 100, step: 1 },
     musicVolume:      { min: 0, max: 100, step: 1 },
+    ambienceVolume:   { min: 0, max: 100, step: 1 },
     crossfadeDuration:{ min: 0, max: 5,   step: 0.5 },
     ghostOpacity:     { min: 0, max: 100, step: 5 },
     nextPreviewCount: { min: 1, max: 6,   step: 1 },
@@ -80,13 +88,16 @@ const ENUMS = {
     clearEffects: ['off', 'low', 'medium', 'high'],
     statsDisplay: ['off', 'time', 'speed', 'efficiency', 'versus'],
     background: ['on', 'dim', 'off'],
-    casualScene: ['cycle', 'bamboo', 'wheat', 'village', 'castle', 'ocean', 'neon'],
+    casualScene: ['cycle', 'bamboo', 'wheat', 'sakura', 'village', 'falls', 'castle', 'ocean', 'aurora', 'neon'],
     classicScene: ['cycle', 'blocks', 'ulol', 'domes'],
     classicFont: ['og', 'ulol'],
-    soundtrack: ['auto', 'calm', 'competitive', 'intense', 'chip', 'off'],
+    weather: ['default', 'cycle', 'sunny', 'cloudy', 'sunset', 'rain', 'thunder', 'night', 'nightthunder'],
+    soundtrack: ['auto', 'casual', 'competitive', 'intense', 'chip', 'off'],
+    track: ['auto', ...TRACK_IDS],
     gameStyle: ['modern', 'battle'],
     blockSkin: ['ulol', 'classic', 'glossy', 'flat', 'neon'],
     soundPack: ['ulol', 'arcade', 'bubbly', 'nes'],
+    touchControls: ['auto', 'on', 'off'],
 };
 
 function clamp(value, min, max) {
@@ -115,9 +126,13 @@ export function normalizeSettings(raw) {
         }
     }
 
+    // Saves from before the new soundtrack called the casual playlist "calm"
+    if (source.soundtrack === 'calm') result.soundtrack = 'casual';
+
     // Boolean settings
     if (typeof source.sfxMuted === 'boolean') result.sfxMuted = source.sfxMuted;
     if (typeof source.musicMuted === 'boolean') result.musicMuted = source.musicMuted;
+    if (typeof source.ambience === 'boolean') result.ambience = source.ambience;
     if (typeof source.showActionText === 'boolean') result.showActionText = source.showActionText;
     if (typeof source.cancelDasOnDirectionChange === 'boolean') result.cancelDasOnDirectionChange = source.cancelDasOnDirectionChange;
     if (typeof source.preferSoftDrop === 'boolean') result.preferSoftDrop = source.preferSoftDrop;

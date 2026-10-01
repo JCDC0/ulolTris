@@ -128,7 +128,7 @@ for (const shape of Object.keys(SHAPES)) {
         check(`${id} keeps the modern rules`, r.hold && r.ghost && r.hardDrop && r.rotation === 'srs' && r.scoring === 'modern' && r.look === 'modern');
     }
     check('Classic plays the chip track and has its own game style',
-        MODE_INFO.og.track === 'chip' && GAME_STYLES.classic.lineClearDelay > 0 && GAME_STYLES.classic.entryDelay > 0);
+        MODE_INFO.og.music === 'chip' && GAME_STYLES.classic.lineClearDelay > 0 && GAME_STYLES.classic.entryDelay > 0);
     check('Casual keeps the id classic; Classic is og', MODE_INFO.classic.name === 'CASUAL' && MODE_INFO.og.name === 'CLASSIC');
 
     const m = createModeState('og', { startLevel: 0 });
@@ -136,7 +136,7 @@ for (const shape of Object.keys(SHAPES)) {
     check('Classic starts on level 0 with level 0 gravity', m.stats.level === 0 && Math.abs(m.getDropInterval() - classicGravityMs(0)) < 1e-9);
     m.addLines(10);
     check('ten lines make level 1 and speed gravity up', m.stats.level === 1 && m.getDropInterval() < classicGravityMs(0));
-    check('Classic never turns the music intense', !m.isHeated());
+    check('Classic never plays the intense playlist', MODE_INFO.og.music !== 'intense');
     m.addLines(90);
     check('level 10 after 100 lines', m.stats.level === 10, `level ${m.stats.level}`);
     m.reset();

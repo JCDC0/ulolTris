@@ -85,7 +85,7 @@ function rig(modeId, { random = O, settings = {} } = {}) {
         modeId, canvases, playfield: fakeElement(),
         settings: { ...normalizeSettings({}), ...settings },
         soundEngine: { play: name => sounds.push(name), setPack: name => packs.push(name) },
-        music: { setTrack: name => tracks.push(name), setTempoScale() {}, setPaused() {} },
+        music: { play: plan => tracks.push(plan.track ?? plan.playlist?.join() ?? 'off'), setTempoScale() {}, setPaused() {} },
         onGameOver: r => { results = r; },
         onPause() {}, onLevelUp() {},
     });

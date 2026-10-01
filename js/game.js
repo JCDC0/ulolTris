@@ -13,6 +13,7 @@ import { createModeState, getRules, GAME_STYLES, BIG_HIT_LINES, MODE_INFO } from
 import { classicMatrix, getClassicSpawnPos, tryRotateClassic, fillClassicQueue,
          calculateClassicScore, NES_FRAME_MS, SOFT_DROP_FRAMES } from './classic.js';
 import { createHud } from './hud.js';
+import { musicPlan } from './tracks.js';
 import { createBoardBounce } from './bounce.js';
 import { minimumInputs } from './finesse.js';
 
@@ -416,15 +417,10 @@ export function createGame(config) {
 
     function updateMusic() {
         if (!music) return;
-        const choice = settings.soundtrack || 'auto';
-        if (choice === 'off') {
-            music.setTrack(null);
-            return;
-        }
-        const heated = choice === 'auto' && modeState.isHeated();
-        music.setTrack(heated ? 'intense' : choice === 'auto' ? MODE_INFO[modeId].track : choice);
-        // Classic's calm track picks up a little with each level until it turns intense.
-        const levelBoost = modeId === 'classic' && !heated ? (modeState.stats.level - 1) * 0.012 : 0;
+        // A mode plays its playlist, and the song carries on from the menu when the playlist is the same.
+        music.play(musicPlan(settings, MODE_INFO[modeId].music));
+        // Casual's track picks up a little with each level instead.
+        const levelBoost = modeId === 'classic' ? (modeState.stats.level - 1) * 0.012 : 0;
         music.setTempoScale(1 + Math.min(levelBoost, 0.12));
     }
 

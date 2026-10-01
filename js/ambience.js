@@ -1,0 +1,657 @@
+/**
+ * ambience.js - Background sounds for the pixel art scenes: rain, wind, wheat brushing,
+ * water, surf, birds, crickets, a temple bell, thunder and so on.
+ *
+ * Everything is synthesized; no audio files are loaded. Each scene (with its weather)
+ * lists the layers it wants and how loud (`{ rain: 1, birds: 0.2 }`). When the scene
+ * changes, every layer glides to its new level, so a layer two scenes share never
+ * drops out.
+ *
+ * Three kinds of layer:
+ * - Beds are continuous. Hum and city are live Web Audio graphs of filtered noise.
+ *   Textured beds (rain, storm, water, wheat, wind, gale, surf) are loops built by
+ *   ambience-synth.js: a shower of dense tiny impacts with quiet droplets on top, wind
+ *   through a moving resonance, soft brushes, waves that build, break and recede. They
+ *   are built in short slices the first time a scene needs them, so a scene change
+ *   never stalls a frame.
+ * - Calls (birds, crickets, owl, gulls, bell, traffic, cabinets) are short sounds
+ *   scheduled at random intervals. Cabinets are other arcade machines, far off.
+ * - Flags (thunder, arcade) do nothing on their own. Thunder plays when the picture
+ *   flashes: background.js reports each lightning strike and strike() answers with a
+ *   clap that arrives after a delay that grows with distance, like the real thing.
+ *   Arcade plays when the Neon Fall scene's block stacker moves: background.js reports
+ *   each move and cue() answers with a square-wave blip, so the sound lands on the picture.
+ */
+
+import { rainLoop, wheatLoop, windLoop, surfLoop, bellStrike, thunderClap, RAIN_KINDS } from './ambience-synth.js';
+
+const BEDS = ['rain', 'storm', 'wind', 'gale', 'wheat', 'water', 'surf', 'hum', 'city'];
+const CALLS = ['birds', 'crickets', 'owl', 'gulls', 'bell', 'traffic', 'cabinets'];
+const FLAGS = ['thunder', 'arcade'];
+
+/** Every layer name a scene may use. */
+export const AMBIENCE_LAYERS = [...BEDS, ...CALLS, ...FLAGS];
+
+const GLIDE_S = 0.9;
+const TICK_MS = 200;
+const LOOKAHEAD_S = 0.6;
+const MASTER_GAIN = 0.5;
+/** Seconds a bed stays built after it fades out, in case the next scene wants it again. */
+const IDLE_S = 8;
+/** Thunderclaps kept ready: near, middle and far, two takes of each. */
+const CLAPS = [[0.12, 1], [0.12, 2], [0.42, 3], [0.42, 4], [0.75, 5], [0.75, 6]];
+/**
+ * The sound of thunder reaches you after the flash. Even a close strike is heard about half
+ * a second late, and a far one up to three and a half seconds late.
+ */
+const SOUND_LAG_MIN_S = 0.55;
+const SOUND_LAG_S = 3;
+/** Temple bells kept ready (fundamental in Hz, seed). */
+const BELLS = [[146.8, 5], [130.8, 6], [164.8, 7]];
+/** Seconds before a call layer makes its first sound, for calls that should not come at once. */
+const FIRST_CALL_S = { bell: [6, 16] };
+
+const rand = (min, max) => min + Math.random() * (max - min);
+const pick = list => list[Math.floor(Math.random() * list.length)];
+
+function createNoiseBuffer(ctx) {
+    const buffer = ctx.createBuffer(1, ctx.sampleRate * 3, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+    return buffer;
+}
+
+/**
+ * Run a builder generator in slices of about 3 ms so the page stays smooth.
+ * @returns {Promise<Float32Array[]>} what the generator returned
+ */
+function inSlices(gen) {
+    return new Promise(resolve => {
+        function step() {
+            const start = performance.now();
+            let result;
+            do { result = gen.next(); } while (!result.done && performance.now() - start < 3);
+            if (result.done) resolve(result.value);
+            else setTimeout(step, 0);
+        }
+        step();
+    });
+}
+
+/**
+ * The sound sources bound to one AudioContext.
+ * @returns {{ bed: (name: string, dest: AudioNode) => { ready: Promise, stop: () => void },
+ *             call: (name: string, t: number, dest: AudioNode) => number,
+ *             prepareClaps: () => void, clapFor: (distance: number) => AudioBuffer | null }}
+ *   bed() starts a continuous layer; `ready` resolves once its sound is playing.
+ *   call() schedules one short sound at time t and returns seconds until the next.
+ */
+function createSources(ctx, noise) {
+    function noiseSource(nodes) {
+        const src = ctx.createBufferSource();
+        src.buffer = noise;
+        src.loop = true;
+        src.start(0, Math.random() * 2);
+        nodes.push(src);
+        return src;
+    }
+
+    function filter(type, freq, q, nodes) {
+        const f = ctx.createBiquadFilter();
+        f.type = type;
+        f.frequency.value = freq;
+        if (q) f.Q.value = q;
+        nodes.push(f);
+        return f;
+    }
+
+    function gain(value, nodes) {
+        const g = ctx.createGain();
+        g.gain.value = value;
+        nodes.push(g);
+        return g;
+    }
+
+    /** Slow sine that moves an AudioParam by +/- depth around its set value. */
+    function lfo(param, hz, depth, nodes) {
+        const o = ctx.createOscillator();
+        o.frequency.value = hz;
+        const g = gain(depth, nodes);
+        o.connect(g);
+        g.connect(param);
+        o.start();
+        nodes.push(o);
+    }
+
+    /** Noise through a chain of filters into dest at a level. Returns the level gain. */
+    function noisePath(nodes, dest, level, ...filters) {
+        let node = noiseSource(nodes);
+        for (const f of filters) { node.connect(f); node = f; }
+        const g = gain(level, nodes);
+        node.connect(g);
+        g.connect(dest);
+        return g;
+    }
+
+    // --- Grain loops, built once per kind and shared by every layer that uses them ---
+
+    const loops = new Map();
+
+    function toBuffer([left, right]) {
+        const buffer = ctx.createBuffer(2, left.length, ctx.sampleRate);
+        buffer.copyToChannel(left, 0);
+        buffer.copyToChannel(right, 1);
+        return buffer;
+    }
+
+    function loop(key, make) {
+        if (!loops.has(key)) loops.set(key, inSlices(make()).then(toBuffer));
+        return loops.get(key);
+    }
+
+    /**
+     * Play several loops of different lengths together. Their combined pattern only
+     * repeats after the lengths line up, which takes about a minute.
+     */
+    async function loopBed(dest, nodes, isStopped, builders, level) {
+        const buffers = await Promise.all(builders.map(([key, make]) => loop(key, make)));
+        if (isStopped()) return;
+        for (const buffer of buffers) {
+            const src = ctx.createBufferSource();
+            src.buffer = buffer;
+            src.loop = true;
+            src.start(0, Math.random() * buffer.duration);
+            const g = gain(level, nodes);
+            src.connect(g);
+            g.connect(dest);
+            nodes.push(src);
+        }
+    }
+
+    const rainBuilders = kind => RAIN_KINDS[kind].map((o, i) =>
+        [`${kind}${i}`, () => rainLoop(ctx.sampleRate, o)]);
+    const wheatBuilders = [
+        ['wheat0', () => wheatLoop(ctx.sampleRate, { seconds: 10.4, seed: 7 })],
+        ['wheat1', () => wheatLoop(ctx.sampleRate, { seconds: 13.7, seed: 8 })],
+    ];
+    const windBuilders = [
+        ['wind0', () => windLoop(ctx.sampleRate, { seconds: 9.7, seed: 41, gusty: 0.55 })],
+        ['wind1', () => windLoop(ctx.sampleRate, { seconds: 12.9, seed: 42, gusty: 0.65 })],
+    ];
+    const galeBuilders = [
+        ['gale0', () => windLoop(ctx.sampleRate, { seconds: 8.3, seed: 43, gusty: 0.9, howl: 0.8 })],
+        ['gale1', () => windLoop(ctx.sampleRate, { seconds: 11.1, seed: 44, gusty: 0.95, howl: 0.7 })],
+    ];
+    const surfBuilders = [
+        ['surf0', () => surfLoop(ctx.sampleRate, { seconds: 30.5, waves: 3, size: 1, seed: 51 })],
+        ['surf1', () => surfLoop(ctx.sampleRate, { seconds: 38.3, waves: 4, size: 0.7, seed: 52 })],
+    ];
+
+    const beds = {
+        rain(dest, nodes, isStopped) {
+            // A low bed of far-off rain under the drops, so the gaps between them are not dead
+            noisePath(nodes, dest, 0.03, filter('lowpass', 500, 0, nodes));
+            return loopBed(dest, nodes, isStopped, rainBuilders('rain'), 0.7);
+        },
+        storm(dest, nodes, isStopped) {
+            noisePath(nodes, dest, 0.05, filter('lowpass', 700, 0, nodes));
+            return loopBed(dest, nodes, isStopped, rainBuilders('storm'), 0.7);
+        },
+        // A breeze that swells and eases, and a gale with heavy gusts and a faint howl
+        wind(dest, nodes, isStopped) {
+            return loopBed(dest, nodes, isStopped, windBuilders, 0.8);
+        },
+        gale(dest, nodes, isStopped) {
+            return loopBed(dest, nodes, isStopped, galeBuilders, 0.9);
+        },
+        // Ears and leaves brushing past each other, very quiet, in swells as each gust passes
+        wheat(dest, nodes, isStopped) {
+            return loopBed(dest, nodes, isStopped, wheatBuilders, 0.45);
+        },
+        water(dest, nodes, isStopped) {
+            noisePath(nodes, dest, 0.3, filter('lowpass', 1500, 0, nodes), filter('highpass', 120, 0, nodes));
+            return loopBed(dest, nodes, isStopped, rainBuilders('water'), 0.6);
+        },
+        // Waves that build, break and wash back down the beach
+        surf(dest, nodes, isStopped) {
+            return loopBed(dest, nodes, isStopped, surfBuilders, 0.6);
+        },
+        hum(dest, nodes) {
+            for (const [freq, level] of [[55, 0.1], [110.6, 0.04], [165.2, 0.015]]) {
+                const o = ctx.createOscillator();
+                o.frequency.value = freq;
+                const g = gain(level, nodes);
+                o.connect(g);
+                g.connect(dest);
+                o.start();
+                nodes.push(o);
+                lfo(g.gain, 0.09 + freq / 900, level * 0.4, nodes);
+            }
+        },
+        city(dest, nodes) {
+            const g = noisePath(nodes, dest, 0.7, filter('lowpass', 210, 0, nodes));
+            lfo(g.gain, 0.05, 0.15, nodes);
+        },
+    };
+
+    /** A short tone with an attack and an exponential decay, cleaned up when it ends. */
+    function tone(dest, t, { type = 'sine', wave = null, from, to = from, len, peak, attack = 0.005, pan = 0 }) {
+        const o = ctx.createOscillator();
+        if (wave) o.setPeriodicWave(wave);
+        else o.type = type;
+        o.frequency.setValueAtTime(from, t);
+        if (to !== from) o.frequency.exponentialRampToValueAtTime(to, t + len);
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.linearRampToValueAtTime(peak, t + attack);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + len);
+        o.connect(g);
+        let out = g;
+        if (pan && ctx.createStereoPanner) {
+            out = ctx.createStereoPanner();
+            out.pan.value = pan;
+            g.connect(out);
+        }
+        out.connect(dest);
+        o.start(t);
+        o.stop(t + len + 0.02);
+        o.onended = () => { g.disconnect(); out.disconnect(); };
+        return o;
+    }
+
+    /** A burst of filtered noise shaped by `shape(gainParam, filter)`. */
+    function burst(dest, t, len, type, freq, q, shape) {
+        const src = ctx.createBufferSource();
+        src.buffer = noise;
+        src.loop = true;
+        const f = ctx.createBiquadFilter();
+        f.type = type;
+        f.frequency.setValueAtTime(freq, t);
+        f.Q.value = q;
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0.0001, t);
+        shape(g.gain, f);
+        src.connect(f);
+        f.connect(g);
+        g.connect(dest);
+        src.start(t, Math.random() * 2);
+        src.stop(t + len);
+        src.onended = () => { f.disconnect(); g.disconnect(); };
+    }
+
+    /** A pulse wave with the given duty (0.5 is a square), like the tone channels of an 8-bit machine. */
+    const pulses = new Map();
+    function pulse(duty) {
+        if (!pulses.has(duty)) {
+            const size = 48;
+            const real = new Float32Array(size);
+            const imag = new Float32Array(size);
+            for (let k = 1; k < size; k++) real[k] = (2 / (k * Math.PI)) * Math.sin(k * Math.PI * duty);
+            pulses.set(duty, ctx.createPeriodicWave(real, imag));
+        }
+        return pulses.get(duty);
+    }
+
+    /** Notes [freq, at, len] as chip blips through a lowpass (distance), panned to one side. */
+    function chipRun(dest, t, notes, { duty = 0.25, peak = 0.05, cutoff = 2600, pan = 0 }) {
+        const f = ctx.createBiquadFilter();
+        f.type = 'lowpass';
+        f.frequency.value = cutoff;
+        f.connect(dest);
+        let end = 0;
+        for (const [freq, at, len] of notes) {
+            tone(f, t + at, { wave: pulse(duty), from: freq, len, peak, attack: 0.002, pan });
+            end = Math.max(end, at + len);
+        }
+        setTimeout(() => f.disconnect(), (t - ctx.currentTime + end + 0.5) * 1000);
+    }
+
+    // The stacker's moves: little square-wave blips and thuds, quiet
+    const cues = {
+        move(t, dest) { chipRun(dest, t, [[440, 0, 0.022]], { duty: 0.125, peak: 0.03, cutoff: 5000 }); },
+        rotate(t, dest) { chipRun(dest, t, [[660, 0, 0.03], [990, 0.03, 0.03]], { duty: 0.25, peak: 0.04, cutoff: 5000 }); },
+        drop(t, dest) {
+            tone(dest, t, { wave: pulse(0.5), from: 880, to: 160, len: 0.1, peak: 0.05, attack: 0.002 });
+        },
+        lock(t, dest) {
+            tone(dest, t, { wave: pulse(0.5), from: 150, to: 90, len: 0.07, peak: 0.07, attack: 0.002 });
+            burst(dest, t, 0.04, 'bandpass', 2400, 1, g => {
+                g.linearRampToValueAtTime(0.05, t + 0.002);
+                g.exponentialRampToValueAtTime(0.0001, t + 0.035);
+            });
+        },
+        land(t, dest) {
+            tone(dest, t, { wave: pulse(0.5), from: 110, to: 70, len: 0.1, peak: 0.06, attack: 0.002 });
+        },
+        // Four rows gone: a rising arpeggio and a held top note, with a bass under it
+        tetris(t, dest) {
+            const notes = [523.25, 659.25, 783.99, 1046.5, 1318.5, 1567.98];
+            chipRun(dest, t, [...notes.map((f, i) => [f, i * 0.065, 0.07]), [2093, notes.length * 0.065, 0.55]], { duty: 0.25, peak: 0.06, cutoff: 6000 });
+            chipRun(dest, t, [[261.63, 0, 0.2], [523.25, notes.length * 0.065, 0.45]], { duty: 0.5, peak: 0.035, cutoff: 3000 });
+            tone(dest, t, { type: 'triangle', from: 130.81, len: 0.5, peak: 0.07, attack: 0.004 });
+        },
+    };
+
+    const calls = {
+        // Somewhere else in the arcade, other machines: coin, laser, power-up, blips, a jingle, a boom
+        cabinets(t, dest) {
+            const pan = rand(-0.85, 0.85);
+            const far = { duty: pick([0.125, 0.25, 0.5]), peak: rand(0.03, 0.05), cutoff: rand(1800, 3000), pan };
+            const kind = pick(['coin', 'laser', 'power', 'blips', 'jingle', 'boom']);
+            if (kind === 'coin') chipRun(dest, t, [[987.77, 0, 0.07], [1318.51, 0.07, 0.32]], far);
+            else if (kind === 'laser') {
+                const f = ctx.createBiquadFilter();
+                f.type = 'lowpass';
+                f.frequency.value = far.cutoff;
+                f.connect(dest);
+                tone(f, t, { wave: pulse(0.5), from: rand(1600, 2200), to: rand(180, 320), len: rand(0.14, 0.26), peak: far.peak, attack: 0.002, pan });
+                setTimeout(() => f.disconnect(), (t - ctx.currentTime + 1) * 1000);
+            } else if (kind === 'power') {
+                const base = pick([392, 440, 523.25]);
+                chipRun(dest, t, [0, 4, 7, 12, 16, 19].map((s, i) => [base * 2 ** (s / 12), i * 0.055, 0.06]), far);
+            } else if (kind === 'blips') {
+                const n = 2 + Math.floor(Math.random() * 3);
+                chipRun(dest, t, Array.from({ length: n }, (_, i) => [rand(500, 1400), i * rand(0.09, 0.14), 0.05]), far);
+            } else if (kind === 'jingle') {
+                const scale = [0, 2, 4, 7, 9, 12];
+                const base = pick([262, 294, 330]);
+                chipRun(dest, t, Array.from({ length: 7 }, (_, i) => [base * 2 ** (pick(scale) / 12), i * 0.12, 0.1]), far);
+            } else {
+                burst(dest, t, 0.5, 'lowpass', 900, 0.7, (g, f) => {
+                    g.linearRampToValueAtTime(far.peak * 6, t + 0.01);
+                    g.exponentialRampToValueAtTime(0.0001, t + 0.45);
+                    f.frequency.exponentialRampToValueAtTime(180, t + 0.45);
+                });
+            }
+            return rand(4, 11);
+        },
+        birds(t, dest) {
+            const pan = rand(-0.7, 0.7);
+            const base = rand(2600, 4600);
+            const song = Math.random();
+            if (song < 0.45) {
+                // Rising chirps
+                const n = 2 + Math.floor(Math.random() * 4);
+                for (let i = 0; i < n; i++) {
+                    tone(dest, t + i * rand(0.1, 0.15), { from: base, to: base * rand(1.2, 1.5), len: 0.07, peak: 0.22, pan });
+                }
+            } else if (song < 0.75) {
+                // Fast trill
+                const n = 7 + Math.floor(Math.random() * 8);
+                for (let i = 0; i < n; i++) {
+                    tone(dest, t + i * 0.045, { from: base * 1.1, to: base * 0.9, len: 0.035, peak: 0.16, pan });
+                }
+            } else {
+                // Two falling whistles
+                tone(dest, t, { from: base * 0.9, to: base * 0.8, len: 0.22, peak: 0.18, attack: 0.03, pan });
+                tone(dest, t + 0.3, { from: base * 0.72, to: base * 0.66, len: 0.3, peak: 0.18, attack: 0.03, pan });
+            }
+            return rand(1.2, 5.5);
+        },
+        crickets(t, dest) {
+            const freq = pick([4300, 4650, 4900]);
+            const pan = rand(-0.8, 0.8);
+            for (let i = 0; i < 3; i++) tone(dest, t + i * 0.05, { from: freq, len: 0.03, peak: 0.2, attack: 0.004, pan });
+            return rand(0.35, 0.8);
+        },
+        owl(t, dest) {
+            const base = rand(330, 390);
+            const pan = rand(-0.5, 0.5);
+            [0, 0.5, 0.74].forEach((offset, i) => {
+                tone(dest, t + offset, { from: base, to: base * 0.93, len: i === 0 ? 0.36 : 0.22, peak: 0.26, attack: 0.05, pan });
+            });
+            return rand(11, 26);
+        },
+        gulls(t, dest) {
+            const pan = rand(-0.7, 0.7);
+            const n = 2 + Math.floor(Math.random() * 3);
+            for (let i = 0; i < n; i++) {
+                const start = t + i * 0.42;
+                const o = tone(dest, start, { type: 'triangle', from: 1500, to: 1150, len: 0.36, peak: 0.2, attack: 0.04, pan });
+                o.frequency.setValueAtTime(1500, start);
+                o.frequency.linearRampToValueAtTime(2050, start + 0.09);
+            }
+            return rand(6, 15);
+        },
+        // A temple bell struck far off, once in a long while
+        bell(t, dest) {
+            const buffer = bells.length ? pick(bells) : null;
+            if (!buffer) return 3;
+            const src = ctx.createBufferSource();
+            src.buffer = buffer;
+            const g = ctx.createGain();
+            g.gain.value = 0.75;
+            src.connect(g);
+            g.connect(dest);
+            src.start(t);
+            src.onended = () => g.disconnect();
+            return rand(26, 46);
+        },
+        // A car passing on the highway
+        traffic(t, dest) {
+            const len = rand(2.2, 3.6);
+            burst(dest, t, len, 'bandpass', 260, 0.8, (g, f) => {
+                g.linearRampToValueAtTime(0.55, t + len * 0.5);
+                g.linearRampToValueAtTime(0.0001, t + len - 0.05);
+                f.frequency.linearRampToValueAtTime(620, t + len * 0.5);
+                f.frequency.linearRampToValueAtTime(240, t + len);
+            });
+            return rand(2.5, 7);
+        },
+    };
+
+    // --- Thunderclaps and bells, built one at a time in the background ---
+
+    const claps = [];
+    let clapsStarted = false;
+    const bells = [];
+    let bellsStarted = null;
+
+    return {
+        bed(name, dest) {
+            const nodes = [];
+            let stopped = false;
+            const ready = Promise.resolve(beds[name](dest, nodes, () => stopped));
+            return {
+                ready,
+                stop() {
+                    stopped = true;
+                    for (const n of nodes) {
+                        try { n.stop?.(); } catch { /* never started */ }
+                        n.disconnect();
+                    }
+                },
+            };
+        },
+        call(name, t, dest) {
+            return calls[name](t, dest);
+        },
+        /** Play one of the stacker's cues ('move', 'rotate', 'drop', 'lock', 'land', 'tetris') at time t. */
+        cue(kind, t, dest) {
+            cues[kind]?.(t, dest);
+        },
+        /** Start building the bells. Safe to call again; it only runs once. Resolves when all are ready. */
+        prepareBells() {
+            if (!bellsStarted) {
+                bellsStarted = (async () => {
+                    for (const [freq, seed] of BELLS) {
+                        const samples = await inSlices(bellStrike(ctx.sampleRate, { freq, seed }));
+                        bells.push(toBuffer(samples));
+                    }
+                })();
+            }
+            return bellsStarted;
+        },
+        /** Start building the thunderclaps. Safe to call again; it only runs once. */
+        prepareClaps() {
+            if (clapsStarted) return;
+            clapsStarted = true;
+            (async () => {
+                for (const [distance, seed] of CLAPS) {
+                    const samples = await inSlices(thunderClap(ctx.sampleRate, { distance, seed }));
+                    claps.push({ distance, buffer: toBuffer(samples) });
+                }
+            })();
+        },
+        /** The built clap closest to a distance (0 overhead, 1 far), or null if none is ready. */
+        clapFor(distance) {
+            if (!claps.length) return null;
+            const near = claps.filter(c => Math.abs(c.distance - distance) < 0.2);
+            return pick(near.length ? near : claps).buffer;
+        },
+    };
+}
+
+/**
+ * Render a scene's ambience without playing it, for level checks.
+ * @param {Object} levels - layer name to 0..1, as in a scene's `ambience`
+ * @returns {Promise<AudioBuffer>} stereo buffer
+ */
+export async function renderAmbienceOffline(levels, seconds, sampleRate = 44100) {
+    const ctx = new OfflineAudioContext(2, Math.ceil(seconds * sampleRate), sampleRate);
+    const sources = createSources(ctx, createNoiseBuffer(ctx));
+    const master = ctx.createGain();
+    master.gain.value = MASTER_GAIN;
+    master.connect(ctx.destination);
+    const pending = [];
+    if (levels.bell) pending.push(sources.prepareBells());
+    await Promise.all(pending.splice(0));
+    for (const [name, level] of Object.entries(levels)) {
+        const g = ctx.createGain();
+        g.gain.value = level;
+        g.connect(master);
+        if (BEDS.includes(name)) pending.push(sources.bed(name, g).ready);
+        else if (CALLS.includes(name)) for (let t = 0.2; t < seconds;) t += sources.call(name, t, g);
+    }
+    await Promise.all(pending);
+    return ctx.startRendering();
+}
+
+/**
+ * Create the ambience engine. Silent until unlock() runs from a user gesture.
+ *
+ * @param {Object} settings - Shared settings (ambience, ambienceVolume, masterVolume, background)
+ */
+export function createAmbience(settings) {
+    let ctx = null;
+    let master = null;
+    let sources = null;
+    let timer = null;
+    let wanted = {};
+    const layers = new Map();   // name -> { gain, stop, level, idleSince, next }
+
+    function targetVolume() {
+        if (!settings.ambience || settings.background === 'off' || document.hidden) return 0;
+        return ((settings.masterVolume ?? 100) / 100) * ((settings.ambienceVolume ?? 60) / 100) * MASTER_GAIN;
+    }
+
+    function ensureLayer(name) {
+        if (layers.has(name)) return layers.get(name);
+        const g = ctx.createGain();
+        g.gain.value = 0;
+        g.connect(master);
+        const [firstMin, firstMax] = FIRST_CALL_S[name] || [0.3, 2.5];
+        const layer = { gain: g, level: 0, idleSince: 0, next: ctx.currentTime + rand(firstMin, firstMax) };
+        layer.stop = BEDS.includes(name) ? sources.bed(name, g).stop : () => {};
+        layers.set(name, layer);
+        if (name === 'thunder') sources.prepareClaps();
+        if (name === 'bell') sources.prepareBells();
+        return layer;
+    }
+
+    function apply() {
+        if (!ctx) return;
+        const now = ctx.currentTime;
+        for (const name of AMBIENCE_LAYERS) {
+            const level = wanted[name] || 0;
+            if (level === 0 && !layers.has(name)) continue;
+            const layer = ensureLayer(name);
+            if (layer.level === level) continue;
+            layer.level = level;
+            layer.idleSince = level === 0 ? now : 0;
+            layer.gain.gain.setTargetAtTime(level, now, GLIDE_S / 3);
+        }
+    }
+
+    function tick() {
+        const now = ctx.currentTime;
+        const vol = targetVolume();
+        if (Math.abs(master.gain.value - vol) > 0.001) master.gain.setTargetAtTime(vol, now, 0.15);
+
+        for (const [name, layer] of layers) {
+            if (layer.level === 0) {
+                if (now - layer.idleSince > IDLE_S) {
+                    layer.stop();
+                    layer.gain.disconnect();
+                    layers.delete(name);
+                }
+                continue;
+            }
+            if (!CALLS.includes(name) || vol === 0) continue;
+            if (layer.next < now) layer.next = now + 0.05;
+            while (layer.next < now + LOOKAHEAD_S) {
+                // Quieter layers also call less often
+                layer.next += sources.call(name, layer.next, layer.gain) / Math.max(0.3, layer.level);
+            }
+        }
+    }
+
+    return {
+        /** Create the AudioContext. Call from a user gesture (click or key). */
+        unlock() {
+            if (!ctx) {
+                const AudioContext = window.AudioContext || window.webkitAudioContext;
+                ctx = new AudioContext();
+                master = ctx.createGain();
+                master.gain.value = 0;
+                master.connect(ctx.destination);
+                sources = createSources(ctx, createNoiseBuffer(ctx));
+                timer = setInterval(tick, TICK_MS);
+            }
+            if (ctx.state === 'suspended') ctx.resume();
+            apply();
+        },
+
+        /** Glide to a scene's layers: `{ rain: 1, birds: 0.2 }`. Unknown names are ignored. */
+        setScene(levels) {
+            wanted = levels || {};
+            apply();
+        },
+
+        /**
+         * Lightning struck. Plays a thunderclap after a delay that grows with distance,
+         * if the scene has thunder and a clap has been built.
+         * @param {number} distance - 0 (overhead) to 1 (far away)
+         */
+        strike(distance = 0.4) {
+            const layer = layers.get('thunder');
+            if (!ctx || !layer || layer.level === 0 || targetVolume() === 0) return;
+            const buffer = sources.clapFor(distance);
+            if (!buffer) return;
+            const src = ctx.createBufferSource();
+            src.buffer = buffer;
+            const g = ctx.createGain();
+            g.gain.value = 1.3 - 0.45 * distance;
+            src.connect(g);
+            g.connect(layer.gain);
+            src.start(ctx.currentTime + SOUND_LAG_MIN_S + distance * SOUND_LAG_S);
+            src.onended = () => g.disconnect();
+        },
+
+        /**
+         * The Neon Fall stacker did something. Plays its little arcade sound if the scene has them.
+         * @param {string} kind - 'move', 'rotate', 'drop', 'lock', 'land' or 'tetris'
+         */
+        cue(kind) {
+            const layer = layers.get('arcade');
+            if (!ctx || !layer || layer.level === 0 || targetVolume() === 0) return;
+            sources.cue(kind, ctx.currentTime + 0.03, layer.gain);
+        },
+
+        dispose() {
+            if (timer) clearInterval(timer);
+            if (ctx) ctx.close();
+            ctx = null;
+        },
+    };
+}

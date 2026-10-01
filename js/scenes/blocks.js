@@ -101,6 +101,9 @@ function buildLayer(p, stacks) {
 export default {
     id: 'blocks',
     name: 'Retro Blocks',
+    // Classic scenes keep their own look in every weather and play no scene sounds (see background.js)
+    quiet: true,
+    signature: 'sunny',
     create() {
         const stacks = [
             { board: buildStack(5, 34), x: 0 },

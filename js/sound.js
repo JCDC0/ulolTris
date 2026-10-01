@@ -394,45 +394,48 @@ export function createSoundEngine(settingsRef) {
                 break;
                 
             case 'clear4': {
-                // Tetris! C5-E5-G5-C6 with delay feedback for reverb tail
+                // Tetris: a bell "bling". Three grace notes run up into a ringing high
+                // note. Each note is a stack of sine partials that die away at different
+                // rates, like struck metal, with a short echo for sparkle.
                 const delay = ctx.createDelay();
-                delay.delayTime.value = 0.1;
+                delay.delayTime.value = 0.11;
                 const feedback = ctx.createGain();
-                feedback.gain.value = 0.4;
-                
+                feedback.gain.value = 0.3;
+                const wet = ctx.createGain();
+                wet.gain.value = 0.3;
                 delay.connect(feedback);
                 feedback.connect(delay);
-                delay.connect(masterGain);
-                
-                [523, 659, 784, 1046].forEach((freq) => {
-                    const osc = ctx.createOscillator();
-                    const g = ctx.createGain();
-                    osc.type = 'square';
-                    osc.frequency.value = freq;
-                    
-                    g.gain.setValueAtTime(0, t);
-                    g.gain.linearRampToValueAtTime(0.15, t + 0.05);
-                    g.gain.exponentialRampToValueAtTime(0.01, t + 0.3);
-                    
-                    osc.connect(g);
-                    g.connect(masterGain);
-                    g.connect(delay); // Send to reverb
-                    
-                    osc.start(t);
-                    osc.stop(t + 0.3);
-                    osc.onended = () => {
-                        g.disconnect();
-                    };
-                });
-                
-                // Cleanup delay network
+                delay.connect(wet);
+                wet.connect(masterGain);
+
+                const ring = (freq, at, len, peak) => {
+                    for (const [ratio, level, decay] of [[1, 1, 1], [2, 0.3, 0.6], [3.01, 0.16, 0.35], [5.4, 0.07, 0.2]]) {
+                        const osc = ctx.createOscillator();
+                        const g = ctx.createGain();
+                        osc.frequency.value = freq * ratio;
+                        g.gain.setValueAtTime(0, at);
+                        g.gain.linearRampToValueAtTime(peak * level, at + 0.003);
+                        g.gain.exponentialRampToValueAtTime(0.0001, at + len * decay);
+                        osc.connect(g);
+                        g.connect(masterGain);
+                        g.connect(delay);
+                        osc.start(at);
+                        osc.stop(at + len * decay + 0.02);
+                        osc.onended = () => g.disconnect();
+                    }
+                };
+                [1047, 1319, 1568].forEach((freq, i) => ring(freq, t + i * 0.045, 0.25, 0.2));
+                ring(2093, t + 0.135, 1.0, 0.3);
+                ring(3136, t + 0.135, 0.7, 0.1);
+
                 setTimeout(() => {
                     delay.disconnect();
                     feedback.disconnect();
-                }, 1500);
+                    wet.disconnect();
+                }, 2500);
                 break;
             }
-                
+
             case 'tspin': {
                 // Filtered noise whoosh
                 playNoise(t, 0.2, (g, time) => {

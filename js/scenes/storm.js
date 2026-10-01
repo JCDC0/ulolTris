@@ -1,11 +1,10 @@
 /**
- * storm.js - Thunder Peak: jagged snowy mountains under racing storm clouds, heavy
- * rain and lightning (Blitz). Two minutes of pressure.
+ * storm.js - Thunder Peak: jagged snowy mountains under racing clouds (Blitz).
+ * Signature look: thunderstorm, with heavy rain and lightning. Two minutes of
+ * pressure. In fair weather the same peaks stand in clear alpine light.
  */
 
-import { W, H, rng, layer, rect, px, ditherGradient, cloud, wrap } from './pixel.js';
-
-const FLASH_EVERY = 3.4;
+import { W, H, rng, layer, rect, ditherGradient, glow, wrap } from './pixel.js';
 
 /**
  * A mountain range from individual peaks of varied height and slope. Each column takes
@@ -39,98 +38,52 @@ function peaks(ctx, seed, baseY, amp, color, snow) {
     return tops;
 }
 
-function bolt(ctx, seed, groundY) {
-    const r = rng(seed);
-    let x = 40 + r() * 240;
-    let y = 0;
-    const paths = [];
-    while (y < groundY) {
-        const nx = x + (r() - 0.5) * 12;
-        const ny = y + 4 + r() * 8;
-        paths.push([x, y, nx, ny]);
-        if (r() < 0.18) {
-            let bx = nx, by = ny;
-            const dir = r() < 0.5 ? -1 : 1;
-            for (let k = 0; k < 4; k++) {
-                const ex = bx + dir * (3 + r() * 6), ey = by + 3 + r() * 5;
-                paths.push([bx, by, ex, ey, true]);
-                bx = ex; by = ey;
-            }
-        }
-        x = nx; y = ny;
-    }
-    for (const [x0, y0, x1, y1, branch] of paths) {
-        const steps = Math.ceil(Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0)));
-        for (let i = 0; i <= steps; i++) {
-            const px0 = x0 + (x1 - x0) * (i / steps);
-            const py0 = y0 + (y1 - y0) * (i / steps);
-            if (!branch) px(ctx, px0 - 1, py0, '#7fa8ff');
-            px(ctx, px0, py0, branch ? '#b8d0ff' : '#ffffff');
-        }
-    }
-}
-
 export default {
     id: 'storm',
     name: 'Thunder Peak',
-    create() {
-        const sky = layer();
-        ditherGradient(sky.ctx, 0, 0, W, H, ['#06080e', '#0b0f19', '#121827', '#1a2234', '#232d42']);
-
-        const cloudsFar = layer(W * 2, 80);
-        const cloudsNear = layer(W * 2, 70);
-        const cr = rng(33);
-        for (let i = 0; i < 14; i++) cloud(cloudsFar.ctx, cr() * W * 2, 10 + cr() * 50, 7 + cr() * 8, '#1f2638', '#161b29', 700 + i);
-        for (let i = 0; i < 10; i++) cloud(cloudsNear.ctx, cr() * W * 2, 4 + cr() * 30, 9 + cr() * 9, '#2a3246', '#1c2231', 800 + i);
+    signature: 'thunder',
+    horizon: 128,
+    celestial: { sunX: 250, sunHighY: 26, sunLowY: 92, moonX: 70, moonY: 30 },
+    fog: [96, 170],
+    rainBand: [150, 176],
+    sounds: { always: { wind: 0.3 }, day: {}, night: { owl: 0.2 } },
+    create(env) {
+        const sky = env.makeSky();
 
         const far = layer();
-        peaks(far.ctx, 2, 128, 46, '#161c2b', '#7c889f');
-        const lit = layer();
-        peaks(lit.ctx, 2, 128, 46, '#39456a', '#dfe6f5');
+        peaks(far.ctx, 2, 128, 46, '#7a8aa8', '#e8f0fa');
+        env.grade(far.canvas);
         const near = layer();
-        const nearTop = peaks(near.ctx, 9, 162, 38, '#0a0d15', '#3a4458');
+        peaks(near.ctx, 9, 162, 38, '#3a4658', '#c8d4e4');
+        env.grade(near.canvas);
+        // Pines on the lower slopes give the near ridge a rough edge and some scale
+        const pr = rng(31);
+        const pines = layer();
+        for (let x = 0; x < W; x += 3 + Math.floor(pr() * 5)) {
+            const h = 4 + Math.floor(pr() * 8);
+            const y = 172 + Math.floor(pr() * 8);
+            for (let i = 0; i < h; i++) rect(pines.ctx, x - Math.floor(i / 3), y - h + i, 1 + Math.floor(i / 3) * 2, 1, '#22342e');
+        }
+        env.grade(pines.canvas);
 
-        const r = rng(5);
-        const drops = Array.from({ length: 260 }, () => ({
-            x: r() * (W + 80), y: r() * H, speed: 230 + r() * 120, len: 4 + Math.floor(r() * 5),
-        }));
+        const hut = layer();
+        rect(hut.ctx, 250, 166, 12, 8, '#7a5a44');
+        for (let i = 0; i < 5; i++) rect(hut.ctx, 248 + i, 161 + i, 16 - i * 2, 1, i === 0 ? '#f2f8ff' : '#a8b8d0');
+        rect(hut.ctx, 253, 169, 3, 3, '#3f5070');
+        env.grade(hut.canvas);
 
         return {
             draw(ctx, t) {
-                ctx.drawImage(sky.canvas, 0, 0);
-                const fx = Math.round(wrap(t * 9, W * 2));
-                ctx.drawImage(cloudsFar.canvas, -fx, 0);
-                ctx.drawImage(cloudsFar.canvas, W * 2 - fx, 0);
-
-                const n = Math.floor(t / FLASH_EVERY);
-                const local = t - n * FLASH_EVERY;
-                const offset = rng(n)() * 1.2;
-                const since = local - offset;
-                const flash = since >= 0 && since < 0.45 ? (1 - since / 0.45) * (Math.sin(since * 60) > -0.3 ? 1 : 0.4) : 0;
-
+                sky.draw(ctx, t);
                 ctx.drawImage(far.canvas, 0, 0);
-                if (flash > 0) {
-                    ctx.globalAlpha = flash * 0.8;
-                    ctx.drawImage(lit.canvas, 0, 0);
-                    ctx.globalAlpha = 1;
-                    if (since < 0.25) bolt(ctx, n * 7 + 1, nearTop[160] - 20);
-                }
-
-                const nx = Math.round(wrap(t * 16, W * 2));
-                ctx.drawImage(cloudsNear.canvas, -nx, 0);
-                ctx.drawImage(cloudsNear.canvas, W * 2 - nx, 0);
                 ctx.drawImage(near.canvas, 0, 0);
-
-                ctx.fillStyle = 'rgba(160, 182, 214, 0.42)';
-                for (const d of drops) {
-                    const y = wrap(d.y + t * d.speed, H + 10) - 5;
-                    const x = wrap(d.x - y * 0.45 - t * 30, W + 80) - 40;
-                    for (let k = 0; k < d.len; k++) ctx.fillRect(Math.round(x + k * 0.45), Math.round(y - k), 1, 1);
-                }
-
-                if (flash > 0) {
-                    ctx.fillStyle = `rgba(200, 220, 255, ${flash * 0.3})`;
-                    ctx.fillRect(0, 0, W, H);
+                ctx.drawImage(hut.canvas, 0, 0);
+                ctx.drawImage(pines.canvas, 0, 0);
+                if (env.lit > 0.05) {
+                    ctx.globalAlpha = env.lit;
+                    rect(ctx, 253, 169, 3, 3, '#ffcf6b');
+                    glow(ctx, 254, 170, 8, '#e8b870', 0.5);
+                    ctx.globalAlpha = 1;
                 }
             },
         };

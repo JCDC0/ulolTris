@@ -41,28 +41,28 @@ export const MODE_INFO = {
         name: '40 LINES',
         subtitle: 'SPRINT',
         description: 'Clear 40 lines as fast as possible.',
-        track: 'competitive',
+        music: 'casual',
         icon: '\u23F1',
     },
     [MODE_BLITZ]: {
         name: 'BLITZ',
         subtitle: '2 MINUTES',
         description: 'Score as many points as you can before time runs out.',
-        track: 'intense',
+        music: 'intense',
         icon: '\u26A1',
     },
     [MODE_CLASSIC]: {
         name: 'CASUAL',
         subtitle: 'ENDLESS',
         description: 'Relaxed endless play. Gravity rises and the scenery changes as you level up.',
-        track: 'calm',
+        music: 'casual',
         icon: '\u221E',
     },
     [MODE_OG]: {
         name: 'CLASSIC',
         subtitle: 'OG RULES',
         description: 'The original rules: next piece only, no hold, no wall kicks. Points for lines, nothing for T-spins.',
-        track: 'chip',
+        music: 'chip',
         icon: '\u25A3',
     },
 };
@@ -328,14 +328,6 @@ export function createModeState(modeId, options = {}) {
             if (!timer) return 0;
             if (modeId === MODE_BLITZ) return BLITZ_MS - timer.getRemaining();
             return timer.getElapsed();
-        },
-
-        /**
-         * Whether Casual has reached the intense track (level 10+). Sprint and Blitz keep
-         * one track for the whole run, so a switch mid-game never breaks their pace.
-         */
-        isHeated() {
-            return modeId === MODE_CLASSIC && stats.level >= 10;
         },
 
         /** Get results for the game-over screen */
