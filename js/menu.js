@@ -2,7 +2,26 @@
  * menu.js - Menu screens: main menu, mode select, pause overlay, game over/results
  */
 
-import { MODE_INFO, MODE_SPRINT, MODE_BLITZ, MODE_CLASSIC } from './modes.js';
+import { MODE_INFO, MODE_SPRINT, MODE_BLITZ, MODE_CLASSIC, MODE_OG } from './modes.js';
+import { paintNesBlock, nesPalette } from './classic.js';
+
+/**
+ * Pixel art icon for the Classic card: a T made of the three block styles of the 8-bit
+ * look, drawn small and scaled up with crisp pixels (see .mode-icon-pixel in style.css).
+ */
+function createClassicIcon() {
+    const size = 14;
+    const canvas = document.createElement('canvas');
+    canvas.width = size * 3;
+    canvas.height = size * 2;
+    canvas.className = 'mode-icon-pixel';
+    const ctx = canvas.getContext('2d');
+    const palette = nesPalette(0);
+    [['light', 0, 0], ['dark', 1, 0], ['ring', 2, 0], ['light', 1, 1]].forEach(([kind, col, row]) => {
+        paintNesBlock(ctx, col * size, row * size, size, kind, palette);
+    });
+    return canvas;
+}
 
 /**
  * Create the menu system.
@@ -43,7 +62,7 @@ export function createMenuSystem(container) {
 
     // --- MODE SELECT ---
     const modeSelect = createElement('div', 'menu-screen menu-mode-select');
-    const modesHtml = [MODE_SPRINT, MODE_BLITZ, MODE_CLASSIC].map(id => {
+    const modesHtml = [MODE_SPRINT, MODE_BLITZ, MODE_CLASSIC, MODE_OG].map(id => {
         const info = MODE_INFO[id];
         return `
             <button class="mode-card" data-mode="${id}">
@@ -63,6 +82,7 @@ export function createMenuSystem(container) {
             <button class="menu-btn menu-btn-back" data-action="back">BACK</button>
         </div>
     `;
+    modeSelect.querySelector(`[data-mode="${MODE_OG}"] .mode-icon`).replaceChildren(createClassicIcon());
     screens.modeSelect = modeSelect;
     container.appendChild(modeSelect);
 
@@ -190,35 +210,46 @@ export function createMenuSystem(container) {
         // Build stats grid
         const stats = [];
 
-        if (results.modeId === 'sprint') {
-            stats.push({ label: 'TIME', value: results.finalTimePrecise || results.finalTime, highlight: true });
-        } else {
+        if (results.modeId === MODE_OG) {
+            // The original has no attack, combos or finesse, so only what it measures
             stats.push({ label: 'SCORE', value: results.score.toLocaleString(), highlight: true });
-        }
-
-        stats.push({ label: 'LINES', value: results.linesCleared });
-        stats.push({ label: 'LEVEL', value: results.level });
-        stats.push({ label: 'PIECES', value: results.piecesPlaced });
-
-        if (results.tSpins > 0) {
-            stats.push({ label: 'T-SPINS', value: results.tSpins });
-        }
-        if (results.tetrises > 0) {
-            stats.push({ label: 'QUADS', value: results.tetrises });
-        }
-        if (results.maxCombo > 0) {
-            stats.push({ label: 'MAX COMBO', value: results.maxCombo });
-        }
-        if (results.perfectClears > 0) {
-            stats.push({ label: 'PERFECT CLEARS', value: results.perfectClears });
-        }
-        stats.push({ label: 'LINES SENT', value: results.linesSent });
-        stats.push({ label: 'APM', value: results.apm.toFixed(1) });
-        stats.push({ label: 'PPS', value: (results.pps ?? 0).toFixed(2) });
-        stats.push({ label: 'FINESSE', value: `${(results.finesse ?? 100).toFixed(1)}%` });
-
-        if (results.modeId !== 'sprint') {
+            stats.push({ label: 'LINES', value: results.linesCleared });
+            stats.push({ label: 'LEVEL', value: results.level });
+            stats.push({ label: 'PIECES', value: results.piecesPlaced });
+            stats.push({ label: 'TETRIS RATE', value: `${Math.round(results.tetrisRate)}%` });
+            stats.push({ label: 'PPS', value: (results.pps ?? 0).toFixed(2) });
             stats.push({ label: 'TIME', value: results.finalTime });
+        } else {
+            if (results.modeId === 'sprint') {
+                stats.push({ label: 'TIME', value: results.finalTimePrecise || results.finalTime, highlight: true });
+            } else {
+                stats.push({ label: 'SCORE', value: results.score.toLocaleString(), highlight: true });
+            }
+
+            stats.push({ label: 'LINES', value: results.linesCleared });
+            stats.push({ label: 'LEVEL', value: results.level });
+            stats.push({ label: 'PIECES', value: results.piecesPlaced });
+
+            if (results.tSpins > 0) {
+                stats.push({ label: 'T-SPINS', value: results.tSpins });
+            }
+            if (results.tetrises > 0) {
+                stats.push({ label: 'QUADS', value: results.tetrises });
+            }
+            if (results.maxCombo > 0) {
+                stats.push({ label: 'MAX COMBO', value: results.maxCombo });
+            }
+            if (results.perfectClears > 0) {
+                stats.push({ label: 'PERFECT CLEARS', value: results.perfectClears });
+            }
+            stats.push({ label: 'LINES SENT', value: results.linesSent });
+            stats.push({ label: 'APM', value: results.apm.toFixed(1) });
+            stats.push({ label: 'PPS', value: (results.pps ?? 0).toFixed(2) });
+            stats.push({ label: 'FINESSE', value: `${(results.finesse ?? 100).toFixed(1)}%` });
+
+            if (results.modeId !== 'sprint') {
+                stats.push({ label: 'TIME', value: results.finalTime });
+            }
         }
 
         gridEl.innerHTML = stats.map(s => `

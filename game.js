@@ -24,7 +24,7 @@
     musicMuted: false,
     crossfadeDuration: 2,
     soundtrack: "auto",
-    // 'auto', 'calm', 'competitive', 'intense', 'off'
+    // 'auto', 'calm', 'competitive', 'intense', 'chip', 'off'
     // Visual
     screenShake: "medium",
     // 'off', 'low', 'medium', 'high'
@@ -40,20 +40,26 @@
     // 'on', 'dim', 'off'
     casualScene: "cycle",
     // 'cycle' or one of CASUAL_SCENES
+    classicScene: "cycle",
+    // 'cycle' (by level) or one of CLASSIC_SCENES
+    classicFont: "og",
+    // Classic HUD font: 'og' (8-bit pixel font) or 'ulol' (the uloltris fonts)
     ghostOpacity: 40,
     // 0-100
     showActionText: true,
     blockSkin: "ulol",
     // one of SKINS in skins.js
     soundPack: "ulol",
-    // 'ulol', 'arcade' (Jstris-style), 'bubbly' (PPT-style)
+    // 'ulol', 'arcade' (Jstris-style), 'bubbly' (PPT-style), 'nes' (8-bit)
     // Gameplay
     nextPreviewCount: 5,
     // 1-6
     lockDelay: 500,
     // ms
-    gameStyle: "modern"
+    gameStyle: "modern",
     // 'modern' (TETR.IO, Jstris) or 'battle' (Tetris 99, PPT)
+    classicStartLevel: 0
+    // Classic mode: level to begin on, 0-19
   };
   var CONSTRAINTS = {
     arr: { min: 0, max: 5, step: 0.1 },
@@ -66,7 +72,8 @@
     crossfadeDuration: { min: 0, max: 5, step: 0.5 },
     ghostOpacity: { min: 0, max: 100, step: 5 },
     nextPreviewCount: { min: 1, max: 6, step: 1 },
-    lockDelay: { min: 100, max: 2e3, step: 50 }
+    lockDelay: { min: 100, max: 2e3, step: 50 },
+    classicStartLevel: { min: 0, max: 19, step: 1 }
   };
   var ENUMS = {
     screenShake: ["off", "low", "medium", "high"],
@@ -76,10 +83,12 @@
     statsDisplay: ["off", "time", "speed", "efficiency", "versus"],
     background: ["on", "dim", "off"],
     casualScene: ["cycle", "bamboo", "wheat", "village", "castle", "ocean", "neon"],
-    soundtrack: ["auto", "calm", "competitive", "intense", "off"],
+    classicScene: ["cycle", "blocks", "ulol", "domes"],
+    classicFont: ["og", "ulol"],
+    soundtrack: ["auto", "calm", "competitive", "intense", "chip", "off"],
     gameStyle: ["modern", "battle"],
     blockSkin: ["ulol", "classic", "glossy", "flat", "neon"],
-    soundPack: ["ulol", "arcade", "bubbly"]
+    soundPack: ["ulol", "arcade", "bubbly", "nes"]
   };
   function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
@@ -152,7 +161,14 @@
     return val === "battle" ? "Battle (T99 / PPT)" : "Modern (TETR.IO / Jstris)";
   }
   function describeSoundtrack(val) {
-    return val === "auto" ? "Auto (by mode)" : describeEnum(val);
+    if (val === "auto") return "Auto (by mode)";
+    return val === "chip" ? "Chiptune (8-bit)" : describeEnum(val);
+  }
+  function describeClassicFont(val) {
+    return val === "og" ? "OG (8-bit pixel font)" : "uloltris";
+  }
+  function describeStartLevel(level) {
+    return `Level ${level}`;
   }
   function describeVolume(val) {
     return `${val}%`;
@@ -196,6 +212,254 @@
     return STATS_LABELS[val] || val;
   }
 
+  // js/piece.js
+  var COLS = 10;
+  var VISIBLE_ROWS = 20;
+  var BUFFER_ROWS = 40;
+  var BLOCK_SIZE = 30;
+  var SHAPES = {
+    I: { matrix: [[0, 0, 0, 0], [1, 1, 1, 1], [0, 0, 0, 0], [0, 0, 0, 0]], color: "#3fd9b8" },
+    J: { matrix: [[1, 0, 0], [1, 1, 1], [0, 0, 0]], color: "#5d55e0" },
+    L: { matrix: [[0, 0, 1], [1, 1, 1], [0, 0, 0]], color: "#ef8a3c" },
+    O: { matrix: [[1, 1], [1, 1]], color: "#f2cb46" },
+    S: { matrix: [[0, 1, 1], [1, 1, 0], [0, 0, 0]], color: "#94d64a" },
+    T: { matrix: [[0, 1, 0], [1, 1, 1], [0, 0, 0]], color: "#cf5ce0" },
+    Z: { matrix: [[1, 1, 0], [0, 1, 1], [0, 0, 0]], color: "#ec4a5c" }
+  };
+  var KICKS = {
+    JLSTZ: {
+      "0->1": [[0, 0], [-1, 0], [-1, -1], [0, 2], [-1, 2]],
+      "1->0": [[0, 0], [1, 0], [1, 1], [0, -2], [1, -2]],
+      "1->2": [[0, 0], [1, 0], [1, 1], [0, -2], [1, -2]],
+      "2->1": [[0, 0], [-1, 0], [-1, -1], [0, 2], [-1, 2]],
+      "2->3": [[0, 0], [1, 0], [1, -1], [0, 2], [1, 2]],
+      "3->2": [[0, 0], [-1, 0], [-1, 1], [0, -2], [-1, -2]],
+      "3->0": [[0, 0], [-1, 0], [-1, 1], [0, -2], [-1, -2]],
+      "0->3": [[0, 0], [1, 0], [1, -1], [0, 2], [1, 2]]
+    },
+    I: {
+      "0->1": [[0, 0], [-2, 0], [1, 0], [-2, 1], [1, -2]],
+      "1->0": [[0, 0], [2, 0], [-1, 0], [2, -1], [-1, 2]],
+      "1->2": [[0, 0], [-1, 0], [2, 0], [-1, -2], [2, 1]],
+      "2->1": [[0, 0], [1, 0], [-2, 0], [1, 2], [-2, -1]],
+      "2->3": [[0, 0], [2, 0], [-1, 0], [2, -1], [-1, 2]],
+      "3->2": [[0, 0], [-2, 0], [1, 0], [-2, 1], [1, -2]],
+      "3->0": [[0, 0], [1, 0], [-2, 0], [1, 2], [-2, -1]],
+      "0->3": [[0, 0], [-1, 0], [2, 0], [-1, -2], [2, 1]]
+    }
+  };
+  function rotateMatrix(matrix, dir) {
+    const transposed = matrix[0].map((_, i) => matrix.map((row) => row[i]));
+    if (dir > 0) return transposed.map((row) => row.reverse());
+    return transposed.reverse();
+  }
+  function shuffle(array) {
+    for (let i = array.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [array[i], array[j]] = [array[j], array[i]];
+    }
+    return array;
+  }
+  function generateBag() {
+    return shuffle(["I", "J", "L", "O", "S", "T", "Z"]);
+  }
+  function fillQueue(queue, minSize = 7) {
+    while (queue.length < minSize) {
+      queue.push(...generateBag());
+    }
+  }
+  function getSpawnPos(matrix) {
+    let lastFilledRow = 0;
+    matrix.forEach((row, y) => {
+      if (row.some((v) => v !== 0)) lastFilledRow = y;
+    });
+    return {
+      x: Math.floor(COLS / 2) - Math.floor(matrix[0].length / 2),
+      y: BUFFER_ROWS - VISIBLE_ROWS - 1 - lastFilledRow
+    };
+  }
+  var SPAWN_ROWS = 3;
+  function tryRotate(player, arena, collide2, dir) {
+    const originalMatrix = player.matrix;
+    const originalRotation = player.rotation;
+    const rotated = rotateMatrix(player.matrix, dir);
+    const newRotation = (player.rotation + dir + 4) % 4;
+    player.matrix = rotated;
+    if (player.shape === "O") {
+      player.rotation = newRotation;
+      return { success: true, kickIndex: 0 };
+    }
+    const kickKey = `${originalRotation}->${newRotation}`;
+    const kickType = player.shape === "I" ? "I" : "JLSTZ";
+    const kickTests = KICKS[kickType][kickKey];
+    for (let i = 0; i < kickTests.length; i++) {
+      const [xOff, yOff] = kickTests[i];
+      player.pos.x += xOff;
+      player.pos.y += yOff;
+      if (!collide2(arena, player)) {
+        player.rotation = newRotation;
+        return { success: true, kickIndex: i };
+      }
+      player.pos.x -= xOff;
+      player.pos.y -= yOff;
+    }
+    player.matrix = originalMatrix;
+    player.rotation = originalRotation;
+    return { success: false, kickIndex: -1 };
+  }
+
+  // js/classic.js
+  var NES_FPS = 60.0988;
+  var NES_FRAME_MS = 1e3 / NES_FPS;
+  var SOFT_DROP_FRAMES = 2;
+  var GRAVITY_FRAMES = [48, 43, 38, 33, 28, 23, 18, 13, 8, 6, 5, 5, 5, 4, 4, 4, 3, 3, 3];
+  function classicGravityFrames(level) {
+    if (level < GRAVITY_FRAMES.length) return GRAVITY_FRAMES[Math.max(0, level)];
+    return level < 29 ? 2 : 1;
+  }
+  function classicGravityMs(level) {
+    return classicGravityFrames(level) * NES_FRAME_MS;
+  }
+  var CLASSIC_LINE_POINTS = [0, 40, 100, 300, 1200];
+  var CLEAR_ACTIONS = [null, "single", "double", "triple", "tetris"];
+  var CLEAR_NAMES = ["", "SINGLE", "DOUBLE", "TRIPLE", "TETRIS"];
+  function calculateClassicScore(lines, level) {
+    const n = Math.max(0, Math.min(4, lines));
+    return {
+      points: CLASSIC_LINE_POINTS[n] * (level + 1),
+      action: CLEAR_ACTIONS[n],
+      actionName: CLEAR_NAMES[n],
+      combo: 0,
+      b2b: false,
+      b2bCount: 0,
+      perfectClear: false,
+      isClearAction: n > 0,
+      allActions: n > 0 ? [CLEAR_NAMES[n]] : []
+    };
+  }
+  function classicFirstLevelUp(startLevel) {
+    return Math.min(startLevel * 10 + 10, Math.max(100, startLevel * 10 - 50));
+  }
+  function classicLevel(lines, startLevel) {
+    const first = classicFirstLevelUp(startLevel);
+    if (lines < first) return startLevel;
+    return startLevel + 1 + Math.floor((lines - first) / 10);
+  }
+  function classicLevelProgress(lines, startLevel) {
+    const first = classicFirstLevelUp(startLevel);
+    if (lines < first) return lines / first;
+    return (lines - first) % 10 / 10;
+  }
+  var NES_ORDER = ["T", "J", "Z", "O", "S", "L", "I"];
+  function nextClassicPiece(prev, rand = Math.random) {
+    let i = Math.floor(rand() * 8);
+    if (i === 7 || NES_ORDER[i] === prev) i = Math.floor(rand() * 7);
+    return NES_ORDER[i];
+  }
+  function fillClassicQueue(queue, last = null, minSize = 7, rand = Math.random) {
+    while (queue.length < minSize) {
+      queue.push(nextClassicPiece(queue.length ? queue[queue.length - 1] : last, rand));
+    }
+  }
+  var rotate180 = (m) => rotateMatrix(rotateMatrix(m, 1), 1);
+  var SPAWN_MATRICES = {
+    I: SHAPES.I.matrix,
+    J: rotate180(SHAPES.J.matrix),
+    L: rotate180(SHAPES.L.matrix),
+    O: SHAPES.O.matrix,
+    S: SHAPES.S.matrix,
+    T: rotate180(SHAPES.T.matrix),
+    Z: SHAPES.Z.matrix
+  };
+  var TWO_STATE = /* @__PURE__ */ new Set(["I", "S", "Z"]);
+  function classicMatrix(shape) {
+    return SPAWN_MATRICES[shape];
+  }
+  function getClassicSpawnPos(matrix) {
+    const top = Math.max(0, matrix.findIndex((row) => row.some((v) => v !== 0)));
+    return {
+      x: Math.floor((COLS - matrix[0].length) / 2),
+      y: BUFFER_ROWS - VISIBLE_ROWS - top
+    };
+  }
+  function tryRotateClassic(player, arena, collide2, dir) {
+    if (player.shape === "O") return { success: false, kickIndex: -1 };
+    const matrix = player.matrix;
+    const rotation = player.rotation;
+    if (TWO_STATE.has(player.shape)) {
+      player.matrix = rotateMatrix(matrix, rotation === 0 ? 1 : -1);
+      player.rotation = rotation === 0 ? 1 : 0;
+    } else {
+      player.matrix = rotateMatrix(matrix, dir);
+      player.rotation = (rotation + dir + 4) % 4;
+    }
+    if (collide2(arena, player)) {
+      player.matrix = matrix;
+      player.rotation = rotation;
+      return { success: false, kickIndex: -1 };
+    }
+    return { success: true, kickIndex: 0 };
+  }
+  var NES_PALETTES = [
+    ["#3cbcfc", "#0058f8"],
+    ["#b8f818", "#00a800"],
+    ["#f8a8f8", "#b800b8"],
+    ["#6888fc", "#6844fc"],
+    ["#58f898", "#e40058"],
+    ["#58f898", "#6888fc"],
+    ["#f87858", "#7c7c7c"],
+    ["#9878f8", "#a80020"],
+    ["#3cbcfc", "#a80020"],
+    ["#fca044", "#d82800"]
+  ];
+  function nesPalette(level) {
+    return NES_PALETTES[(level % NES_PALETTES.length + NES_PALETTES.length) % NES_PALETTES.length];
+  }
+  var NES_BLOCK_ART = {
+    light: [
+      "WWWWWWW.",
+      "W111111.",
+      "W1WW111.",
+      "W1WW111.",
+      "W111111.",
+      "W111111.",
+      "W111111.",
+      "........"
+    ],
+    dark: [
+      "WWWWWWW.",
+      "W222222.",
+      "W2WW222.",
+      "W2WW222.",
+      "W222222.",
+      "W222222.",
+      "W222222.",
+      "........"
+    ],
+    ring: [
+      "WWWWWWW.",
+      "WWWWWWW.",
+      "WW1111W.",
+      "WW1111W.",
+      "WW1111W.",
+      "WW1111W.",
+      "WWWWWWW.",
+      "........"
+    ]
+  };
+  var NES_BLOCK_KIND = { T: "light", O: "light", I: "light", J: "dark", S: "dark", Z: "ring", L: "ring" };
+  function paintNesBlock(ctx, x, y, size, kind, palette) {
+    const colors = { ".": "#000000", W: "#ffffff", 1: palette[0], 2: palette[1] };
+    const art = NES_BLOCK_ART[kind];
+    const edge = (i) => Math.round(i * size / 8);
+    for (let row = 0; row < 8; row++) {
+      for (let col = 0; col < 8; col++) {
+        ctx.fillStyle = colors[art[row][col]];
+        ctx.fillRect(x + edge(col), y + edge(row), edge(col + 1) - edge(col), edge(row + 1) - edge(row));
+      }
+    }
+  }
+
   // js/skins.js
   var SKINS = ["ulol", "classic", "glossy", "flat", "neon"];
   var SKIN_LABELS = {
@@ -216,8 +480,8 @@
     const [r, g, b] = hexToRgb(hex);
     const t = amount > 0 ? 255 : 0;
     const k = Math.abs(amount);
-    const mix = (c) => Math.round(c + (t - c) * k);
-    return `rgb(${mix(r)}, ${mix(g)}, ${mix(b)})`;
+    const mix2 = (c) => Math.round(c + (t - c) * k);
+    return `rgb(${mix2(r)}, ${mix2(g)}, ${mix2(b)})`;
   }
   var PAINTERS = {
     /** Pixel bevel with an inset square, sized in whole pixels so it stays crisp. */
@@ -309,6 +573,18 @@
     }
   };
   var cache = /* @__PURE__ */ new Map();
+  function nesBlockSprite(shape, level, size) {
+    const key = `nes|${shape}|${(level % NES_PALETTES.length + NES_PALETTES.length) % NES_PALETTES.length}|${size}`;
+    let sprite = cache.get(key);
+    if (!sprite) {
+      sprite = document.createElement("canvas");
+      sprite.width = size;
+      sprite.height = size;
+      paintNesBlock(sprite.getContext("2d"), 0, 0, size, NES_BLOCK_KIND[shape] || "light", nesPalette(level));
+      cache.set(key, sprite);
+    }
+    return sprite;
+  }
   function blockSprite(skin, color, size) {
     const key = `${skin}|${color}|${size}`;
     let sprite = cache.get(key);
@@ -678,9 +954,9 @@
     }
     rect(ctx, x, base, 1, 2, color);
   }
-  function house(ctx, x, w, h, wall, wallDark, roof, roofDark, r, windows, chimneys) {
+  function house(ctx, x, w, h, wall2, wallDark, roof, roofDark, r, windows, chimneys) {
     const top = GROUND - h;
-    rect(ctx, x, top, w, h, wall);
+    rect(ctx, x, top, w, h, wall2);
     rect(ctx, x + w - 2, top, 2, h, wallDark);
     for (let y = top + 3; y < GROUND; y += 4) rect(ctx, x, y, w - 2, 1, wallDark);
     const roofH = Math.round(w * 0.45);
@@ -735,9 +1011,9 @@
       while (x < W - 20) {
         const w = 22 + Math.floor(r() * 12);
         const h = 15 + Math.floor(r() * 10);
-        const [wall, wallDark] = walls[Math.floor(r() * walls.length)];
+        const [wall2, wallDark] = walls[Math.floor(r() * walls.length)];
         const [roof, roofDark] = roofs[Math.floor(r() * roofs.length)];
-        house(b, x, w, h, wall, wallDark, roof, roofDark, r, windows, chimneys);
+        house(b, x, w, h, wall2, wallDark, roof, roofDark, r, windows, chimneys);
         x += w + 10 + Math.floor(r() * 16);
       }
       const lamps = [52, 150, 262].map((lx) => ({ x: lx, y: GROUND - 14 }));
@@ -1011,7 +1287,7 @@
 
   // js/scenes/neon.js
   var HORIZON3 = 118;
-  var SHAPES = [
+  var SHAPES2 = [
     [[1, 1, 1, 1]],
     [[1, 0, 0], [1, 1, 1]],
     [[0, 0, 1], [1, 1, 1]],
@@ -1049,7 +1325,7 @@
       rect(base.ctx, 0, HORIZON3, W, 1, "#ff4fb4");
       const r = rng(71);
       const pieces = Array.from({ length: 18 }, () => {
-        let shape = SHAPES[Math.floor(r() * SHAPES.length)];
+        let shape = SHAPES2[Math.floor(r() * SHAPES2.length)];
         for (let k = Math.floor(r() * 4); k > 0; k--) shape = rotate(shape);
         const cell = r() < 0.35 ? 7 : r() < 0.6 ? 5 : 4;
         return {
@@ -1322,9 +1598,470 @@
     }
   };
 
+  // js/scenes/blocks.js
+  var CELL = 8;
+  var STACK_COLS = 9;
+  var STACK_ROWS = 14;
+  var LETTERS = Object.keys(SHAPES);
+  var cache2 = /* @__PURE__ */ new Map();
+  function sprites(p) {
+    if (!cache2.has(`s${p}`)) {
+      const out = {};
+      for (const kind of ["light", "dark", "ring"]) {
+        const c = layer(CELL, CELL);
+        paintNesBlock(c.ctx, 0, 0, CELL, kind, NES_PALETTES[p]);
+        out[kind] = c.canvas;
+      }
+      cache2.set(`s${p}`, out);
+    }
+    return cache2.get(`s${p}`);
+  }
+  function dim(hex, k) {
+    const [r, g, b] = parseColor(hex);
+    return `rgb(${Math.round(r * k)}, ${Math.round(g * k)}, ${Math.round(b * k)})`;
+  }
+  function buildStack(seed, pieces) {
+    const r = rng(seed);
+    const board = Array.from({ length: STACK_ROWS }, () => new Array(STACK_COLS).fill(null));
+    const fits = (m, x, y) => m.every((row, dy) => row.every((v, dx) => {
+      if (!v) return true;
+      const bx = x + dx;
+      const by = y + dy;
+      return bx >= 0 && bx < STACK_COLS && by < STACK_ROWS && (by < 0 || !board[by][bx]);
+    }));
+    for (let i = 0; i < pieces; i++) {
+      const letter = LETTERS[Math.floor(r() * LETTERS.length)];
+      let m = SHAPES[letter].matrix;
+      for (let k = Math.floor(r() * 4); k > 0; k--) m = rotateMatrix(m, 1);
+      const x = Math.floor(r() * (STACK_COLS - m[0].length + 1));
+      let y = -m.length;
+      if (!fits(m, x, y)) continue;
+      while (fits(m, x, y + 1)) y++;
+      m.forEach((row, dy) => row.forEach((v, dx) => {
+        if (v && y + dy >= 0) board[y + dy][x + dx] = letter;
+      }));
+    }
+    return board;
+  }
+  function buildLayer(p, stacks) {
+    const l = layer();
+    const ctx = l.ctx;
+    const [light, dark] = NES_PALETTES[p];
+    rect(ctx, 0, 0, W, H, "#000000");
+    const dot = dim(dark, 0.42);
+    const faint = dim(light, 0.16);
+    for (let row = 0; row * CELL < H; row++) {
+      for (let col = 0; col * CELL < W; col++) {
+        const ox = col * CELL + (row % 2 ? 4 : 0);
+        rect(ctx, ox + 2, row * CELL + 3, 2, 2, dot);
+        if ((row + col) % 5 === 0) rect(ctx, ox + 3, row * CELL + 2, 1, 4, faint);
+      }
+    }
+    const shade2 = ctx.createLinearGradient(W * 0.25, 0, W * 0.75, 0);
+    shade2.addColorStop(0, "rgba(0,0,0,0)");
+    shade2.addColorStop(0.5, "rgba(0,0,0,0.55)");
+    shade2.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = shade2;
+    ctx.fillRect(0, 0, W, H);
+    const s = sprites(p);
+    stacks.forEach(({ board, x }) => {
+      board.forEach((row, ry) => row.forEach((letter, rx) => {
+        if (!letter) return;
+        ctx.drawImage(s[NES_BLOCK_KIND[letter]], x + rx * CELL, H - (STACK_ROWS - ry) * CELL);
+      }));
+    });
+    return l.canvas;
+  }
+  var blocks_default = {
+    id: "blocks",
+    name: "Retro Blocks",
+    create() {
+      const stacks = [
+        { board: buildStack(5, 34), x: 0 },
+        { board: buildStack(12, 34), x: W - STACK_COLS * CELL }
+      ];
+      const r = rng(91);
+      const rows = Math.ceil(H / CELL) + 6;
+      const fallers = Array.from({ length: 12 }, (_, i) => ({
+        letter: LETTERS[i % LETTERS.length],
+        x: Math.floor(r() * (W / CELL - 4)) * CELL,
+        speed: 0.9 + r() * 1.8,
+        phase: r() * rows,
+        turn: 0.25 + r() * 0.35,
+        spin: Math.floor(r() * 4)
+      }));
+      const layers = [];
+      return {
+        draw(ctx, t, { level = 0 } = {}) {
+          const p = (level % NES_PALETTES.length + NES_PALETTES.length) % NES_PALETTES.length;
+          if (!layers[p]) layers[p] = buildLayer(p, stacks);
+          ctx.drawImage(layers[p], 0, 0);
+          const s = sprites(p);
+          for (const f of fallers) {
+            const step = Math.floor(f.phase + t * f.speed);
+            const y = step % rows * CELL - 4 * CELL;
+            let m = SHAPES[f.letter].matrix;
+            for (let k = (f.spin + Math.floor(step * f.turn)) % 4; k > 0; k--) m = rotateMatrix(m, 1);
+            const sprite = s[NES_BLOCK_KIND[f.letter]];
+            m.forEach((row, ry) => row.forEach((v, rx) => {
+              if (v) ctx.drawImage(sprite, f.x + rx * CELL, y + ry * CELL);
+            }));
+          }
+        }
+      };
+    }
+  };
+
+  // js/scenes/ulol.js
+  var HORIZON4 = 140;
+  var LETTERS2 = Object.keys(SHAPES);
+  var TEAL = "#5ee8c8";
+  function buildStack2(seed, cols, rows, pieces) {
+    const r = rng(seed);
+    const board = Array.from({ length: rows }, () => new Array(cols).fill(null));
+    const fits = (m, x, y) => m.every((row, dy) => row.every((v, dx) => {
+      if (!v) return true;
+      const bx = x + dx;
+      const by = y + dy;
+      return bx >= 0 && bx < cols && by < rows && (by < 0 || !board[by][bx]);
+    }));
+    for (let i = 0; i < pieces; i++) {
+      const letter = LETTERS2[Math.floor(r() * LETTERS2.length)];
+      let m = SHAPES[letter].matrix;
+      for (let k = Math.floor(r() * 4); k > 0; k--) m = rotateMatrix(m, 1);
+      const x = Math.floor(r() * (cols - m[0].length + 1));
+      let y = -m.length;
+      if (!fits(m, x, y)) continue;
+      while (fits(m, x, y + 1)) y++;
+      m.forEach((row, dy) => row.forEach((v, dx) => {
+        if (v && y + dy >= 0) board[y + dy][x + dx] = letter;
+      }));
+    }
+    return board;
+  }
+  function paintStack(ctx, board, x, cell, haze, hazeColor) {
+    const tmp = layer();
+    board.forEach((row, ry) => row.forEach((letter, rx) => {
+      if (!letter) return;
+      tmp.ctx.drawImage(blockSprite("ulol", SHAPES[letter].color, cell), x + rx * cell, HORIZON4 - (board.length - ry) * cell);
+    }));
+    tmp.ctx.globalCompositeOperation = "source-atop";
+    tmp.ctx.globalAlpha = haze;
+    tmp.ctx.fillStyle = hazeColor;
+    tmp.ctx.fillRect(0, 0, W, H);
+    ctx.drawImage(tmp.canvas, 0, 0);
+  }
+  var ulol_default = {
+    id: "ulol",
+    name: "ulol Night",
+    create() {
+      const base = layer();
+      const b = base.ctx;
+      ditherGradient(b, 0, 0, W, HORIZON4, ["#04040b", "#080819", "#10103a", "#1c1160", "#32177a", "#4f2488"]);
+      glow(b, 38, 30, 28, "#1b5a66", 0.6);
+      disc(b, 38, 30, 12, "#d8fff4");
+      disc(b, 41, 27, 10, "#9af3dc");
+      disc(b, 35, 32, 2, "#7fdcc4");
+      glow(b, 284, 38, 20, "#5a2a7a", 0.6);
+      disc(b, 284, 38, 7, "#f0c8f8");
+      disc(b, 286, 36, 5, "#d99ae8");
+      glow(b, 160, HORIZON4, 70, "#4d2a80", 0.45);
+      paintStack(b, buildStack2(31, 64, 9, 110), 0, 5, 0.74, "#3a1f78");
+      paintStack(b, buildStack2(37, 12, 11, 34), -4, 8, 0.5, "#2a1a68");
+      paintStack(b, buildStack2(41, 12, 11, 34), W - 92, 8, 0.5, "#2a1a68");
+      paintStack(b, buildStack2(53, 8, 8, 17), 2, 10, 0.2, "#1a1050");
+      paintStack(b, buildStack2(59, 8, 8, 17), W - 82, 10, 0.2, "#1a1050");
+      const strip = 48;
+      const mirror = layer(W, strip);
+      mirror.ctx.save();
+      mirror.ctx.translate(0, strip);
+      mirror.ctx.scale(1, -1);
+      mirror.ctx.drawImage(base.canvas, 0, HORIZON4 - strip, W, strip, 0, 0, W, strip);
+      mirror.ctx.restore();
+      ditherGradient(b, 0, HORIZON4, W, H - HORIZON4, ["#0d0a2a", "#080620", "#05040f"]);
+      rect(b, 0, HORIZON4, W, 1, TEAL);
+      const r = rng(7);
+      const stars = Array.from({ length: 80 }, () => ({
+        x: Math.floor(r() * W),
+        y: Math.floor(r() * (HORIZON4 - 40)),
+        p: r() * 6,
+        c: ["#ffffff", TEAL, "#d9b8ff"][Math.floor(r() * 3)]
+      }));
+      const lanterns = Array.from({ length: 9 }, () => {
+        const letter = LETTERS2[Math.floor(r() * LETTERS2.length)];
+        let matrix = SHAPES[letter].matrix;
+        for (let k = Math.floor(r() * 4); k > 0; k--) matrix = rotateMatrix(matrix, 1);
+        return {
+          letter,
+          matrix,
+          cell: r() < 0.5 ? 5 : 6,
+          x: 14 + r() * (W - 60),
+          y: r() * H,
+          speed: 5 + r() * 7,
+          p: r() * 6
+        };
+      });
+      const glints = [{ x: 38, c: "#b6fff0" }, { x: 284, c: "#f0b8ff" }];
+      return {
+        draw(ctx, t) {
+          ctx.drawImage(base.canvas, 0, 0);
+          for (const s of stars) if (Math.sin(t * 1.6 + s.p) > -0.2) px(ctx, s.x, s.y, s.c);
+          for (let i = 0; i < strip; i += 2) {
+            ctx.globalAlpha = 0.5 * (1 - i / strip);
+            const dx = Math.round(Math.sin(t * 1.3 + i * 0.55) * (1 + i * 0.05));
+            ctx.drawImage(mirror.canvas, 0, i, W, 2, dx, HORIZON4 + 1 + i, W, 2);
+          }
+          ctx.globalAlpha = 1;
+          for (const g of glints) {
+            for (let i = 0; i < 9; i++) {
+              const y = HORIZON4 + 3 + i * 4 + Math.round(Math.sin(t * 2 + i + g.x) * 1.2);
+              const half = 6 - Math.floor(i / 2) + Math.round(Math.sin(t * 3 + i * 2) * 1.5);
+              ctx.globalAlpha = 0.65 - i * 0.06;
+              rect(ctx, g.x - half, y, half * 2, 1, g.c);
+            }
+          }
+          ctx.globalAlpha = 1;
+          for (const l of lanterns) {
+            const y = H + 30 - wrap(t * l.speed + l.p * 40, H + 60);
+            const x = l.x + Math.sin(t * 0.4 + l.p) * 5;
+            const fade = Math.min(1, (H - y) / 40, y / 50 + 0.2);
+            if (fade <= 0) continue;
+            const w = l.matrix[0].length * l.cell;
+            ctx.globalAlpha = 0.4 * fade;
+            glow(ctx, Math.round(x + w / 2), Math.round(y + w / 2), 14, SHAPES[l.letter].color, 0.5);
+            ctx.globalAlpha = Math.max(0, fade);
+            const sprite = blockSprite("ulol", SHAPES[l.letter].color, l.cell);
+            l.matrix.forEach((row, ry) => row.forEach((v, rx) => {
+              if (v) ctx.drawImage(sprite, Math.round(x + rx * l.cell), Math.round(y + ry * l.cell));
+            }));
+          }
+          ctx.globalAlpha = 1;
+        }
+      };
+    }
+  };
+
+  // js/scenes/domes.js
+  var GROUND2 = 146;
+  var BRICK = "#9c2f3b";
+  var BRICK_DARK = "#76222f";
+  var BRICK_LIGHT = "#b8454a";
+  var CREAM = "#ecdcc0";
+  var CREAM_DARK = "#c3ae8e";
+  var GOLD = "#f3c94a";
+  var GOLD_DARK = "#b8801f";
+  var OUTLINE = "#2a1226";
+  var WINDOW = "#ffd978";
+  var SNOW = "#eef3ff";
+  function mix(hex, k) {
+    const [r, g, b] = parseColor(hex);
+    const t = k > 0 ? 255 : 0;
+    const f = Math.abs(k);
+    const c = (v) => Math.round(v + (t - v) * f);
+    return `rgb(${c(r)}, ${c(g)}, ${c(b)})`;
+  }
+  function onion(ctx, cx, baseY, r, height, a, b, pattern) {
+    for (let i = 0; i < height; i++) {
+      const u = i / (height - 1);
+      const swell = u < 0.28 ? 0.5 + 0.5 * Math.sin(u / 0.28 * Math.PI / 2) : Math.pow(Math.cos((u - 0.28) / 0.72 * Math.PI / 2), 1.3);
+      const hw = Math.max(i === height - 1 ? 0 : 1, Math.round(r * swell));
+      for (let x = -hw; x <= hw; x++) {
+        const side = hw ? x / hw : 0;
+        let c = pattern(x, i, side, u) ? a : b;
+        if (x === -hw || x === hw) c = OUTLINE;
+        else if (side < -0.4) c = mix(c, 0.25);
+        else if (side > 0.5) c = mix(c, -0.3);
+        px(ctx, cx + x, baseY - i, c);
+      }
+    }
+    const top = baseY - height;
+    rect(ctx, cx - 1, top - 1, 3, 2, GOLD);
+    rect(ctx, cx, top - 6, 1, 6, GOLD);
+    rect(ctx, cx - 2, top - 4, 5, 1, GOLD);
+    px(ctx, cx - 1, top - 1, GOLD_DARK);
+  }
+  var PATTERNS = {
+    stripes: (x, i) => (x + i + 40) % 5 < 3,
+    diamonds: (x, i) => (x + i + 60) % 6 < 3 === (x - i + 60) % 6 < 3,
+    ribs: (x, i, side) => Math.floor((side + 1) * 3) % 2 === 0,
+    spiral: (x, i, side, u) => ((side * 1.6 + u * 4) % 1 + 1) % 1 < 0.5
+  };
+  function drum(ctx, cx, top, h, w, lights) {
+    rect(ctx, cx - w, top, w * 2 + 1, h, CREAM);
+    rect(ctx, cx + w - 1, top, 2, h, CREAM_DARK);
+    rect(ctx, cx - w, top, w * 2 + 1, 1, GOLD);
+    for (let x = cx - w + 2; x < cx + w - 1; x += 4) {
+      rect(ctx, x, top + 2, 1, h - 3, "#3a1c28");
+      lights.push({ x, y: top + 2, w: 1, h: h - 3 });
+    }
+  }
+  function wall(ctx, x, y, w, h) {
+    rect(ctx, x, y, w, h, BRICK);
+    for (let row = y + 3, n = 0; row < y + h; row += 3, n++) {
+      rect(ctx, x, row, w, 1, BRICK_DARK);
+      for (let bx = x + (n % 2 ? 2 : 5); bx < x + w; bx += 6) px(ctx, bx, row - 1, BRICK_DARK);
+    }
+    rect(ctx, x, y, 1, h, BRICK_LIGHT);
+    rect(ctx, x + w - 1, y, 1, h, BRICK_DARK);
+    rect(ctx, x - 1, y, w + 2, 3, CREAM);
+    rect(ctx, x - 1, y + 3, w + 2, 1, CREAM_DARK);
+    for (let ax = x + 1; ax + 4 <= x + w; ax += 5) {
+      rect(ctx, ax, y - 2, 4, 2, CREAM);
+      rect(ctx, ax + 1, y - 3, 2, 1, CREAM);
+    }
+  }
+  function windowArch(ctx, x, y, color) {
+    rect(ctx, x - 1, y, 5, 7, "#3a1420");
+    rect(ctx, x, y + 2, 3, 4, color);
+    px(ctx, x + 1, y + 1, color);
+  }
+  function tent(ctx, cx, baseY, w, h) {
+    for (let i = 0; i < h; i++) {
+      const k = i / h;
+      const hw = Math.max(1, Math.round(w / 2 * Math.pow(1 - k, 1.15)));
+      for (let x = -hw; x <= hw; x++) {
+        let c = BRICK;
+        const rib = Math.abs(x) <= 0 || Math.abs(x) === Math.round(hw * 0.55);
+        if (rib) c = CREAM;
+        if (x === -hw) c = BRICK_LIGHT;
+        else if (x === hw) c = BRICK_DARK;
+        else if (x > hw * 0.4 && !rib) c = BRICK_DARK;
+        if (i % 11 === 10) c = CREAM_DARK;
+        px(ctx, cx + x, baseY - i, c);
+      }
+    }
+  }
+  function fir(ctx, x, baseY, h, color, snow) {
+    for (let i = 0; i < h; i++) {
+      const hw = Math.round((1 - i / h) * (h / 3.2)) + (i % 5 === 0 ? 1 : 0);
+      rect(ctx, x - hw, baseY - i, hw * 2 + 1, 1, color);
+      if (i % 5 === 3 && hw > 1) {
+        rect(ctx, x - hw, baseY - i, Math.max(1, Math.floor(hw / 2)), 1, snow);
+      }
+    }
+    rect(ctx, x, baseY, 1, 3, "#3a2418");
+  }
+  function lamp(ctx, x) {
+    rect(ctx, x, GROUND2 - 22, 1, 22, "#241a30");
+    rect(ctx, x - 1, GROUND2 - 25, 3, 3, "#ffe9a8");
+    rect(ctx, x - 2, GROUND2 - 26, 5, 1, "#241a30");
+  }
+  var domes_default = {
+    id: "domes",
+    name: "Snow Domes",
+    create() {
+      const sky = layer();
+      const s = sky.ctx;
+      ditherGradient(s, 0, 0, W, GROUND2, ["#080a24", "#12154a", "#262a72", "#4b3a88", "#86498a", "#c46472", "#eb9a6c"]);
+      glow(s, 252, 40, 24, "#3b3f86", 0.55);
+      disc(s, 252, 40, 8, "#f4f6ff");
+      disc(s, 255, 38, 6, "#dfe4fa");
+      glow(s, 160, GROUND2 - 4, 90, "#d6806c", 0.4);
+      const land = layer();
+      const l = land.ctx;
+      const lights = [];
+      rect(l, 0, GROUND2 - 17, W, 17, "#4a3478");
+      for (let cx = 0; cx < W; cx += 6) rect(l, cx, GROUND2 - 20, 3, 3, "#4a3478");
+      for (const tx of [118, 150, 190, 214]) {
+        rect(l, tx - 4, GROUND2 - 38, 9, 38, "#3e2b6c");
+        for (let i = 0; i < 10; i++) rect(l, tx - 5 + Math.floor(i / 2), GROUND2 - 39 - i, 11 - Math.floor(i / 2) * 2, 1, "#523a86");
+      }
+      wall(l, 4, 120, 96, GROUND2 - 120);
+      wall(l, 20, 106, 64, 14);
+      for (const wx of [14, 28, 42, 62, 76, 90]) {
+        windowArch(l, wx, 129, WINDOW);
+        lights.push({ x: wx, y: 131, w: 3, h: 4 });
+      }
+      for (const wx of [30, 40, 60, 70]) {
+        windowArch(l, wx - 1, 111, WINDOW);
+        lights.push({ x: wx - 1, y: 113, w: 3, h: 4 });
+      }
+      drum(l, 30, 99, 7, 5, lights);
+      onion(l, 30, 99, 7, 17, "#3a6fd0", "#f2f2ff", PATTERNS.spiral);
+      drum(l, 74, 99, 7, 5, lights);
+      onion(l, 74, 99, 7, 17, "#e8892e", "#ffd84a", PATTERNS.ribs);
+      tent(l, 52, 106, 26, 58);
+      rect(l, 47, 106, 11, 2, CREAM);
+      onion(l, 52, 47, 4, 10, GOLD, GOLD_DARK, PATTERNS.ribs);
+      drum(l, 14, 114, 6, 5, lights);
+      onion(l, 14, 114, 8, 19, "#2f9e5a", "#e8f2d0", PATTERNS.stripes);
+      drum(l, 88, 114, 6, 5, lights);
+      onion(l, 88, 114, 8, 19, "#d6453d", "#f3c94a", PATTERNS.diamonds);
+      wall(l, 236, 120, 32, GROUND2 - 120);
+      for (const wx of [242, 252, 262]) {
+        windowArch(l, wx, 129, WINDOW);
+        lights.push({ x: wx, y: 131, w: 3, h: 4 });
+      }
+      drum(l, 245, 114, 6, 4, lights);
+      onion(l, 245, 114, 6, 14, "#cc3b44", "#f4f0e0", PATTERNS.stripes);
+      drum(l, 259, 114, 6, 4, lights);
+      onion(l, 259, 114, 6, 14, "#2c8f6a", "#f4f0e0", PATTERNS.stripes);
+      wall(l, 276, 74, 20, GROUND2 - 74);
+      for (let wy = 84; wy < 130; wy += 14) {
+        windowArch(l, 285, wy, WINDOW);
+        lights.push({ x: 285, y: wy + 2, w: 3, h: 4 });
+      }
+      for (const wx of [279, 291]) {
+        rect(l, wx - 1, 74, 4, 8, "#2b1424");
+      }
+      drum(l, 286, 67, 7, 6, lights);
+      onion(l, 286, 67, 8, 19, "#2c5fb8", "#f3c94a", PATTERNS.ribs);
+      for (const [x, y, w] of [[3, 117, 98], [19, 103, 66], [235, 117, 34], [275, 71, 22]]) {
+        for (let i = 0; i < w; i++) if (i * 7 % 5 !== 0) px(l, x + i, y, SNOW);
+      }
+      const tr = rng(21);
+      for (const tx of [108, 226, 272, 304, 312]) fir(l, tx, GROUND2 + 2, 18 + Math.floor(tr() * 6), "#173a4a", "#dfeaff");
+      fir(l, 106, GROUND2 + 3, 12, "#1d4756", "#dfeaff");
+      lamp(l, 100);
+      lamp(l, 232);
+      ditherGradient(l, 0, GROUND2, W, H - GROUND2, ["#dfe6fa", "#b9c5e8", "#8f9cd2", "#6b76b4"]);
+      for (let x = 0; x < W; x++) {
+        const y = GROUND2 + Math.round(Math.sin(x * 0.09) * 1.5 + Math.sin(x * 0.31) * 0.7);
+        rect(l, x, y - 1, 1, 2, "#f4f7ff");
+      }
+      for (const [sx, sw] of [[4, 96], [236, 32], [276, 20]]) rect(l, sx, GROUND2 + 1, sw, 2, "#aab6e0");
+      const r = rng(8);
+      const stars = Array.from({ length: 70 }, () => ({ x: Math.floor(r() * W), y: Math.floor(r() * 80), p: r() * 6 }));
+      const sparkles = Array.from({ length: 36 }, () => ({
+        x: Math.floor(r() * W),
+        y: GROUND2 + 3 + Math.floor(r() * (H - GROUND2 - 4)),
+        p: r() * 6
+      }));
+      const flakes = Array.from({ length: 90 }, (_, i) => ({
+        x: r() * W,
+        y: r() * H,
+        depth: i % 3,
+        p: r() * 6
+      }));
+      return {
+        draw(ctx, t) {
+          ctx.drawImage(sky.canvas, 0, 0);
+          for (const st of stars) if (Math.sin(t * 1.4 + st.p) > -0.3) px(ctx, st.x, st.y, "#e4e8ff");
+          ctx.drawImage(land.canvas, 0, 0);
+          for (const w of lights) {
+            if (Math.sin(t * 0.6 + w.x * 1.7 + w.y) > 0.985) rect(ctx, w.x, w.y, w.w, w.h, "#3a1420");
+          }
+          for (const sp of sparkles) if (Math.sin(t * 2.2 + sp.p) > 0.8) px(ctx, sp.x, sp.y, "#ffffff");
+          glow(ctx, 100, GROUND2 - 24, 12, "#ffd27a", 0.35 + Math.sin(t * 5) * 0.03);
+          glow(ctx, 232, GROUND2 - 24, 12, "#ffd27a", 0.35 + Math.sin(t * 5 + 2) * 0.03);
+          for (const f of flakes) {
+            const speed = 9 + f.depth * 9;
+            const y = wrap(f.y + t * speed, H + 4) - 2;
+            const x = wrap(f.x + Math.sin(t * 0.8 + f.p) * 6 + t * (2 + f.depth), W);
+            ctx.globalAlpha = 0.45 + f.depth * 0.25;
+            if (f.depth === 2) rect(ctx, x, y, 2, 2, "#ffffff");
+            else px(ctx, x, y, "#ffffff");
+          }
+          ctx.globalAlpha = 1;
+        }
+      };
+    }
+  };
+
   // js/background.js
-  var SCENES = { bamboo: bamboo_default, wheat: wheat_default, village: village_default, castle: castle_default, ocean: ocean_default, neon: neon_default, city: city_default, storm: storm_default };
+  var SCENES = { bamboo: bamboo_default, wheat: wheat_default, village: village_default, castle: castle_default, ocean: ocean_default, neon: neon_default, city: city_default, storm: storm_default, blocks: blocks_default, ulol: ulol_default, domes: domes_default };
   var CASUAL_SCENES = ["bamboo", "wheat", "village", "castle", "ocean", "neon"];
+  var CLASSIC_SCENES = ["blocks", "ulol", "domes"];
   var MODE_SCENES = { sprint: "city", blitz: "storm" };
   var FADE_S = 1.6;
   var FRAME_MS2 = 1e3 / 30;
@@ -1345,6 +2082,7 @@
     let current = null;
     let previous = null;
     let fadeStart = 0;
+    let level = 0;
     let menuCycle = false;
     let menuIndex = 0;
     let menuSince = 0;
@@ -1365,10 +2103,15 @@
       current = id;
       fadeStart = (performance.now() - start) / 1e3;
     }
-    function casualScene(level) {
+    function casualScene(level2) {
       const pick = settings2.casualScene || "cycle";
       if (pick !== "cycle" && SCENES[pick]) return pick;
-      return CASUAL_SCENES[(Math.max(1, level) - 1) % CASUAL_SCENES.length];
+      return CASUAL_SCENES[(Math.max(1, level2) - 1) % CASUAL_SCENES.length];
+    }
+    function classicScene(level2) {
+      const pick = settings2.classicScene || "cycle";
+      if (pick !== "cycle" && SCENES[pick]) return pick;
+      return CLASSIC_SCENES[Math.max(0, level2) % CLASSIC_SCENES.length];
     }
     function frame(now) {
       requestAnimationFrame(frame);
@@ -1384,10 +2127,10 @@
         menuIndex = (menuIndex + 1) % CASUAL_SCENES.length;
         show(CASUAL_SCENES[menuIndex]);
       }
-      instance(current).draw(ctx, t);
+      instance(current).draw(ctx, t, { level });
       const k = (t - fadeStart) / FADE_S;
       if (previous && k < 1) {
-        instance(previous).draw(fadeCtx, t);
+        instance(previous).draw(fadeCtx, t, { level });
         ctx.globalAlpha = 1 - k;
         ctx.drawImage(fadeCanvas, 0, 0);
         ctx.globalAlpha = 1;
@@ -1405,16 +2148,45 @@
         menuSince = (performance.now() - start) / 1e3;
         show(CASUAL_SCENES[menuIndex]);
       },
-      /** A game started: pick the scene for its mode. */
-      showMode(modeId, level = 1) {
+      /** A game started: pick the scene for its mode (and the start level, in Classic). */
+      showMode(modeId, startLevel = 1) {
         menuCycle = false;
-        show(MODE_SCENES[modeId] || casualScene(level));
+        level = startLevel;
+        show(modeId === "og" ? classicScene(level) : MODE_SCENES[modeId] || casualScene(level));
       },
-      /** Casual level changed: move to the next scene in the cycle. */
-      onLevel(modeId, level) {
-        if (!MODE_SCENES[modeId]) show(casualScene(level));
+      /** Level changed in Casual or Classic: move to the next scene in the cycle. */
+      onLevel(modeId, newLevel) {
+        level = newLevel;
+        if (modeId === "og") show(classicScene(level));
+        else if (!MODE_SCENES[modeId]) show(casualScene(level));
       }
     };
+  }
+
+  // js/chip.js
+  var cache3 = /* @__PURE__ */ new WeakMap();
+  function midiToHz(midi) {
+    return 440 * Math.pow(2, (midi - 69) / 12);
+  }
+  function pulseWave(ctx, duty) {
+    let byDuty = cache3.get(ctx);
+    if (!byDuty) {
+      byDuty = /* @__PURE__ */ new Map();
+      cache3.set(ctx, byDuty);
+    }
+    let wave = byDuty.get(duty);
+    if (!wave) {
+      const harmonics = 48;
+      const real = new Float32Array(harmonics + 1);
+      const imag = new Float32Array(harmonics + 1);
+      for (let n = 1; n <= harmonics; n++) {
+        real[n] = Math.sin(2 * Math.PI * n * duty) / (n * Math.PI);
+        imag[n] = (1 - Math.cos(2 * Math.PI * n * duty)) / (n * Math.PI);
+      }
+      wave = ctx.createPeriodicWave(real, imag);
+      byDuty.set(duty, wave);
+    }
+    return wave;
   }
 
   // js/sound.js
@@ -1422,6 +2194,7 @@
     let ctx = null;
     let masterGain = null;
     let noiseBuffer = null;
+    let packOverride = null;
     function init() {
       if (ctx) return;
       const AudioContext = window.AudioContext || window.webkitAudioContext;
@@ -1505,9 +2278,105 @@
     function thump(t, from, to, len, peak) {
       blip(from, "sine", t, len, peak, to);
     }
+    const CHIP_LIFT = 2.4;
+    function chip(midi, t, len, peakIn, duty = 0.5, bendTo = null) {
+      const peak = peakIn * CHIP_LIFT;
+      const osc = ctx.createOscillator();
+      osc.setPeriodicWave(pulseWave(ctx, duty));
+      const from = midiToHz(midi);
+      osc.frequency.setValueAtTime(from, t);
+      if (bendTo !== null) {
+        const steps = 6;
+        for (let i = 1; i <= steps; i++) {
+          osc.frequency.setValueAtTime(from + (midiToHz(bendTo) - from) * (i / steps), t + len * i / steps);
+        }
+      }
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(peak, t);
+      gain.gain.setValueAtTime(peak * 0.65, t + len * 0.5);
+      gain.gain.setValueAtTime(peak * 0.35, t + len * 0.8);
+      gain.gain.setValueAtTime(0, t + len);
+      osc.connect(gain);
+      gain.connect(masterGain);
+      osc.start(t);
+      osc.stop(t + len + 0.01);
+      osc.onended = () => gain.disconnect();
+    }
+    function chipTri(midi, t, len, peak, bendTo = midi) {
+      const { osc } = playTone(midiToHz(midi), "triangle", t, len + 0.02, (g, time) => {
+        g.setValueAtTime(peak, time);
+        g.exponentialRampToValueAtTime(1e-3, time + len);
+      });
+      osc.frequency.exponentialRampToValueAtTime(midiToHz(bendTo), t + len);
+    }
+    function chipNoise(t, len, peak, type, from, to = from) {
+      playNoise(t, len + 0.01, (g, time) => {
+        g.setValueAtTime(peak, time);
+        g.setValueAtTime(peak * 0.55, time + len * 0.4);
+        g.setValueAtTime(peak * 0.25, time + len * 0.75);
+        g.setValueAtTime(0, time + len);
+      }, (f, time) => {
+        f.type = type;
+        f.frequency.setValueAtTime(from, time);
+        f.frequency.linearRampToValueAtTime(to, time + len);
+      });
+    }
+    function chipRun(midis, t, gap, len, peak, duty) {
+      midis.forEach((m, i) => chip(m, t + i * gap, len, peak, duty));
+    }
     const semitone = (base, n) => base * Math.pow(2, n / 12);
     const MAJOR = [0, 2, 4, 5, 7, 9, 11, 12, 14, 16, 17, 19, 21, 23, 24];
     const PACKS = {
+      nes: {
+        move: (t) => chip(57, t, 0.03, 0.12, 0.25),
+        rotate: (t) => chip(72, t, 0.035, 0.13, 0.25, 76),
+        softdrop: (t) => chip(52, t, 0.02, 0.09, 0.5),
+        harddrop: (t) => {
+          chipTri(50, t, 0.12, 0.7, 30);
+          chipNoise(t, 0.06, 0.2, "lowpass", 1800);
+        },
+        lock: (t) => {
+          chipTri(46, t, 0.09, 0.7, 36);
+          chipNoise(t, 0.03, 0.12, "lowpass", 1200);
+        },
+        hold: (t) => chipRun([72, 79], t, 0.04, 0.04, 0.1, 0.25),
+        clear1: (t) => {
+          chipNoise(t, 0.12, 0.1, "bandpass", 3e3, 700);
+          chipRun([72, 76, 79], t, 0.05, 0.06, 0.12, 0.5);
+        },
+        clear2: (t) => {
+          chipNoise(t, 0.14, 0.1, "bandpass", 3e3, 700);
+          chipRun([72, 76, 79, 84], t, 0.05, 0.06, 0.12, 0.5);
+        },
+        clear3: (t) => {
+          chipNoise(t, 0.16, 0.1, "bandpass", 3e3, 700);
+          chipRun([72, 76, 79, 84, 88], t, 0.05, 0.06, 0.12, 0.5);
+        },
+        clear4: (t) => {
+          chipNoise(t, 0.3, 0.14, "bandpass", 4e3, 500);
+          chipRun([60, 64, 67, 72, 76, 79, 84, 88, 91, 96], t, 0.045, 0.06, 0.12, 0.25);
+          chip(96, t + 0.47, 0.35, 0.12, 0.25);
+          chip(84, t + 0.47, 0.35, 0.1, 0.5);
+          chipTri(48, t + 0.47, 0.35, 0.35);
+        },
+        levelUp: (t) => chipRun([76, 79, 84], t, 0.07, 0.07, 0.12, 0.5),
+        gameOver: (t) => {
+          chipRun([69, 67, 65, 64, 62, 60], t, 0.12, 0.11, 0.13, 0.5);
+          chip(57, t + 0.72, 0.5, 0.13, 0.5, 45);
+          chipTri(45, t + 0.72, 0.5, 0.35, 33);
+        },
+        tspin: (t) => chip(60, t, 0.14, 0.12, 0.25, 84),
+        tspinClear: (t) => chipRun([67, 72, 76, 79, 84], t, 0.05, 0.07, 0.12, 0.25),
+        perfectClear: (t) => {
+          chipRun([72, 76, 79, 84, 79, 84, 88, 91, 96], t, 0.06, 0.08, 0.12, 0.25);
+          chip(96, t + 0.54, 0.4, 0.12, 0.25);
+        },
+        combo: (t, n) => chip(72 + Math.min(n || 1, 16), t, 0.05, 0.1, 0.5),
+        menuMove: (t) => chip(81, t, 0.02, 0.07, 0.5),
+        menuSelect: (t) => chipRun([76, 88], t, 0.05, 0.06, 0.1, 0.5),
+        countdownTick: (t) => chip(83, t, 0.03, 0.08, 0.5),
+        countdownGo: (t) => chipRun([76, 81, 88], t, 0.06, 0.07, 0.1, 0.5)
+      },
       arcade: {
         move: (t) => blip(1200, "square", t, 0.012, 0.08),
         rotate: (t) => blip(900, "square", t, 0.022, 0.08, 1300),
@@ -1596,7 +2465,7 @@
       const vol = updateVolume();
       if (vol === 0) return;
       const t = ctx.currentTime;
-      const pack = PACKS[settingsRef.soundPack];
+      const pack = PACKS[packOverride || settingsRef.soundPack];
       if (pack && pack[eventName]) {
         pack[eventName](t, comboCount);
         return;
@@ -1916,8 +2785,12 @@
         noiseBuffer = null;
       }
     }
+    function setPack(name) {
+      packOverride = name && PACKS[name] ? name : null;
+    }
     return {
       play,
+      setPack,
       dispose
     };
   }
@@ -2411,7 +3284,7 @@
   function melodyEvents(notes, voice, vel, shift = 0) {
     return notes.map(([n, s, l]) => ({ s, l, v: voice, n: n + shift, g: vel }));
   }
-  function drum(voice, steps, vel) {
+  function drum2(voice, steps, vel) {
     return steps.map((s) => ({ s, l: 1, v: voice, n: null, g: vel }));
   }
   function transposeBar(events, semitones) {
@@ -2431,9 +3304,9 @@
       if (seg.len === 16) events.push({ s: 8, l: 8, v: "softbass", n: seg.ch.r + 7, g: 0.3 });
     }
     if (withDrums) {
-      events.push(...drum("lofikick", [0, 10], 0.6));
-      events.push(...drum("rim", [8], 0.25));
-      events.push(...drum("brush", [2, 6, 10, 14], 0.12));
+      events.push(...drum2("lofikick", [0, 10], 0.6));
+      events.push(...drum2("rim", [8], 0.25));
+      events.push(...drum2("brush", [2, 6, 10, 14], 0.12));
     }
     return events;
   }
@@ -2484,10 +3357,10 @@
       for (const n of seg.ch.c) events.push({ s: seg.at, l: seg.len, v: "pad", n, g: 0.06 });
     }
     if (drums) {
-      events.push(...drum("kick", [0, 4, 8, 12], 0.8));
-      events.push(...drum("snare", fill ? [4, 12, 13, 14, 15] : [4, 12], 0.55));
-      events.push(...drum("hat", [2, 6, 10, 14], 0.3));
-      events.push(...drum("hat", [1, 3, 5, 7, 9, 11, 13, 15], 0.1));
+      events.push(...drum2("kick", [0, 4, 8, 12], 0.8));
+      events.push(...drum2("snare", fill ? [4, 12, 13, 14, 15] : [4, 12], 0.55));
+      events.push(...drum2("hat", [2, 6, 10, 14], 0.3));
+      events.push(...drum2("hat", [1, 3, 5, 7, 9, 11, 13, 15], 0.1));
     }
     return events;
   }
@@ -2529,10 +3402,10 @@
       }
       for (const n of seg.ch.c) events.push({ s: seg.at, l: seg.len, v: "pad", n: n + 12, g: 0.05 });
     }
-    events.push(...drum("kick", [0, 4, 8, 10, 12], 0.85));
-    events.push(...drum("snare", fill ? [4, 10, 11, 12, 13, 14, 15] : [4, 12], 0.6));
-    events.push(...drum("hat", [...Array(16).keys()], 0.14));
-    if (crash) events.push(...drum("crash", [0], 0.35));
+    events.push(...drum2("kick", [0, 4, 8, 10, 12], 0.85));
+    events.push(...drum2("snare", fill ? [4, 10, 11, 12, 13, 14, 15] : [4, 12], 0.6));
+    events.push(...drum2("hat", [...Array(16).keys()], 0.14));
+    if (crash) events.push(...drum2("crash", [0], 0.35));
     return events;
   }
   function buildIntense() {
@@ -2566,10 +3439,60 @@
     }
     return bars.map((b) => transposeBar(b, 7));
   }
+  var CHIP_A = ["Am", "Am", "E", "Am", "Dm", "C", "E", "Am"];
+  var CHIP_B = ["Am", "G", "F", "E", "Am", "G", "Am", "E"];
+  function chipBacking(spec, { arp = false, drums = "none", fill = false } = {}) {
+    const events = [];
+    for (const seg of harmony(spec)) {
+      for (let s = 0; s < seg.len; s += 2) {
+        events.push({ s: seg.at + s, l: 2, v: "chipBass", n: seg.ch.r + (s % 4 === 2 ? 12 : 0), g: 0.52 });
+      }
+      const tones = seg.ch.c;
+      if (arp) {
+        for (let s = 0; s < seg.len; s++) {
+          events.push({ s: seg.at + s, l: 1, v: "chipHarm", n: tones[s % tones.length] + 12, g: 0.09 });
+        }
+      } else {
+        for (let s = 2; s < seg.len; s += 4) {
+          for (const n of tones.slice(1, 3)) events.push({ s: seg.at + s, l: 1, v: "chipHarm", n: n + 12, g: 0.09 });
+        }
+      }
+    }
+    if (drums !== "none") {
+      events.push(...drum2("chipKick", drums === "full" ? [0, 4, 8, 12] : [0, 8], 0.55));
+      events.push(...drum2("chipSnare", fill ? [4, 12, 13, 14, 15] : [4, 12], 0.34));
+      events.push(...drum2("chipHat", drums === "full" ? [2, 6, 10, 14] : [], 0.18));
+    }
+    return events;
+  }
+  function buildChip() {
+    const bars = [];
+    for (let i = 0; i < 8; i++) {
+      bars.push([...chipBacking(CHIP_A[i]), ...melodyEvents(MELODY_A[i], "chipLead", 0.35)]);
+    }
+    for (let i = 0; i < 8; i++) {
+      const harm = MELODY_A[i].map(([n, s, l]) => [thirdBelow(n), s, l]);
+      bars.push([
+        ...chipBacking(CHIP_A[i], { drums: "beat", fill: i === 7 }).filter((e) => e.v !== "chipHarm"),
+        ...melodyEvents(MELODY_A[i], "chipLead", 0.35),
+        ...melodyEvents(harm, "chipHarm", 0.13)
+      ]);
+    }
+    for (let i = 0; i < 8; i++) {
+      bars.push([...chipBacking(CHIP_B[i], { arp: true, drums: "beat", fill: i === 7 }), ...melodyEvents(MELODY_B[i], "chipLead", 0.35)]);
+    }
+    for (let i = 0; i < 8; i++) {
+      const mel = melodyEvents(MELODY_A[i], "chipLead", 0.3, 12);
+      if (i === 3 || i === 7) mel.push(...melodyEvents(FILL, "chipLead", 0.23, 12));
+      bars.push([...chipBacking(CHIP_A[i], { drums: "full", fill: i === 7 }), ...mel]);
+    }
+    return bars;
+  }
   var TRACKS = {
     calm: { bpm: 88, swing: 0.35, delay: 0.3, loopStart: 2, bars: buildCalm() },
     competitive: { bpm: 150, swing: 0, delay: 0.12, loopStart: 2, bars: buildCompetitive() },
-    intense: { bpm: 176, swing: 0, delay: 0.08, loopStart: 0, bars: buildIntense() }
+    intense: { bpm: 176, swing: 0, delay: 0.08, loopStart: 0, bars: buildIntense() },
+    chip: { bpm: 150, swing: 0, delay: 0, loopStart: 0, bars: buildChip() }
   };
   var TRACK_NAMES = Object.keys(TRACKS);
 
@@ -2629,6 +3552,17 @@
       src.start(t);
       src.stop(t + dur + 0.02);
       done(src);
+    }
+    function pulseNote(t, freq, dur, vel, bus, duty) {
+      const { g, done } = voiceGain(bus.dry);
+      const len = env(g.gain, t, vel, 2e-3, Math.max(0, dur - 0.025), 0.03);
+      const o = ctx.createOscillator();
+      o.setPeriodicWave(pulseWave(ctx, duty));
+      o.frequency.setValueAtTime(freq, t);
+      o.connect(g);
+      o.start(t);
+      o.stop(t + len);
+      done(o);
     }
     return {
       /** FM electric piano: sine carrier, sine modulator at 1:1 with a decaying index. */
@@ -2758,6 +3692,35 @@
       },
       crash(t, _f, _d, vel, bus) {
         noiseBurst(t, 1.2, vel, bus.dry, "highpass", 4e3);
+      },
+      // --- 8-bit voices (the chip track) ---
+      /** Lead: 50 percent pulse. */
+      chipLead(t, freq, dur, vel, bus) {
+        pulseNote(t, freq, dur, vel, bus, 0.5);
+      },
+      /** Second pulse channel: 25 percent duty, thinner, for harmony and stabs. */
+      chipHarm(t, freq, dur, vel, bus) {
+        pulseNote(t, freq, dur, vel, bus, 0.25);
+      },
+      /** Triangle bass. */
+      chipBass(t, freq, dur, vel, bus) {
+        const { g, done } = voiceGain(bus.dry);
+        const len = env(g.gain, t, vel, 2e-3, Math.max(0, dur - 0.03), 0.03);
+        done(osc("triangle", freq, t, t + len, g));
+      },
+      /** Triangle drum: a quick pitch drop. */
+      chipKick(t, _f, _d, vel, bus) {
+        const { g, done } = voiceGain(bus.dry);
+        env(g.gain, t, vel, 1e-3, 0.03, 0.08);
+        const o = osc("triangle", 150, t, t + 0.15, g);
+        o.frequency.exponentialRampToValueAtTime(40, t + 0.1);
+        done(o);
+      },
+      chipSnare(t, _f, _d, vel, bus) {
+        noiseBurst(t, 0.09, vel, bus.dry, "highpass", 1500);
+      },
+      chipHat(t, _f, _d, vel, bus) {
+        noiseBurst(t, 0.03, vel, bus.dry, "highpass", 8e3);
       }
     };
   }
@@ -3040,10 +4003,13 @@
   var MODE_SPRINT = "sprint";
   var MODE_BLITZ = "blitz";
   var MODE_CLASSIC = "classic";
+  var MODE_OG = "og";
   var BLITZ_MS = 12e4;
   var GAME_STYLES = {
     modern: { name: "MODERN", lineClearDelay: 0, bigHitDelay: 0, entryDelay: 0 },
-    battle: { name: "BATTLE", lineClearDelay: 500, bigHitDelay: 1e3, entryDelay: 117 }
+    battle: { name: "BATTLE", lineClearDelay: 500, bigHitDelay: 1e3, entryDelay: 117 },
+    // Classic mode always plays this one: a 20 frame clear animation, then ~12 frames of entry delay.
+    classic: { name: "CLASSIC", lineClearDelay: Math.round(20 * NES_FRAME_MS), bigHitDelay: Math.round(20 * NES_FRAME_MS), entryDelay: Math.round(12 * NES_FRAME_MS) }
   };
   var BIG_HIT_LINES = 4;
   var MODE_INFO = {
@@ -3067,16 +4033,63 @@
       description: "Relaxed endless play. Gravity rises and the scenery changes as you level up.",
       track: "calm",
       icon: "\u221E"
+    },
+    [MODE_OG]: {
+      name: "CLASSIC",
+      subtitle: "OG RULES",
+      description: "The original rules: next piece only, no hold, no wall kicks. Points for lines, nothing for T-spins.",
+      track: "chip",
+      icon: "\u25A3"
     }
   };
+  var MODERN_RULES = Object.freeze({
+    look: "modern",
+    hold: true,
+    ghost: true,
+    hardDrop: true,
+    rotation: "srs",
+    spawn: "above",
+    lock: "delay",
+    randomizer: "bag",
+    scoring: "modern",
+    attack: true,
+    effects: true,
+    danger: true,
+    finesse: true,
+    style: null,
+    soundPack: null,
+    previewCount: null
+  });
+  var CLASSIC_RULES = Object.freeze({
+    look: "classic",
+    hold: false,
+    ghost: false,
+    hardDrop: false,
+    rotation: "classic",
+    spawn: "inside",
+    lock: "gravity",
+    randomizer: "classic",
+    scoring: "classic",
+    attack: false,
+    effects: false,
+    danger: false,
+    finesse: false,
+    style: "classic",
+    soundPack: "nes",
+    previewCount: 1
+  });
+  function getRules(modeId) {
+    return modeId === MODE_OG ? CLASSIC_RULES : MODERN_RULES;
+  }
   function getGravityInterval(level) {
     return Math.max(50, 1e3 - (level - 1) * 90);
   }
-  function createModeState(modeId) {
+  function createModeState(modeId, options = {}) {
+    const startLevel = modeId === MODE_OG ? Math.max(0, Math.floor(options.startLevel ?? 0)) : 1;
     const stats = {
       linesCleared: 0,
       score: 0,
-      level: 1,
+      level: startLevel,
       piecesPlaced: 0,
       tSpins: 0,
       tetrises: 0,
@@ -3098,6 +4111,7 @@
         timer = createCountdown(BLITZ_MS);
         break;
       case MODE_CLASSIC:
+      case MODE_OG:
         timer = createStopwatch();
         break;
     }
@@ -3121,7 +4135,7 @@
       reset() {
         stats.linesCleared = 0;
         stats.score = 0;
-        stats.level = 1;
+        stats.level = startLevel;
         stats.piecesPlaced = 0;
         stats.tSpins = 0;
         stats.tetrises = 0;
@@ -3146,6 +4160,8 @@
         stats.linesCleared += count;
         if (modeId === MODE_CLASSIC || modeId === MODE_BLITZ) {
           stats.level = Math.floor(stats.linesCleared / 10) + 1;
+        } else if (modeId === MODE_OG) {
+          stats.level = classicLevel(stats.linesCleared, startLevel);
         }
         if (modeId === MODE_SPRINT && stats.linesCleared >= goalLines) {
           completed = true;
@@ -3200,7 +4216,13 @@
         if (modeId === MODE_SPRINT) {
           return 1e3;
         }
+        if (modeId === MODE_OG) return classicGravityMs(stats.level);
         return getGravityInterval(stats.level);
+      },
+      /** Fraction (0 to 1) of the way to the next level, for the progress meter */
+      getLevelProgress() {
+        if (modeId === MODE_OG) return classicLevelProgress(stats.linesCleared, startLevel);
+        return stats.linesCleared % 10 / 10;
       },
       /** Get the formatted timer display */
       getTimerDisplay() {
@@ -3216,6 +4238,8 @@
             return "SCORE";
           case MODE_CLASSIC:
             return "SCORE";
+          case MODE_OG:
+            return "SCORE";
           default:
             return "SCORE";
         }
@@ -3228,6 +4252,8 @@
           case MODE_BLITZ:
             return stats.score;
           case MODE_CLASSIC:
+            return stats.score;
+          case MODE_OG:
             return stats.score;
           default:
             return stats.score;
@@ -3264,6 +4290,7 @@
         r.finalTimePrecise = timer && timer.formatPrecise ? timer.formatPrecise() : r.finalTime;
         const minutes = this.getElapsedMs() / 6e4;
         r.apm = minutes > 0 ? stats.linesSent / minutes : 0;
+        r.tetrisRate = stats.linesCleared > 0 ? stats.tetrises * 4 / stats.linesCleared * 100 : 0;
         r.completed = completed;
         r.gameOver = gameOver;
         return r;
@@ -3272,6 +4299,19 @@
   }
 
   // js/menu.js
+  function createClassicIcon() {
+    const size = 14;
+    const canvas = document.createElement("canvas");
+    canvas.width = size * 3;
+    canvas.height = size * 2;
+    canvas.className = "mode-icon-pixel";
+    const ctx = canvas.getContext("2d");
+    const palette = nesPalette(0);
+    [["light", 0, 0], ["dark", 1, 0], ["ring", 2, 0], ["light", 1, 1]].forEach(([kind, col, row]) => {
+      paintNesBlock(ctx, col * size, row * size, size, kind, palette);
+    });
+    return canvas;
+  }
   function createMenuSystem(container) {
     let currentScreen = null;
     let onModeSelectCallback = null;
@@ -3298,7 +4338,7 @@
     screens.main = mainMenu;
     container.appendChild(mainMenu);
     const modeSelect = createElement("div", "menu-screen menu-mode-select");
-    const modesHtml = [MODE_SPRINT, MODE_BLITZ, MODE_CLASSIC].map((id) => {
+    const modesHtml = [MODE_SPRINT, MODE_BLITZ, MODE_CLASSIC, MODE_OG].map((id) => {
       const info = MODE_INFO[id];
       return `
             <button class="mode-card" data-mode="${id}">
@@ -3318,6 +4358,7 @@
             <button class="menu-btn menu-btn-back" data-action="back">BACK</button>
         </div>
     `;
+    modeSelect.querySelector(`[data-mode="${MODE_OG}"] .mode-icon`).replaceChildren(createClassicIcon());
     screens.modeSelect = modeSelect;
     container.appendChild(modeSelect);
     const pauseOverlay = createElement("div", "menu-screen menu-pause");
@@ -3420,32 +4461,42 @@
         titleEl.className = "results-title results-gameover";
       }
       const stats = [];
-      if (results.modeId === "sprint") {
-        stats.push({ label: "TIME", value: results.finalTimePrecise || results.finalTime, highlight: true });
-      } else {
+      if (results.modeId === MODE_OG) {
         stats.push({ label: "SCORE", value: results.score.toLocaleString(), highlight: true });
-      }
-      stats.push({ label: "LINES", value: results.linesCleared });
-      stats.push({ label: "LEVEL", value: results.level });
-      stats.push({ label: "PIECES", value: results.piecesPlaced });
-      if (results.tSpins > 0) {
-        stats.push({ label: "T-SPINS", value: results.tSpins });
-      }
-      if (results.tetrises > 0) {
-        stats.push({ label: "QUADS", value: results.tetrises });
-      }
-      if (results.maxCombo > 0) {
-        stats.push({ label: "MAX COMBO", value: results.maxCombo });
-      }
-      if (results.perfectClears > 0) {
-        stats.push({ label: "PERFECT CLEARS", value: results.perfectClears });
-      }
-      stats.push({ label: "LINES SENT", value: results.linesSent });
-      stats.push({ label: "APM", value: results.apm.toFixed(1) });
-      stats.push({ label: "PPS", value: (results.pps ?? 0).toFixed(2) });
-      stats.push({ label: "FINESSE", value: `${(results.finesse ?? 100).toFixed(1)}%` });
-      if (results.modeId !== "sprint") {
+        stats.push({ label: "LINES", value: results.linesCleared });
+        stats.push({ label: "LEVEL", value: results.level });
+        stats.push({ label: "PIECES", value: results.piecesPlaced });
+        stats.push({ label: "TETRIS RATE", value: `${Math.round(results.tetrisRate)}%` });
+        stats.push({ label: "PPS", value: (results.pps ?? 0).toFixed(2) });
         stats.push({ label: "TIME", value: results.finalTime });
+      } else {
+        if (results.modeId === "sprint") {
+          stats.push({ label: "TIME", value: results.finalTimePrecise || results.finalTime, highlight: true });
+        } else {
+          stats.push({ label: "SCORE", value: results.score.toLocaleString(), highlight: true });
+        }
+        stats.push({ label: "LINES", value: results.linesCleared });
+        stats.push({ label: "LEVEL", value: results.level });
+        stats.push({ label: "PIECES", value: results.piecesPlaced });
+        if (results.tSpins > 0) {
+          stats.push({ label: "T-SPINS", value: results.tSpins });
+        }
+        if (results.tetrises > 0) {
+          stats.push({ label: "QUADS", value: results.tetrises });
+        }
+        if (results.maxCombo > 0) {
+          stats.push({ label: "MAX COMBO", value: results.maxCombo });
+        }
+        if (results.perfectClears > 0) {
+          stats.push({ label: "PERFECT CLEARS", value: results.perfectClears });
+        }
+        stats.push({ label: "LINES SENT", value: results.linesSent });
+        stats.push({ label: "APM", value: results.apm.toFixed(1) });
+        stats.push({ label: "PPS", value: (results.pps ?? 0).toFixed(2) });
+        stats.push({ label: "FINESSE", value: `${(results.finesse ?? 100).toFixed(1)}%` });
+        if (results.modeId !== "sprint") {
+          stats.push({ label: "TIME", value: results.finalTime });
+        }
       }
       gridEl.innerHTML = stats.map((s) => `
             <div class="results-stat ${s.highlight ? "results-stat-highlight" : ""}">
@@ -3472,106 +4523,6 @@
         onQuitCallback = callback;
       }
     };
-  }
-
-  // js/piece.js
-  var COLS = 10;
-  var VISIBLE_ROWS = 20;
-  var BUFFER_ROWS = 40;
-  var BLOCK_SIZE = 30;
-  var SHAPES2 = {
-    I: { matrix: [[0, 0, 0, 0], [1, 1, 1, 1], [0, 0, 0, 0], [0, 0, 0, 0]], color: "#3fd9b8" },
-    J: { matrix: [[1, 0, 0], [1, 1, 1], [0, 0, 0]], color: "#5d55e0" },
-    L: { matrix: [[0, 0, 1], [1, 1, 1], [0, 0, 0]], color: "#ef8a3c" },
-    O: { matrix: [[1, 1], [1, 1]], color: "#f2cb46" },
-    S: { matrix: [[0, 1, 1], [1, 1, 0], [0, 0, 0]], color: "#94d64a" },
-    T: { matrix: [[0, 1, 0], [1, 1, 1], [0, 0, 0]], color: "#cf5ce0" },
-    Z: { matrix: [[1, 1, 0], [0, 1, 1], [0, 0, 0]], color: "#ec4a5c" }
-  };
-  var KICKS = {
-    JLSTZ: {
-      "0->1": [[0, 0], [-1, 0], [-1, -1], [0, 2], [-1, 2]],
-      "1->0": [[0, 0], [1, 0], [1, 1], [0, -2], [1, -2]],
-      "1->2": [[0, 0], [1, 0], [1, 1], [0, -2], [1, -2]],
-      "2->1": [[0, 0], [-1, 0], [-1, -1], [0, 2], [-1, 2]],
-      "2->3": [[0, 0], [1, 0], [1, -1], [0, 2], [1, 2]],
-      "3->2": [[0, 0], [-1, 0], [-1, 1], [0, -2], [-1, -2]],
-      "3->0": [[0, 0], [-1, 0], [-1, 1], [0, -2], [-1, -2]],
-      "0->3": [[0, 0], [1, 0], [1, -1], [0, 2], [1, 2]]
-    },
-    I: {
-      "0->1": [[0, 0], [-2, 0], [1, 0], [-2, 1], [1, -2]],
-      "1->0": [[0, 0], [2, 0], [-1, 0], [2, -1], [-1, 2]],
-      "1->2": [[0, 0], [-1, 0], [2, 0], [-1, -2], [2, 1]],
-      "2->1": [[0, 0], [1, 0], [-2, 0], [1, 2], [-2, -1]],
-      "2->3": [[0, 0], [2, 0], [-1, 0], [2, -1], [-1, 2]],
-      "3->2": [[0, 0], [-2, 0], [1, 0], [-2, 1], [1, -2]],
-      "3->0": [[0, 0], [1, 0], [-2, 0], [1, 2], [-2, -1]],
-      "0->3": [[0, 0], [-1, 0], [2, 0], [-1, -2], [2, 1]]
-    }
-  };
-  function rotateMatrix(matrix, dir) {
-    const transposed = matrix[0].map((_, i) => matrix.map((row) => row[i]));
-    if (dir > 0) return transposed.map((row) => row.reverse());
-    return transposed.reverse();
-  }
-  function shuffle(array) {
-    for (let i = array.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [array[i], array[j]] = [array[j], array[i]];
-    }
-    return array;
-  }
-  function generateBag() {
-    return shuffle(["I", "J", "L", "O", "S", "T", "Z"]);
-  }
-  function fillQueue(queue, minSize = 7) {
-    while (queue.length < minSize) {
-      queue.push(...generateBag());
-    }
-  }
-  function getNextPiece(queue) {
-    fillQueue(queue);
-    return queue.shift();
-  }
-  function getSpawnPos(matrix) {
-    let lastFilledRow = 0;
-    matrix.forEach((row, y) => {
-      if (row.some((v) => v !== 0)) lastFilledRow = y;
-    });
-    return {
-      x: Math.floor(COLS / 2) - Math.floor(matrix[0].length / 2),
-      y: BUFFER_ROWS - VISIBLE_ROWS - 1 - lastFilledRow
-    };
-  }
-  var SPAWN_ROWS = 3;
-  function tryRotate(player, arena, collide2, dir) {
-    const originalMatrix = player.matrix;
-    const originalRotation = player.rotation;
-    const rotated = rotateMatrix(player.matrix, dir);
-    const newRotation = (player.rotation + dir + 4) % 4;
-    player.matrix = rotated;
-    if (player.shape === "O") {
-      player.rotation = newRotation;
-      return { success: true, kickIndex: 0 };
-    }
-    const kickKey = `${originalRotation}->${newRotation}`;
-    const kickType = player.shape === "I" ? "I" : "JLSTZ";
-    const kickTests = KICKS[kickType][kickKey];
-    for (let i = 0; i < kickTests.length; i++) {
-      const [xOff, yOff] = kickTests[i];
-      player.pos.x += xOff;
-      player.pos.y += yOff;
-      if (!collide2(arena, player)) {
-        player.rotation = newRotation;
-        return { success: true, kickIndex: i };
-      }
-      player.pos.x -= xOff;
-      player.pos.y -= yOff;
-    }
-    player.matrix = originalMatrix;
-    player.rotation = originalRotation;
-    return { success: false, kickIndex: -1 };
   }
 
   // js/board.js
@@ -3887,7 +4838,7 @@
     function spawnPlacement(piece, dropRows = 0) {
       const mul = place();
       if (mul === 0) return;
-      const color = SHAPES2[piece.shape].color;
+      const color = SHAPES[piece.shape].color;
       const cells = [];
       piece.matrix.forEach((row, y) => row.forEach((v, x) => {
         if (v) cells.push({ x: x + piece.pos.x, y: y + piece.pos.y });
@@ -3936,7 +4887,7 @@
           add({ type: "row", x: 0, y: y - BLOCK_SIZE / 2, life: 220, color: "#ffffff" });
           for (let col = 0; col < 10; col++) {
             const cellShape = arenaSnapshot?.[rowY]?.[col];
-            const color = SHAPES2[cellShape]?.color || "#ffffff";
+            const color = SHAPES[cellShape]?.color || "#ffffff";
             const count = Math.floor((2 + Math.random() * 3) * mul * intensity);
             for (let i = 0; i < count; i++) {
               const angle = Math.random() * Math.PI * 2;
@@ -3957,7 +4908,7 @@
         }
         if (isQuad) {
           const mid = clearedRows.reduce((s, r) => s + r, 0) / clearedRows.length;
-          add({ type: "flash", x: 0, y: rowToY(mid) - BLOCK_SIZE * 2, h: BLOCK_SIZE * 5, life: 220, color: SHAPES2.I.color });
+          add({ type: "flash", x: 0, y: rowToY(mid) - BLOCK_SIZE * 2, h: BLOCK_SIZE * 5, life: 220, color: SHAPES.I.color });
         }
       }
       const shake = isQuad ? 8 : isTSpin ? 6 : clearedRows.length >= 2 ? 3 : 1.5;
@@ -3981,7 +4932,7 @@
           gravity: 8e-4,
           life: 400 + Math.random() * 300,
           size: 3 + Math.random() * 4,
-          color: SHAPES2.T.color
+          color: SHAPES.T.color
         });
       }
     }
@@ -4031,7 +4982,7 @@
       const mul = clearFx();
       if (mul > 0) {
         add({ type: "flash", x: 0, y: 0, h: VISIBLE_ROWS * BLOCK_SIZE, life: 400, color: "#ffffff" });
-        const colors = Object.values(SHAPES2).map((s) => s.color);
+        const colors = Object.values(SHAPES).map((s) => s.color);
         const count = Math.floor(80 * mul);
         for (let i = 0; i < count; i++) {
           add({
@@ -4175,8 +5126,7 @@
     const pb = b.match(/\d+/g).map(Number);
     return `rgb(${pa.map((v, i) => Math.round(v + (pb[i] - v) * t)).join(",")})`;
   }
-  function drawPreview(ctx, skin, shape, slotTop, slotHeight, dimmed) {
-    const { matrix, color } = SHAPES2[shape];
+  function drawPreview(ctx, sprite, shape, matrix, slotTop, slotHeight, dimmed) {
     let minX = 9, maxX = 0, minY = 9, maxY = 0;
     matrix.forEach((row, y) => row.forEach((v, x) => {
       if (v) {
@@ -4190,22 +5140,22 @@
     const h = (maxY - minY + 1) * SIDE_BLOCK;
     const ox = Math.round((ctx.canvas.width - w) / 2) - minX * SIDE_BLOCK;
     const oy = Math.round(slotTop + (slotHeight - h) / 2) - minY * SIDE_BLOCK;
-    const sprite = blockSprite(skin, dimmed ? "#5a5a66" : color, SIDE_BLOCK);
+    const img = sprite(shape, SIDE_BLOCK, dimmed);
     matrix.forEach((row, y) => row.forEach((v, x) => {
-      if (v) ctx.drawImage(sprite, ox + x * SIDE_BLOCK, oy + y * SIDE_BLOCK);
+      if (v) ctx.drawImage(img, ox + x * SIDE_BLOCK, oy + y * SIDE_BLOCK);
     }));
   }
-  function createRenderer(canvases2, settings2) {
+  function createRenderer(canvases2, settings2, look = "modern") {
+    const classic = look === "classic";
     const boardCtx = canvases2.board.getContext("2d");
     const holdCtx = canvases2.hold.getContext("2d");
     const nextCtx = canvases2.next.getContext("2d");
+    const fieldTop = classic ? FRAME : FIELD_TOP;
+    let previews = settings2.nextPreviewCount || 5;
     canvases2.board.width = BOARD_CANVAS.width;
-    canvases2.board.height = BOARD_CANVAS.height;
+    canvases2.board.height = classic ? FIELD_H + FRAME * 2 : BOARD_CANVAS.height;
     canvases2.hold.width = SIDE_COLS * SIDE_BLOCK;
     canvases2.hold.height = 3 * SIDE_BLOCK;
-    function cell(ctx, skin, color, col, visRow) {
-      ctx.drawImage(blockSprite(skin, color, BLOCK_SIZE), col * BLOCK_SIZE, visRow * BLOCK_SIZE);
-    }
     function drawField(danger, time) {
       const ctx = boardCtx;
       ctx.fillStyle = "rgba(7, 7, 13, 0.86)";
@@ -4228,9 +5178,18 @@
       ctx.fillRect(FIELD_W2, 0, FRAME, FIELD_H + FRAME);
       ctx.fillRect(-FRAME, FIELD_H, FIELD_W2 + FRAME * 2, FRAME);
     }
+    function drawClassicField(level) {
+      const ctx = boardCtx;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(-FRAME, -FRAME, FIELD_W2 + FRAME * 2, FIELD_H + FRAME * 2);
+      ctx.fillStyle = nesPalette(level)[0];
+      ctx.fillRect(-FRAME / 2, -FRAME / 2, FIELD_W2 + FRAME, FIELD_H + FRAME);
+      ctx.fillStyle = "#000000";
+      ctx.fillRect(0, 0, FIELD_W2, FIELD_H);
+    }
     function drawSpawnMarks(shape, danger, time) {
       if (!shape) return;
-      const { matrix } = SHAPES2[shape];
+      const { matrix } = SHAPES[shape];
       const pos = getSpawnPos(matrix);
       const ctx = boardCtx;
       const pulse = danger ? 0.5 + 0.5 * Math.sin(time / 1e3 * Math.PI * 2) : 0;
@@ -4249,11 +5208,11 @@
         ctx.stroke();
       }));
     }
-    function drawMatrix(skin, matrix, pos, color) {
+    function drawMatrix(sprite, matrix, pos, shape) {
       matrix.forEach((row, y) => row.forEach((v, x) => {
         if (!v) return;
         const visRow = y + pos.y - BOARD_OFFSET_Y2;
-        if (visRow >= -SPAWN_ROWS) cell(boardCtx, skin, color || SHAPES2[v]?.color || "#888", x + pos.x, visRow);
+        if (visRow >= -SPAWN_ROWS) boardCtx.drawImage(sprite(shape || v, BLOCK_SIZE), (x + pos.x) * BLOCK_SIZE, visRow * BLOCK_SIZE);
       }));
     }
     function drawGhost(matrix, pos, color, opacity) {
@@ -4268,46 +5227,71 @@
       }));
       ctx.restore();
     }
+    function drawClearFlash(flash) {
+      const { rows, progress, big } = flash;
+      if (classic) {
+        const gone = Math.min(5, Math.floor(progress * 5));
+        boardCtx.fillStyle = "#000000";
+        for (const row of rows) {
+          const y = (row - BOARD_OFFSET_Y2) * BLOCK_SIZE;
+          for (let i = 0; i < gone; i++) {
+            boardCtx.fillRect((4 - i) * BLOCK_SIZE, y, BLOCK_SIZE, BLOCK_SIZE);
+            boardCtx.fillRect((5 + i) * BLOCK_SIZE, y, BLOCK_SIZE, BLOCK_SIZE);
+          }
+        }
+        if (big && Math.floor(progress * 10) % 2 === 0) {
+          boardCtx.fillStyle = "rgba(255, 255, 255, 0.55)";
+          boardCtx.fillRect(0, 0, FIELD_W2, FIELD_H);
+        }
+        return;
+      }
+      const width = FIELD_W2 * (1 - progress);
+      for (const row of rows) {
+        const y = (row - BOARD_OFFSET_Y2) * BLOCK_SIZE;
+        boardCtx.fillStyle = "rgb(7,7,13)";
+        boardCtx.fillRect(0, y, FIELD_W2, BLOCK_SIZE);
+        boardCtx.globalAlpha = 0.9 - progress * 0.6;
+        boardCtx.fillStyle = "#ffffff";
+        boardCtx.fillRect((FIELD_W2 - width) / 2, y + 2, width, BLOCK_SIZE - 4);
+        boardCtx.globalAlpha = 1;
+      }
+    }
     function draw(state) {
       const { arena, player, nextQueue, held, particles, shake, danger } = state;
       const time = state.time ?? performance.now();
       const skin = settings2.blockSkin || "ulol";
       const ghostOpacity = (settings2.ghostOpacity ?? 40) / 100 * 0.6;
+      const level = state.level ?? 0;
+      const sprite = classic ? (shape, size) => nesBlockSprite(shape, level, size) : (shape, size, dimmed) => blockSprite(skin, dimmed ? "#5a5a66" : SHAPES[shape]?.color || "#888", size);
       boardCtx.clearRect(0, 0, canvases2.board.width, canvases2.board.height);
       holdCtx.clearRect(0, 0, canvases2.hold.width, canvases2.hold.height);
       nextCtx.clearRect(0, 0, canvases2.next.width, canvases2.next.height);
       boardCtx.save();
-      boardCtx.translate(FRAME + (shake?.x || 0), FIELD_TOP + (shake?.y || 0));
-      drawField(danger, time);
-      drawSpawnMarks(nextQueue?.[0], danger, time);
-      drawMatrix(skin, arena, { x: 0, y: 0 }, null);
-      if (state.flash) {
-        const { rows, progress } = state.flash;
-        const width = FIELD_W2 * (1 - progress);
-        for (const row of rows) {
-          const y = (row - BOARD_OFFSET_Y2) * BLOCK_SIZE;
-          boardCtx.fillStyle = "rgb(7,7,13)";
-          boardCtx.fillRect(0, y, FIELD_W2, BLOCK_SIZE);
-          boardCtx.globalAlpha = 0.9 - progress * 0.6;
-          boardCtx.fillStyle = "#ffffff";
-          boardCtx.fillRect((FIELD_W2 - width) / 2, y + 2, width, BLOCK_SIZE - 4);
-          boardCtx.globalAlpha = 1;
-        }
+      boardCtx.translate(FRAME + (shake?.x || 0), fieldTop + (shake?.y || 0));
+      if (classic) {
+        drawClassicField(level);
+      } else {
+        drawField(danger, time);
+        drawSpawnMarks(nextQueue?.[0], danger, time);
       }
+      drawMatrix(sprite, arena, { x: 0, y: 0 }, null);
+      if (state.flash) drawClearFlash(state.flash);
       if (player && player.matrix) {
-        const color = SHAPES2[player.shape].color;
-        if (state.ghostY !== void 0) drawGhost(player.matrix, { x: player.pos.x, y: state.ghostY }, color, ghostOpacity);
-        drawMatrix(skin, player.matrix, player.pos, color);
+        if (state.ghostY !== void 0) {
+          drawGhost(player.matrix, { x: player.pos.x, y: state.ghostY }, SHAPES[player.shape].color, ghostOpacity);
+        }
+        drawMatrix(sprite, player.matrix, player.pos, player.shape);
       }
       if (particles) particles.drawParticles(boardCtx);
       boardCtx.restore();
-      if (held) drawPreview(holdCtx, skin, held, 0, canvases2.hold.height, state.holdLocked);
-      const count = settings2.nextPreviewCount || 5;
-      (nextQueue || []).slice(0, count).forEach((shape, i) => {
-        drawPreview(nextCtx, skin, shape, i * 3 * SIDE_BLOCK, 3 * SIDE_BLOCK, false);
+      const previewMatrix = (shape) => classic ? classicMatrix(shape) : SHAPES[shape].matrix;
+      if (held) drawPreview(holdCtx, sprite, held, previewMatrix(held), 0, canvases2.hold.height, state.holdLocked);
+      (nextQueue || []).slice(0, previews).forEach((shape, i) => {
+        drawPreview(nextCtx, sprite, shape, previewMatrix(shape), i * 3 * SIDE_BLOCK, 3 * SIDE_BLOCK, false);
       });
     }
     function resizeNextCanvas(previewCount) {
+      previews = previewCount;
       canvases2.next.width = SIDE_COLS * SIDE_BLOCK;
       canvases2.next.height = previewCount * 3 * SIDE_BLOCK;
     }
@@ -4483,12 +5467,13 @@
     }
     function updateSoftDrop(now) {
       if (!state.downHeld) return;
-      if (settings2.sdf >= SDF_INFINITE) {
+      const fixed2 = callbacks.getSoftDropInterval?.();
+      if (fixed2 === void 0 && settings2.sdf >= SDF_INFINITE) {
         callbacks.onSoftDrop?.(Infinity);
         return;
       }
       const gravity = callbacks.getGravityInterval?.() ?? 1e3;
-      const interval = gravity / settings2.sdf;
+      const interval = fixed2 ?? gravity / settings2.sdf;
       state.softDropCharge += now - state.softDropFrom;
       state.softDropFrom = now;
       const cells = Math.floor((state.softDropCharge + EPSILON) / interval);
@@ -4539,6 +5524,15 @@
         state.pieceSoftDrop = false;
         return r;
       },
+      /**
+       * Release soft drop even if the key is still down; it works again after the key is
+       * pressed anew. Classic mode does this on every lock so a held key cannot slam
+       * the next piece into the stack.
+       */
+      cancelSoftDrop() {
+        state.downHeld = false;
+        state.softDropCharge = 0;
+      },
       /** Start counting a fresh piece (after a hold swap). */
       resetPieceInputs() {
         state.pieceInputs = 0;
@@ -4579,6 +5573,7 @@
   }
   var fixed = (v, d = 2) => Number.isFinite(v) ? v.toFixed(d) : 0 .toFixed(d);
   function createHud(settings2, modeId) {
+    const isOg = modeId === "og";
     const els = {
       feed: document.getElementById("hud-feed"),
       stats: document.getElementById("hud-stats"),
@@ -4616,6 +5611,13 @@
        */
       onClear(r) {
         if (settings2.showActionText === false) return;
+        if (isOg) {
+          if (r.action) {
+            flashSlot("clear", r.actionName, getActionColor(r.action));
+            flashSlot("attack", `+${r.points.toLocaleString()}`, "#ffd24a");
+          }
+          return;
+        }
         if (r.action) {
           const isSpin = r.action.startsWith("tspin");
           const name = r.action === "tetris" ? "QUAD" : ["single", "double", "triple"].find((n) => r.action.endsWith(n))?.toUpperCase() || "";
@@ -4630,7 +5632,8 @@
       /**
        * Refresh numbers. Cheap to call every frame: the DOM only changes when text does.
        * @param {Object} s - { pieces, lines, level, score, keys, linesSent, elapsedMs,
-       *   clockMs, urgent, primaryLabel, primaryValue, progress, finesseJudged, finesseFaults }
+       *   clockMs, urgent, primaryLabel, primaryValue, progress, finesseJudged, finesseFaults,
+       *   tetrises }
        */
       update(s) {
         const mode = settings2.statsDisplay || "time";
@@ -4644,31 +5647,39 @@
         const finessePct = s.finesseJudged > 0 ? (s.finesseJudged - s.finesseFaults) / s.finesseJudged * 100 : 100;
         const clock = formatClock(s.clockMs);
         const timeRow = row("TIME", clock.main, clock.sub, `stat-time${s.urgent ? " urgent" : ""}`);
-        const levelRow = modeId === "classic" ? row("LEVEL", s.level) : "";
+        const levelRow = modeId === "classic" || isOg ? row("LEVEL", s.level) : "";
+        const tetrisRate = s.lines > 0 ? Math.round(s.tetrises * 4 / s.lines * 100) : 0;
         let rows = "";
-        switch (mode) {
-          case "off":
-            rows = "";
-            break;
-          case "speed":
-            rows = levelRow + row("PPS", fixed(pps)) + row("APM", fixed(apm, 1)) + row("KPS", fixed(kps)) + timeRow;
-            break;
-          case "efficiency":
-            rows = levelRow + row("APP", fixed(app, 3)) + row("KPP", fixed(kpp)) + row("FINESSE", `${fixed(finessePct, 1)}%`) + timeRow;
-            break;
-          case "versus":
-            rows = levelRow + row("APM", fixed(apm, 1)) + row("PPS", fixed(pps)) + row("VS", fixed(vs)) + timeRow;
-            break;
-          default:
-            rows = levelRow + row("PIECES", s.pieces, `, ${fixed(pps)}/S`) + row("LINES", s.lines) + timeRow;
+        if (isOg) {
+          if (mode === "off") rows = "";
+          else if (mode === "speed") rows = levelRow + row("PPS", fixed(pps)) + row("KPS", fixed(kps)) + timeRow;
+          else rows = levelRow + row("LINES", s.lines) + row("TETRIS RATE", `${tetrisRate}%`) + timeRow;
+        } else {
+          switch (mode) {
+            case "off":
+              rows = "";
+              break;
+            case "speed":
+              rows = levelRow + row("PPS", fixed(pps)) + row("APM", fixed(apm, 1)) + row("KPS", fixed(kps)) + timeRow;
+              break;
+            case "efficiency":
+              rows = levelRow + row("APP", fixed(app, 3)) + row("KPP", fixed(kpp)) + row("FINESSE", `${fixed(finessePct, 1)}%`) + timeRow;
+              break;
+            case "versus":
+              rows = levelRow + row("APM", fixed(apm, 1)) + row("PPS", fixed(pps)) + row("VS", fixed(vs)) + timeRow;
+              break;
+            default:
+              rows = levelRow + row("PIECES", s.pieces, `, ${fixed(pps)}/S`) + row("LINES", s.lines) + timeRow;
+          }
         }
         setHtml(els.stats, "stats", rows);
+        const score = isOg ? String(s.primaryValue).padStart(6, "0") : Number(s.primaryValue).toLocaleString();
         setHtml(
           els.under,
           "under",
-          `<div class="under-value">${Number(s.primaryValue).toLocaleString()}</div><div class="under-label">${s.primaryLabel}</div>`
+          `<div class="under-value">${score}</div><div class="under-label">${s.primaryLabel}</div>`
         );
-        setHtml(els.finesse, "finesse", mode === "off" ? "" : `<div class="stat-label">FINESSE</div><div class="stat-value">${s.finesseFaults}<span class="stat-sub">, ${fixed(finessePct)}%</span></div><div class="stat-small">${s.finesseFaults} FAULT${s.finesseFaults === 1 ? "" : "S"}</div>`);
+        setHtml(els.finesse, "finesse", mode === "off" || isOg ? "" : `<div class="stat-label">FINESSE</div><div class="stat-value">${s.finesseFaults}<span class="stat-sub">, ${fixed(finessePct)}%</span></div><div class="stat-small">${s.finesseFaults} FAULT${s.finesseFaults === 1 ? "" : "S"}</div>`);
         if (els.meter) {
           const pct = `${Math.round(Math.max(0, Math.min(1, s.progress)) * 1e3) / 10}%`;
           if (last.get("meter") !== pct) {
@@ -4746,7 +5757,7 @@
     return `${rows.join("/")}@${x + minX}`;
   }
   function buildTable(shape) {
-    const start = { shape, matrix: SHAPES2[shape].matrix, rotation: 0, pos: getSpawnPos(SHAPES2[shape].matrix) };
+    const start = { shape, matrix: SHAPES[shape].matrix, rotation: 0, pos: getSpawnPos(SHAPES[shape].matrix) };
     const best = /* @__PURE__ */ new Map();
     const seen = /* @__PURE__ */ new Set();
     const queue = [[start, 0]];
@@ -4796,18 +5807,21 @@
   var DANGER_INTERVAL_MS = 1e3;
   function createGame(config) {
     const { modeId, canvases: canvases2, playfield: playfield2, settings: settings2, soundEngine: soundEngine2, music: music2, onGameOver, onPause, onLevelUp } = config;
+    const rules = getRules(modeId);
+    const previewCount = () => rules.previewCount ?? (settings2.nextPreviewCount || 5);
     const arena = createMatrix(COLS, BUFFER_ROWS);
     const nextQueue = [];
-    fillQueue(nextQueue);
-    const modeState = createModeState(modeId);
+    let lastShape = null;
+    fillNext();
+    const modeState = createModeState(modeId, { startLevel: settings2.classicStartLevel });
     const scoringState = createScoringState();
     const particles = createParticleSystem(settings2);
-    const renderer = createRenderer(canvases2, settings2);
+    const renderer = createRenderer(canvases2, settings2, rules.look);
     const hud = createHud(settings2, modeId);
     const bounce = createBoardBounce(playfield2, settings2);
     let finesseJudged = 0;
     let finesseFaults = 0;
-    renderer.resizeNextCanvas(settings2.nextPreviewCount || 5);
+    renderer.resizeNextCanvas(previewCount());
     const player = {
       pos: { x: 0, y: 0 },
       matrix: null,
@@ -4828,7 +5842,7 @@
     let lastWasRotation = false;
     let lastKickIndex = -1;
     let lastCountdownSecond = -1;
-    const style = GAME_STYLES[settings2.gameStyle] || GAME_STYLES.modern;
+    const style = GAME_STYLES[rules.style || settings2.gameStyle] || GAME_STYLES.modern;
     let active = false;
     let freezeTimer = 0;
     let flash = null;
@@ -4844,6 +5858,8 @@
       getGravityInterval() {
         return dropInterval;
       },
+      // Classic soft drop is a fixed speed (never slower than gravity), not the SDF setting
+      getSoftDropInterval: rules.lock === "gravity" ? () => Math.min(dropInterval, SOFT_DROP_FRAMES * NES_FRAME_MS) : void 0,
       onHardDrop() {
         hardDrop();
       },
@@ -4860,13 +5876,22 @@
         if (running && !modeState.isFinished()) pauseGame();
       }
     });
-    function spawnPiece() {
-      player.shape = getNextPiece(nextQueue);
-      player.matrix = SHAPES2[player.shape].matrix;
+    function fillNext() {
+      if (rules.randomizer === "classic") fillClassicQueue(nextQueue, lastShape);
+      else fillQueue(nextQueue);
+    }
+    function placeAtSpawn() {
+      player.matrix = rules.rotation === "classic" ? classicMatrix(player.shape) : SHAPES[player.shape].matrix;
       player.rotation = 0;
-      const spawn = getSpawnPos(player.matrix);
+      const spawn = rules.spawn === "inside" ? getClassicSpawnPos(player.matrix) : getSpawnPos(player.matrix);
       player.pos.x = spawn.x;
       player.pos.y = spawn.y;
+    }
+    function spawnPiece() {
+      fillNext();
+      player.shape = nextQueue.shift();
+      lastShape = player.shape;
+      placeAtSpawn();
       player.canHold = true;
       active = true;
       flash = null;
@@ -4903,7 +5928,7 @@
     }
     function playerRotate(dir) {
       if (!active) return;
-      const result = tryRotate(player, arena, collide, dir);
+      const result = (rules.rotation === "classic" ? tryRotateClassic : tryRotate)(player, arena, collide, dir);
       if (result.success) {
         lastWasRotation = true;
         lastKickIndex = result.kickIndex;
@@ -4931,11 +5956,13 @@
       if (dropped > 0) {
         modeState.addScore(dropped);
         playSound("softdrop");
+      } else if (rules.lock === "gravity") {
+        lockPiece();
       }
       return dropped;
     }
     function hardDrop() {
-      if (!active) return;
+      if (!active || !rules.hardDrop) return;
       let rows = 0;
       while (!playerDrop()) {
         rows++;
@@ -4946,7 +5973,7 @@
       lockPiece(rows);
     }
     function holdPiece() {
-      if (!active || !player.canHold) return;
+      if (!active || !rules.hold || !player.canHold) return;
       if (player.held === null) {
         player.held = player.shape;
         spawnPiece();
@@ -4954,11 +5981,7 @@
         const temp = player.shape;
         player.shape = player.held;
         player.held = temp;
-        player.matrix = SHAPES2[player.shape].matrix;
-        player.rotation = 0;
-        const spawn = getSpawnPos(player.matrix);
-        player.pos.x = spawn.x;
-        player.pos.y = spawn.y;
+        placeAtSpawn();
         input.cutDas();
       }
       input.resetPieceInputs();
@@ -4971,6 +5994,7 @@
       playSound("hold");
     }
     function resetLockTimer() {
+      if (rules.lock === "gravity") return;
       if (isGrounded(arena, player)) {
         lockMoves++;
         if (lockMoves < MAX_LOCK_MOVES) {
@@ -4981,23 +6005,26 @@
     function lockPiece(dropRows = 0) {
       const lockedOut = player.matrix.every((row, y) => row.every((v) => !v || player.pos.y + y < BUFFER_ROWS - VISIBLE_ROWS));
       const used = input.takePieceInputs();
-      if (!used.softDrop) {
+      if (rules.finesse && !used.softDrop) {
         const min = minimumInputs(player.shape, player.matrix, player.pos.x);
         if (min !== null) {
           finesseJudged++;
           if (used.inputs > min) finesseFaults++;
         }
       }
-      const tSpinType = detectTSpin(arena, player, lastWasRotation, lastKickIndex);
+      const tSpinType = rules.scoring === "modern" ? detectTSpin(arena, player, lastWasRotation, lastKickIndex) : "none";
       const arenaSnapshot = arena.map((row) => [...row]);
       merge(arena, player);
       modeState.addPiece();
       const lockedArena = arena.map((row) => [...row]);
-      particles.spawnPlacement({
-        shape: player.shape,
-        matrix: player.matrix.map((row) => [...row]),
-        pos: { ...player.pos }
-      }, dropRows);
+      if (rules.effects) {
+        particles.spawnPlacement({
+          shape: player.shape,
+          matrix: player.matrix.map((row) => [...row]),
+          pos: { ...player.pos }
+        }, dropRows);
+      }
+      if (rules.lock === "gravity") input.cancelSoftDrop();
       if (lockedOut) {
         modeState.setGameOver();
         playSound("gameOver");
@@ -5005,13 +6032,7 @@
         return;
       }
       const { linesCleared, clearedRows } = clearLines(arena);
-      const scoreResult = calculateScore(
-        linesCleared,
-        tSpinType,
-        scoringState,
-        modeState.stats.level,
-        arena
-      );
+      const scoreResult = rules.scoring === "classic" ? calculateClassicScore(linesCleared, modeState.stats.level) : calculateScore(linesCleared, tSpinType, scoringState, modeState.stats.level, arena);
       if (scoreResult.points > 0) {
         modeState.addScore(scoreResult.points);
       }
@@ -5036,17 +6057,19 @@
       if (scoreResult.perfectClear) {
         modeState.addPerfectClear();
       }
-      if (linesCleared > 0) {
-        particles.spawnLineClear(clearedRows, scoreResult.action, arenaSnapshot);
-      }
-      if (tSpinType !== "none" && linesCleared > 0) {
-        particles.spawnTSpin(player.pos);
-      }
-      if (scoreResult.b2b) {
-        particles.spawnB2B(clearedRows);
-      }
-      if (scoreResult.perfectClear) {
-        particles.spawnPerfectClear();
+      if (rules.effects) {
+        if (linesCleared > 0) {
+          particles.spawnLineClear(clearedRows, scoreResult.action, arenaSnapshot);
+        }
+        if (tSpinType !== "none" && linesCleared > 0) {
+          particles.spawnTSpin(player.pos);
+        }
+        if (scoreResult.b2b) {
+          particles.spawnB2B(clearedRows);
+        }
+        if (scoreResult.perfectClear) {
+          particles.spawnPerfectClear();
+        }
       }
       const soundEvent = getSoundEvent(scoreResult);
       if (soundEvent) {
@@ -5060,14 +6083,14 @@
       if (scoreResult.b2b) {
         playSound("b2b");
       }
-      const attack = calculateAttack(scoreResult);
+      const attack = rules.attack ? calculateAttack(scoreResult) : 0;
       if (attack > 0) {
         modeState.addAttack(attack);
         particles.spawnAttack(clearedRows, attack);
         playSound("attack", attack);
       }
       if (scoreResult.action || scoreResult.perfectClear) hud.onClear({ ...scoreResult, attack });
-      if (linesCleared > 0) bounce.kick(0, 60 + linesCleared * 45 + attack * 10);
+      if (rules.effects && linesCleared > 0) bounce.kick(0, 60 + linesCleared * 45 + attack * 10);
       updateDanger();
       if (modeState.isCompleted()) {
         endGame();
@@ -5078,12 +6101,13 @@
       if (wait > 0) {
         active = false;
         freezeTimer = wait;
-        flash = clearDelay > 0 ? { arena: lockedArena, rows: clearedRows, duration: clearDelay, elapsed: 0 } : null;
+        flash = clearDelay > 0 ? { arena: lockedArena, rows: clearedRows, duration: clearDelay, elapsed: 0, big: linesCleared >= 4 } : null;
       } else {
         spawnPiece();
       }
     }
     function updateDanger() {
+      if (!rules.danger) return;
       const top = arena.findIndex((row) => row.some((v) => v !== 0));
       const danger = top !== -1 && top < BUFFER_ROWS - VISIBLE_ROWS + DANGER_ROWS;
       if (danger && !inDanger) dangerTimer = 0;
@@ -5137,13 +6161,14 @@
       }
       if (active) {
         dropCounter += deltaTime;
-        if (dropCounter > dropInterval) {
+        if (dropCounter >= dropInterval - 1) {
+          const carry = dropCounter - dropInterval;
           playerDrop();
-          dropCounter = 0;
+          dropCounter = Math.min(Math.max(carry, 0), dropInterval);
         }
         if (isGrounded(arena, player)) {
           lockTimer += deltaTime;
-          const lockDelay = settings2.lockDelay || 500;
+          const lockDelay = rules.lock === "gravity" ? dropInterval : settings2.lockDelay || 500;
           if (lockTimer >= lockDelay) {
             lockPiece();
           }
@@ -5160,11 +6185,12 @@
       }
       particles.update(deltaTime);
       bounce.update(deltaTime);
-      const ghostY = active ? getGhostY(arena, player) : void 0;
+      const ghostY = active && rules.ghost ? getGhostY(arena, player) : void 0;
       renderer.draw({
         arena: flash ? flash.arena : arena,
         player: active ? player : null,
         flash: flash ? { rows: flash.rows, progress: flash.elapsed / flash.duration } : null,
+        level: modeState.stats.level,
         nextQueue,
         held: player.held,
         holdLocked: !player.canHold,
@@ -5192,7 +6218,8 @@
         urgent: modeId === "blitz" && remaining <= 1e4,
         primaryLabel: modeState.getPrimaryStatLabel(),
         primaryValue: modeState.getPrimaryStatValue(),
-        progress: modeId === "sprint" ? stats.linesCleared / SPRINT_LINES : modeId === "blitz" ? remaining / BLITZ_MS2 : stats.linesCleared % 10 / 10,
+        tetrises: stats.tetrises,
+        progress: modeId === "sprint" ? stats.linesCleared / SPRINT_LINES : modeId === "blitz" ? remaining / BLITZ_MS2 : modeState.getLevelProgress(),
         finesseJudged,
         finesseFaults
       });
@@ -5205,7 +6232,8 @@
     function startGame() {
       arena.forEach((row) => row.fill(0));
       nextQueue.length = 0;
-      fillQueue(nextQueue);
+      lastShape = null;
+      fillNext();
       player.held = null;
       player.canHold = true;
       modeState.reset();
@@ -5229,7 +6257,8 @@
       bounce.reset();
       input.resetCounts();
       dropInterval = modeState.getDropInterval();
-      renderer.resizeNextCanvas(settings2.nextPreviewCount || 5);
+      renderer.resizeNextCanvas(previewCount());
+      soundEngine2?.setPack?.(rules.soundPack);
       spawnPiece();
       modeState.start();
       running = true;
@@ -5280,6 +6309,7 @@
       particles.clear();
       bounce.reset();
       music2?.setPaused(false);
+      soundEngine2?.setPack?.(null);
       canvases2.board.classList.remove("board-danger");
     }
     return {
@@ -5368,8 +6398,18 @@
     music.setTrack(menuTrack());
     background.showMenu();
   });
+  var ogFontLoaded = false;
+  function applyClassicFont() {
+    gameContainer.classList.toggle("og-font", settings.classicFont === "og" && ogFontLoaded);
+  }
+  document.fonts?.load('16px "Press Start 2P"').then((faces) => {
+    ogFontLoaded = faces.length > 0;
+    applyClassicFont();
+  }).catch(() => {
+  });
   function fitGame() {
-    const scale = Math.min(1, (window.innerHeight - 16) / 780, (window.innerWidth - 16) / 700);
+    const height = gameContainer.classList.contains("mode-og") ? 700 : 780;
+    const scale = Math.min(1, (window.innerHeight - 16) / height, (window.innerWidth - 16) / 700);
     gameContainer.style.transform = scale < 1 ? `scale(${scale})` : "";
   }
   window.addEventListener("resize", fitGame);
@@ -5380,7 +6420,10 @@
     if (currentGame) {
       currentGame.destroy();
     }
-    background.showMode(modeId);
+    gameContainer.classList.toggle("mode-og", modeId === "og");
+    applyClassicFont();
+    fitGame();
+    background.showMode(modeId, modeId === "og" ? settings.classicStartLevel : 1);
     currentGame = createGame({
       modeId,
       canvases,
@@ -5403,7 +6446,7 @@
     currentGame._modeId = modeId;
     currentGame.start();
   }
-  var SOUND_PACK_LABELS = { ulol: "uloltris", arcade: "Arcade (Jstris-style)", bubbly: "Bubbly (PPT-style)" };
+  var SOUND_PACK_LABELS = { ulol: "uloltris", arcade: "Arcade (Jstris-style)", bubbly: "Bubbly (PPT-style)", nes: "8-bit (console-style)" };
   function describeSoundPack(val) {
     return SOUND_PACK_LABELS[val] || val;
   }
@@ -5426,8 +6469,8 @@
         { key: "musicVolume", label: "MUSIC", type: "range", describe: describeVolume },
         { key: "sfxMuted", label: "MUTE SFX", type: "toggle" },
         { key: "musicMuted", label: "MUTE MUSIC", type: "toggle" },
-        { key: "soundPack", label: "SOUND PACK", type: "enum", values: ["ulol", "arcade", "bubbly"], describe: describeSoundPack },
-        { key: "soundtrack", label: "SOUNDTRACK", type: "enum", values: ["auto", "calm", "competitive", "intense", "off"], describe: describeSoundtrack },
+        { key: "soundPack", label: "SOUND PACK", type: "enum", values: ["ulol", "arcade", "bubbly", "nes"], describe: describeSoundPack },
+        { key: "soundtrack", label: "SOUNDTRACK", type: "enum", values: ["auto", "calm", "competitive", "intense", "chip", "off"], describe: describeSoundtrack },
         { key: "crossfadeDuration", label: "CROSSFADE", type: "range", describe: describeCrossfade }
       ] },
       { id: "visual", label: "VISUAL", settings: [
@@ -5435,6 +6478,8 @@
         { key: "statsDisplay", label: "STATS DISPLAY", type: "enum", values: ["off", "time", "speed", "efficiency", "versus"], describe: describeStatsDisplay },
         { key: "background", label: "BACKGROUND", type: "enum", values: ["on", "dim", "off"], describe: describeEnum },
         { key: "casualScene", label: "CASUAL SCENE", type: "enum", values: ["cycle", ...CASUAL_SCENES], describe: describeScene },
+        { key: "classicScene", label: "CLASSIC SCENE", type: "enum", values: ["cycle", ...CLASSIC_SCENES], describe: describeScene },
+        { key: "classicFont", label: "CLASSIC FONT", type: "enum", values: ["og", "ulol"], describe: describeClassicFont },
         { key: "ghostOpacity", label: "GHOST OPACITY", type: "range", describe: describeOpacity },
         { key: "showActionText", label: "CLEAR TEXT", type: "toggle" }
       ] },
@@ -5447,7 +6492,8 @@
       { id: "gameplay", label: "GAME", settings: [
         { key: "gameStyle", label: "GAME STYLE", type: "enum", values: ["modern", "battle"], describe: describeGameStyle },
         { key: "nextPreviewCount", label: "NEXT PIECES", type: "range", describe: describePreviewCount },
-        { key: "lockDelay", label: "LOCK DELAY", type: "range", describe: describeLockDelay }
+        { key: "lockDelay", label: "LOCK DELAY", type: "range", describe: describeLockDelay },
+        { key: "classicStartLevel", label: "CLASSIC START LEVEL", type: "range", describe: describeStartLevel }
       ] }
     ];
     tabContainer.innerHTML = "";
@@ -5551,6 +6597,7 @@
         saveSettings(settings);
         if (key === "soundtrack" && !currentGame?.isRunning()) music.setTrack(menuTrack());
         if (key === "soundPack") soundEngine?.play("rotate");
+        if (key === "classicFont") applyClassicFont();
         const tab = tabs.find((t) => t.settings.some((s) => s.key === key));
         const settingDef = tab?.settings.find((s) => s.key === key);
         const readout = contentContainer.querySelector(`[data-readout="${key}"]`);

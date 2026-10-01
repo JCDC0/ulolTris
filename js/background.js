@@ -2,9 +2,11 @@
  * background.js - Runs the pixel art background behind the game.
  *
  * Casual gets six scenes that change with each level (or one fixed scene, from the
- * casualScene setting). 40 Lines always shows Midnight Circuit and Blitz always
- * shows Thunder Peak. The menu cycles through the Casual scenes. Scenes draw at
- * 320 x 180 and are scaled up with crisp pixels to cover the window.
+ * casualScene setting). Classic gets three, the same way (classicScene): retro blocks,
+ * the uloltris night and the snow domes. 40 Lines always shows Midnight Circuit and
+ * Blitz always shows Thunder Peak. The menu cycles through the Casual scenes. Scenes
+ * draw at 320 x 180 and are scaled up with crisp pixels to cover the window. A scene's
+ * draw(ctx, t, { level }) gets the game level, which Retro Blocks uses for its palette.
  */
 
 import { W, H } from './scenes/pixel.js';
@@ -16,9 +18,13 @@ import ocean from './scenes/ocean.js';
 import neon from './scenes/neon.js';
 import city from './scenes/city.js';
 import storm from './scenes/storm.js';
+import blocks from './scenes/blocks.js';
+import ulol from './scenes/ulol.js';
+import domes from './scenes/domes.js';
 
-const SCENES = { bamboo, wheat, village, castle, ocean, neon, city, storm };
+const SCENES = { bamboo, wheat, village, castle, ocean, neon, city, storm, blocks, ulol, domes };
 export const CASUAL_SCENES = ['bamboo', 'wheat', 'village', 'castle', 'ocean', 'neon'];
+export const CLASSIC_SCENES = ['blocks', 'ulol', 'domes'];
 const MODE_SCENES = { sprint: 'city', blitz: 'storm' };
 const FADE_S = 1.6;
 const FRAME_MS = 1000 / 30;
@@ -47,6 +53,7 @@ export function createBackground(canvas, layerEl, settings) {
     let current = null;
     let previous = null;
     let fadeStart = 0;
+    let level = 0;          // game level, for scenes that follow it (Retro Blocks)
     let menuCycle = false;
     let menuIndex = 0;
     let menuSince = 0;
@@ -77,6 +84,13 @@ export function createBackground(canvas, layerEl, settings) {
         return CASUAL_SCENES[(Math.max(1, level) - 1) % CASUAL_SCENES.length];
     }
 
+    /** Classic scene for a level (levels start at 0 there). */
+    function classicScene(level) {
+        const pick = settings.classicScene || 'cycle';
+        if (pick !== 'cycle' && SCENES[pick]) return pick;
+        return CLASSIC_SCENES[Math.max(0, level) % CLASSIC_SCENES.length];
+    }
+
     function frame(now) {
         requestAnimationFrame(frame);
         const mode = settings.background || 'on';
@@ -93,10 +107,10 @@ export function createBackground(canvas, layerEl, settings) {
             show(CASUAL_SCENES[menuIndex]);
         }
 
-        instance(current).draw(ctx, t);
+        instance(current).draw(ctx, t, { level });
         const k = (t - fadeStart) / FADE_S;
         if (previous && k < 1) {
-            instance(previous).draw(fadeCtx, t);
+            instance(previous).draw(fadeCtx, t, { level });
             ctx.globalAlpha = 1 - k;
             ctx.drawImage(fadeCanvas, 0, 0);
             ctx.globalAlpha = 1;
@@ -117,15 +131,18 @@ export function createBackground(canvas, layerEl, settings) {
             show(CASUAL_SCENES[menuIndex]);
         },
 
-        /** A game started: pick the scene for its mode. */
-        showMode(modeId, level = 1) {
+        /** A game started: pick the scene for its mode (and the start level, in Classic). */
+        showMode(modeId, startLevel = 1) {
             menuCycle = false;
-            show(MODE_SCENES[modeId] || casualScene(level));
+            level = startLevel;
+            show(modeId === 'og' ? classicScene(level) : MODE_SCENES[modeId] || casualScene(level));
         },
 
-        /** Casual level changed: move to the next scene in the cycle. */
-        onLevel(modeId, level) {
-            if (!MODE_SCENES[modeId]) show(casualScene(level));
+        /** Level changed in Casual or Classic: move to the next scene in the cycle. */
+        onLevel(modeId, newLevel) {
+            level = newLevel;
+            if (modeId === 'og') show(classicScene(level));
+            else if (!MODE_SCENES[modeId]) show(casualScene(level));
         },
     };
 }

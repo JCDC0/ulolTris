@@ -1,11 +1,12 @@
 /**
  * tracks.js - Song data for the procedural soundtrack.
  *
- * All three tracks are original arrangements of Korobeiniki, the Russian folk song
+ * All four tracks are original arrangements of Korobeiniki, the Russian folk song
  * (public domain) that the classic Tetris theme is based on. Nothing here is taken
  * from a commercial soundtrack.
  *
- * Notes are MIDI numbers written in A minor; each build function transposes its bars.
+ * Notes are MIDI numbers written in A minor; each build function transposes its bars
+ * (the chip track stays in A minor).
  * A bar is 16 steps (16th notes). Events: { s: start step, l: length in steps,
  * v: voice name, n: MIDI note (or null for drums), g: velocity 0..1 }.
  */
@@ -275,6 +276,68 @@ function buildIntense() {
     return bars.map(b => transposeBar(b, 7));
 }
 
+// --- Chip: A minor, 150 BPM, three channels and noise, like an 8-bit console ---
+
+const CHIP_A = ['Am', 'Am', 'E', 'Am', 'Dm', 'C', 'E', 'Am'];
+const CHIP_B = ['Am', 'G', 'F', 'E', 'Am', 'G', 'Am', 'E'];
+
+/**
+ * Backing: a triangle bass that bounces between root and octave, and the second pulse
+ * channel on chord stabs or a running arpeggio. `drums` is 'none', 'beat' or 'full'.
+ */
+function chipBacking(spec, { arp = false, drums = 'none', fill = false } = {}) {
+    const events = [];
+    for (const seg of harmony(spec)) {
+        for (let s = 0; s < seg.len; s += 2) {
+            events.push({ s: seg.at + s, l: 2, v: 'chipBass', n: seg.ch.r + (s % 4 === 2 ? 12 : 0), g: 0.52 });
+        }
+        const tones = seg.ch.c;
+        if (arp) {
+            for (let s = 0; s < seg.len; s++) {
+                events.push({ s: seg.at + s, l: 1, v: 'chipHarm', n: tones[s % tones.length] + 12, g: 0.09 });
+            }
+        } else {
+            for (let s = 2; s < seg.len; s += 4) {
+                for (const n of tones.slice(1, 3)) events.push({ s: seg.at + s, l: 1, v: 'chipHarm', n: n + 12, g: 0.09 });
+            }
+        }
+    }
+    if (drums !== 'none') {
+        events.push(...drum('chipKick', drums === 'full' ? [0, 4, 8, 12] : [0, 8], 0.55));
+        events.push(...drum('chipSnare', fill ? [4, 12, 13, 14, 15] : [4, 12], 0.34));
+        events.push(...drum('chipHat', drums === 'full' ? [2, 6, 10, 14] : [], 0.18));
+    }
+    return events;
+}
+
+function buildChip() {
+    const bars = [];
+    // A1: the melody on the lead, bass and stabs underneath, no drums
+    for (let i = 0; i < 8; i++) {
+        bars.push([...chipBacking(CHIP_A[i]), ...melodyEvents(MELODY_A[i], 'chipLead', 0.35)]);
+    }
+    // A2: a harmony line joins on the second pulse, with a plain beat
+    for (let i = 0; i < 8; i++) {
+        const harm = MELODY_A[i].map(([n, s, l]) => [thirdBelow(n), s, l]);
+        bars.push([
+            ...chipBacking(CHIP_A[i], { drums: 'beat', fill: i === 7 }).filter(e => e.v !== 'chipHarm'),
+            ...melodyEvents(MELODY_A[i], 'chipLead', 0.35),
+            ...melodyEvents(harm, 'chipHarm', 0.13),
+        ]);
+    }
+    // B: the slow bridge, with the second pulse running arpeggios
+    for (let i = 0; i < 8; i++) {
+        bars.push([...chipBacking(CHIP_B[i], { arp: true, drums: 'beat', fill: i === 7 }), ...melodyEvents(MELODY_B[i], 'chipLead', 0.35)]);
+    }
+    // A3: an octave up with a full beat and fills
+    for (let i = 0; i < 8; i++) {
+        const mel = melodyEvents(MELODY_A[i], 'chipLead', 0.3, 12);
+        if (i === 3 || i === 7) mel.push(...melodyEvents(FILL, 'chipLead', 0.23, 12));
+        bars.push([...chipBacking(CHIP_A[i], { drums: 'full', fill: i === 7 }), ...mel]);
+    }
+    return bars;
+}
+
 /**
  * Track table. `loopStart` is the bar the loop returns to (skipping the intro).
  * `swing` delays off-beat eighths by that fraction of a 16th.
@@ -283,6 +346,7 @@ export const TRACKS = {
     calm:        { bpm: 88,  swing: 0.35, delay: 0.3, loopStart: 2, bars: buildCalm() },
     competitive: { bpm: 150, swing: 0,    delay: 0.12, loopStart: 2, bars: buildCompetitive() },
     intense:     { bpm: 176, swing: 0,    delay: 0.08, loopStart: 0, bars: buildIntense() },
+    chip:        { bpm: 150, swing: 0,    delay: 0,    loopStart: 0, bars: buildChip() },
 };
 
 export const TRACK_NAMES = Object.keys(TRACKS);

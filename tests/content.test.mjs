@@ -21,7 +21,8 @@ check('no clear sends nothing', calculateAttack({ isClearAction: false, action: 
 
 // --- Song data ---
 const VOICES = new Set(['epiano', 'bell', 'pad', 'softbass', 'bass', 'pluck', 'stab', 'lead',
-    'kick', 'lofikick', 'snare', 'rim', 'hat', 'brush', 'crash']);
+    'kick', 'lofikick', 'snare', 'rim', 'hat', 'brush', 'crash',
+    'chipLead', 'chipHarm', 'chipBass', 'chipKick', 'chipSnare', 'chipHat']);
 for (const [name, track] of Object.entries(TRACKS)) {
     const events = track.bars.flat();
     const badVoice = events.find(e => !VOICES.has(e.v));
@@ -39,13 +40,17 @@ const firstPhrase = (name, voice) => TRACKS[name].bars
     .find(bar => bar.some(e => e.v === voice)).filter(e => e.v === voice).slice(0, 6).map(e => e.n);
 const intervals = arr => arr.slice(1).map((n, i) => n - arr[i]);
 const motif = intervals([76, 71, 72, 74, 72, 71]);
-for (const [name, voice] of [['calm', 'bell'], ['competitive', 'lead'], ['intense', 'lead']]) {
+for (const [name, voice] of [['calm', 'bell'], ['competitive', 'lead'], ['intense', 'lead'], ['chip', 'chipLead']]) {
     const phrase = firstPhrase(name, voice);
     check(`${name}: opens with the Korobeiniki motif`, intervals(phrase).join() === motif.join(), phrase.join(' '));
 }
-const top = name => firstPhrase(name, name === 'calm' ? 'bell' : 'lead')[0];
+const top = name => firstPhrase(name, { calm: 'bell', chip: 'chipLead' }[name] || 'lead')[0];
 check('calm is raised a minor third (E5 to G5)', top('calm') === 79);
 check('competitive is raised a fourth (E5 to A5)', top('competitive') === 81);
+check('chip stays in A minor, as the folk song is written (E5)', top('chip') === 76);
+check('chip has a melody, a harmony channel, a triangle bass and noise drums',
+    ['chipLead', 'chipHarm', 'chipBass', 'chipKick', 'chipSnare', 'chipHat'].every(v => TRACKS.chip.bars.flat().some(e => e.v === v)));
+check('chip loops from the top', TRACKS.chip.loopStart === 0);
 
 const loopSeconds = t => (t.bars.length - t.loopStart) * 16 * (60 / t.bpm / 4);
 check('tempos rise calm < competitive < intense',

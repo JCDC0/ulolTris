@@ -74,15 +74,24 @@ body {
 }
 
 .playfield {
+    /* Where the side boxes and the field start, below the spawn rows (90px) */
+    --side-top: 90px;
+    --field-top: 90px;
     display: flex;
     align-items: flex-start;
     will-change: transform;
 }
 
+/* Classic: pieces spawn inside the field, so the board is just the field and its frame. */
+.mode-og .playfield {
+    --side-top: 0px;
+    --field-top: 4px;
+}
+
 /* Side columns line up with the field, which starts below the spawn rows (90px). */
 .side {
     height: 604px;
-    margin-top: 90px;
+    margin-top: var(--side-top);
     display: flex;
     flex-direction: column;
 }
@@ -147,7 +156,7 @@ body {
 .meter {
     width: 10px;
     height: 600px;
-    margin-top: 90px;
+    margin-top: var(--field-top);
     background: rgba(9, 9, 16, 0.7);
     position: relative;
     border-right: 4px solid var(--frame);
@@ -296,6 +305,99 @@ body {
     font-size: 32px;
 }
 
+/* Classic has no hold, so the feed starts at the top of the left column. */
+.mode-og .hold-box {
+    display: none;
+}
+
+.mode-og .hud-feed {
+    margin-top: 12px;
+}
+
+.mode-og .feed-attack {
+    font-size: 30px;
+}
+
+/* Classic font option: the 8-bit pixel font (Press Start 2P, open license) for the HUD text.
+   main.js sets og-font only once the font has loaded, so without it the normal uloltris fonts
+   and sizes apply. The font is 8 px based and wide, so sizes are multiples of 8 where they fit. */
+.mode-og.og-font {
+    --font-ui: 'Press Start 2P', 'Barlow Condensed', 'Arial Narrow', sans-serif;
+    --font-pixel: 'Press Start 2P', 'Silkscreen', monospace;
+}
+
+.mode-og.og-font .stat-label,
+.mode-og.og-font .under-label,
+.mode-og.og-font .stat-small {
+    font-size: 8px;
+    font-weight: 400;
+    letter-spacing: 1px;
+    line-height: 1.5;
+}
+
+.mode-og.og-font .stat-value {
+    font-size: 16px;
+    font-weight: 400;
+    line-height: 1.4;
+}
+
+.mode-og.og-font .stat-sub {
+    font-size: 8px;
+    font-weight: 400;
+}
+
+.mode-og.og-font .under-value {
+    font-size: 24px;
+    font-weight: 400;
+    line-height: 1.3;
+}
+
+.mode-og.og-font .box-label {
+    top: 6px;
+    font-size: 8px;
+    font-weight: 400;
+    letter-spacing: 1px;
+}
+
+.mode-og.og-font .feed-spin,
+.mode-og.og-font .feed-b2b,
+.mode-og.og-font .feed-combo {
+    font-size: 10px;
+    font-weight: 400;
+}
+
+.mode-og.og-font .feed-clear,
+.mode-og.og-font .feed-attack {
+    font-size: 16px;
+    font-weight: 400;
+    line-height: 1.4;
+}
+
+.mode-og.og-font .hud-stats {
+    gap: 8px;
+}
+
+/* Stats and score get the same framed panel as the next box, so they stay readable
+   over bright wallpapers. They attach to the board frame like the hold and next boxes. */
+.mode-og .hud-stats {
+    margin-right: 0;
+    margin-bottom: 0;
+    padding: 10px 12px 12px 22px;
+    background: var(--panel);
+    border: 4px solid var(--frame);
+    border-right: none;
+    border-radius: 6px 0 0 6px;
+}
+
+.mode-og .hud-under {
+    margin-top: 0;
+    padding: 4px 22px 6px;
+    background: var(--panel);
+    border: 4px solid var(--frame);
+    border-top: none;
+    border-radius: 0 0 6px 6px;
+}
+
 /* === MENU SYSTEM === */
 #menu-container {
     position: fixed;
@@ -355,6 +457,12 @@ body {
     gap: 16px;
     max-width: 500px;
     width: 90%;
+}
+
+/* Four mode cards are tall: scroll inside the box on short windows rather than clip. */
+.menu-mode-select .menu-content {
+    max-height: calc(100vh - 16px);
+    overflow-y: auto;
 }
 
 .menu-title {
@@ -487,6 +595,14 @@ body {
     width: 50px;
     text-align: center;
     flex-shrink: 0;
+}
+
+.mode-icon-pixel {
+    display: block;
+    width: 45px;
+    height: 30px;
+    margin: 0 auto;
+    image-rendering: pixelated;
 }
 
 .mode-card-text h3 {

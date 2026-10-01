@@ -6,10 +6,10 @@
 import { loadSettings, saveSettings, DEFAULT_SETTINGS,
          describeArr, describeFrames, describeDcd, describeSoftDrop, describeVolume, describeCrossfade,
          describeEnum, describeOpacity, describePreviewCount, describeLockDelay,
-         describeGameStyle, describeSoundtrack, describeStatsDisplay,
+         describeGameStyle, describeSoundtrack, describeStatsDisplay, describeStartLevel, describeClassicFont,
          getConstraint } from './settings.js';
 import { describeSkin, SKINS } from './skins.js';
-import { createBackground, describeScene, CASUAL_SCENES } from './background.js';
+import { createBackground, describeScene, CASUAL_SCENES, CLASSIC_SCENES } from './background.js';
 import { createSoundEngine } from './sound.js';
 import { createMusicPlayer } from './music-player.js';
 import { createMusicEngine } from './music.js';
@@ -109,9 +109,22 @@ menu.onQuit(() => {
     background.showMenu();
 });
 
+// The OG font comes from Google Fonts like the others. Classic only switches to it once it
+// has loaded, so if it never does (offline, blocked) the uloltris fonts and their sizes stay.
+let ogFontLoaded = false;
+function applyClassicFont() {
+    gameContainer.classList.toggle('og-font', settings.classicFont === 'og' && ogFontLoaded);
+}
+document.fonts?.load('16px "Press Start 2P"').then(faces => {
+    ogFontLoaded = faces.length > 0;
+    applyClassicFont();
+}).catch(() => {});
+
 // Scale the playfield down on small windows so the board, stats and spawn rows all fit.
+// Classic has no spawn rows above the field, so it is shorter.
 function fitGame() {
-    const scale = Math.min(1, (window.innerHeight - 16) / 780, (window.innerWidth - 16) / 700);
+    const height = gameContainer.classList.contains('mode-og') ? 700 : 780;
+    const scale = Math.min(1, (window.innerHeight - 16) / height, (window.innerWidth - 16) / 700);
     gameContainer.style.transform = scale < 1 ? `scale(${scale})` : '';
 }
 window.addEventListener('resize', fitGame);
@@ -127,7 +140,10 @@ function startNewGame(modeId) {
         currentGame.destroy();
     }
 
-    background.showMode(modeId);
+    gameContainer.classList.toggle('mode-og', modeId === 'og');
+    applyClassicFont();
+    fitGame();
+    background.showMode(modeId, modeId === 'og' ? settings.classicStartLevel : 1);
     currentGame = createGame({
         modeId,
         canvases,
@@ -153,7 +169,7 @@ function startNewGame(modeId) {
     currentGame.start();
 }
 
-const SOUND_PACK_LABELS = { ulol: 'uloltris', arcade: 'Arcade (Jstris-style)', bubbly: 'Bubbly (PPT-style)' };
+const SOUND_PACK_LABELS = { ulol: 'uloltris', arcade: 'Arcade (Jstris-style)', bubbly: 'Bubbly (PPT-style)', nes: '8-bit (console-style)' };
 function describeSoundPack(val) {
     return SOUND_PACK_LABELS[val] || val;
 }
@@ -179,8 +195,8 @@ function buildSettingsUI() {
             { key: 'musicVolume', label: 'MUSIC', type: 'range', describe: describeVolume },
             { key: 'sfxMuted', label: 'MUTE SFX', type: 'toggle' },
             { key: 'musicMuted', label: 'MUTE MUSIC', type: 'toggle' },
-            { key: 'soundPack', label: 'SOUND PACK', type: 'enum', values: ['ulol', 'arcade', 'bubbly'], describe: describeSoundPack },
-            { key: 'soundtrack', label: 'SOUNDTRACK', type: 'enum', values: ['auto', 'calm', 'competitive', 'intense', 'off'], describe: describeSoundtrack },
+            { key: 'soundPack', label: 'SOUND PACK', type: 'enum', values: ['ulol', 'arcade', 'bubbly', 'nes'], describe: describeSoundPack },
+            { key: 'soundtrack', label: 'SOUNDTRACK', type: 'enum', values: ['auto', 'calm', 'competitive', 'intense', 'chip', 'off'], describe: describeSoundtrack },
             { key: 'crossfadeDuration', label: 'CROSSFADE', type: 'range', describe: describeCrossfade },
         ]},
         { id: 'visual', label: 'VISUAL', settings: [
@@ -188,6 +204,8 @@ function buildSettingsUI() {
             { key: 'statsDisplay', label: 'STATS DISPLAY', type: 'enum', values: ['off', 'time', 'speed', 'efficiency', 'versus'], describe: describeStatsDisplay },
             { key: 'background', label: 'BACKGROUND', type: 'enum', values: ['on', 'dim', 'off'], describe: describeEnum },
             { key: 'casualScene', label: 'CASUAL SCENE', type: 'enum', values: ['cycle', ...CASUAL_SCENES], describe: describeScene },
+            { key: 'classicScene', label: 'CLASSIC SCENE', type: 'enum', values: ['cycle', ...CLASSIC_SCENES], describe: describeScene },
+            { key: 'classicFont', label: 'CLASSIC FONT', type: 'enum', values: ['og', 'ulol'], describe: describeClassicFont },
             { key: 'ghostOpacity', label: 'GHOST OPACITY', type: 'range', describe: describeOpacity },
             { key: 'showActionText', label: 'CLEAR TEXT', type: 'toggle' },
         ]},
@@ -201,6 +219,7 @@ function buildSettingsUI() {
             { key: 'gameStyle', label: 'GAME STYLE', type: 'enum', values: ['modern', 'battle'], describe: describeGameStyle },
             { key: 'nextPreviewCount', label: 'NEXT PIECES', type: 'range', describe: describePreviewCount },
             { key: 'lockDelay', label: 'LOCK DELAY', type: 'range', describe: describeLockDelay },
+            { key: 'classicStartLevel', label: 'CLASSIC START LEVEL', type: 'range', describe: describeStartLevel },
         ]},
     ];
 
@@ -328,6 +347,7 @@ function buildSettingsUI() {
             // In a game, the engine picks the track every frame; on the menu, switch here.
             if (key === 'soundtrack' && !currentGame?.isRunning()) music.setTrack(menuTrack());
             if (key === 'soundPack') soundEngine?.play('rotate');
+            if (key === 'classicFont') applyClassicFont();
 
             const tab = tabs.find(t => t.settings.some(s => s.key === key));
             const settingDef = tab?.settings.find(s => s.key === key);

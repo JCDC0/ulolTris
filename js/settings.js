@@ -32,7 +32,7 @@ export const DEFAULT_SETTINGS = {
     sfxMuted: false,
     musicMuted: false,
     crossfadeDuration: 2,
-    soundtrack: 'auto',        // 'auto', 'calm', 'competitive', 'intense', 'off'
+    soundtrack: 'auto',        // 'auto', 'calm', 'competitive', 'intense', 'chip', 'off'
 
     // Visual
     screenShake: 'medium',     // 'off', 'low', 'medium', 'high'
@@ -42,15 +42,18 @@ export const DEFAULT_SETTINGS = {
     statsDisplay: 'time',      // 'off', 'time', 'speed', 'efficiency', 'versus'
     background: 'on',          // 'on', 'dim', 'off'
     casualScene: 'cycle',      // 'cycle' or one of CASUAL_SCENES
+    classicScene: 'cycle',     // 'cycle' (by level) or one of CLASSIC_SCENES
+    classicFont: 'og',         // Classic HUD font: 'og' (8-bit pixel font) or 'ulol' (the uloltris fonts)
     ghostOpacity: 40,          // 0-100
     showActionText: true,
     blockSkin: 'ulol',         // one of SKINS in skins.js
-    soundPack: 'ulol',         // 'ulol', 'arcade' (Jstris-style), 'bubbly' (PPT-style)
+    soundPack: 'ulol',         // 'ulol', 'arcade' (Jstris-style), 'bubbly' (PPT-style), 'nes' (8-bit)
 
     // Gameplay
     nextPreviewCount: 5,       // 1-6
     lockDelay: 500,            // ms
     gameStyle: 'modern',       // 'modern' (TETR.IO, Jstris) or 'battle' (Tetris 99, PPT)
+    classicStartLevel: 0,      // Classic mode: level to begin on, 0-19
 };
 
 /** Constraints for numeric settings */
@@ -66,6 +69,7 @@ const CONSTRAINTS = {
     ghostOpacity:     { min: 0, max: 100, step: 5 },
     nextPreviewCount: { min: 1, max: 6,   step: 1 },
     lockDelay:        { min: 100, max: 2000, step: 50 },
+    classicStartLevel:{ min: 0, max: 19, step: 1 },
 };
 
 /** Valid enum values */
@@ -77,10 +81,12 @@ const ENUMS = {
     statsDisplay: ['off', 'time', 'speed', 'efficiency', 'versus'],
     background: ['on', 'dim', 'off'],
     casualScene: ['cycle', 'bamboo', 'wheat', 'village', 'castle', 'ocean', 'neon'],
-    soundtrack: ['auto', 'calm', 'competitive', 'intense', 'off'],
+    classicScene: ['cycle', 'blocks', 'ulol', 'domes'],
+    classicFont: ['og', 'ulol'],
+    soundtrack: ['auto', 'calm', 'competitive', 'intense', 'chip', 'off'],
     gameStyle: ['modern', 'battle'],
     blockSkin: ['ulol', 'classic', 'glossy', 'flat', 'neon'],
-    soundPack: ['ulol', 'arcade', 'bubbly'],
+    soundPack: ['ulol', 'arcade', 'bubbly', 'nes'],
 };
 
 function clamp(value, min, max) {
@@ -191,7 +197,16 @@ export function describeGameStyle(val) {
 }
 
 export function describeSoundtrack(val) {
-    return val === 'auto' ? 'Auto (by mode)' : describeEnum(val);
+    if (val === 'auto') return 'Auto (by mode)';
+    return val === 'chip' ? 'Chiptune (8-bit)' : describeEnum(val);
+}
+
+export function describeClassicFont(val) {
+    return val === 'og' ? 'OG (8-bit pixel font)' : 'uloltris';
+}
+
+export function describeStartLevel(level) {
+    return `Level ${level}`;
 }
 
 export function describeVolume(val) {

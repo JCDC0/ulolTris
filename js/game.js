@@ -3,13 +3,15 @@
  * Orchestrates the game loop, piece logic, scoring, effects, and mode state.
  */
 
-import { COLS, BUFFER_ROWS, VISIBLE_ROWS, SHAPES, getNextPiece, fillQueue, getSpawnPos, tryRotate } from './piece.js';
+import { COLS, BUFFER_ROWS, VISIBLE_ROWS, SHAPES, fillQueue, getSpawnPos, tryRotate } from './piece.js';
 import { createMatrix, collide, merge, clearLines, isGrounded, getGhostY } from './board.js';
 import { createScoringState, detectTSpin, calculateScore, calculateAttack, getSoundEvent } from './scoring.js';
 import { createParticleSystem } from './particles.js';
 import { createRenderer } from './renderer.js';
 import { createInputHandler } from './input.js';
-import { createModeState, GAME_STYLES, BIG_HIT_LINES, MODE_INFO } from './modes.js';
+import { createModeState, getRules, GAME_STYLES, BIG_HIT_LINES, MODE_INFO } from './modes.js';
+import { classicMatrix, getClassicSpawnPos, tryRotateClassic, fillClassicQueue,
+         calculateClassicScore, NES_FRAME_MS, SOFT_DROP_FRAMES } from './classic.js';
 import { createHud } from './hud.js';
 import { createBoardBounce } from './bounce.js';
 import { minimumInputs } from './finesse.js';
@@ -25,7 +27,7 @@ const DANGER_INTERVAL_MS = 1000;
  * Create and run a game instance.
  *
  * @param {Object} config
- *   - modeId: string ('sprint' | 'blitz' | 'classic')
+ *   - modeId: string ('sprint' | 'blitz' | 'classic' | 'og'); 'classic' is Casual, 'og' is Classic
  *   - canvases: { board, hold, next }
  *   - playfield: element that bounces (board, hold and next)
  *   - settings: settings reference object
@@ -37,23 +39,26 @@ const DANGER_INTERVAL_MS = 1000;
  */
 export function createGame(config) {
     const { modeId, canvases, playfield, settings, soundEngine, music, onGameOver, onPause, onLevelUp } = config;
+    const rules = getRules(modeId);
+    const previewCount = () => rules.previewCount ?? (settings.nextPreviewCount || 5);
 
     // State
     const arena = createMatrix(COLS, BUFFER_ROWS);
     const nextQueue = [];
-    fillQueue(nextQueue);
+    let lastShape = null;       // the piece in play, for the classic randomizer
+    fillNext();
 
-    const modeState = createModeState(modeId);
+    const modeState = createModeState(modeId, { startLevel: settings.classicStartLevel });
     const scoringState = createScoringState();
     const particles = createParticleSystem(settings);
-    const renderer = createRenderer(canvases, settings);
+    const renderer = createRenderer(canvases, settings, rules.look);
     const hud = createHud(settings, modeId);
     const bounce = createBoardBounce(playfield, settings);
     let finesseJudged = 0;
     let finesseFaults = 0;
 
     // Resize next canvas based on settings
-    renderer.resizeNextCanvas(settings.nextPreviewCount || 5);
+    renderer.resizeNextCanvas(previewCount());
 
     const player = {
         pos: { x: 0, y: 0 },
@@ -83,7 +88,7 @@ export function createGame(config) {
     let lastCountdownSecond = -1;
 
     // Game style, and the wait between a lock and the next piece
-    const style = GAME_STYLES[settings.gameStyle] || GAME_STYLES.modern;
+    const style = GAME_STYLES[rules.style || settings.gameStyle] || GAME_STYLES.modern;
     let active = false;         // a piece is in play
     let freezeTimer = 0;        // ms until the next piece spawns
     let flash = null;           // { arena, rows, duration, elapsed } during a line clear pause
@@ -97,6 +102,10 @@ export function createGame(config) {
         onMove(dir, cells) { return playerMove(dir, cells); },
         onSoftDrop(cells)  { return softDrop(cells); },
         getGravityInterval() { return dropInterval; },
+        // Classic soft drop is a fixed speed (never slower than gravity), not the SDF setting
+        getSoftDropInterval: rules.lock === 'gravity'
+            ? () => Math.min(dropInterval, SOFT_DROP_FRAMES * NES_FRAME_MS)
+            : undefined,
         onHardDrop()  { hardDrop(); },
         onRotateCW()  { playerRotate(1); },
         onRotateCCW() { playerRotate(-1); },
@@ -105,13 +114,25 @@ export function createGame(config) {
     });
 
     // --- Piece Spawning ---
-    function spawnPiece() {
-        player.shape = getNextPiece(nextQueue);
-        player.matrix = SHAPES[player.shape].matrix;
+    function fillNext() {
+        if (rules.randomizer === 'classic') fillClassicQueue(nextQueue, lastShape);
+        else fillQueue(nextQueue);
+    }
+
+    /** Put the current piece in its spawn orientation and position. */
+    function placeAtSpawn() {
+        player.matrix = rules.rotation === 'classic' ? classicMatrix(player.shape) : SHAPES[player.shape].matrix;
         player.rotation = 0;
-        const spawn = getSpawnPos(player.matrix);
+        const spawn = rules.spawn === 'inside' ? getClassicSpawnPos(player.matrix) : getSpawnPos(player.matrix);
         player.pos.x = spawn.x;
         player.pos.y = spawn.y;
+    }
+
+    function spawnPiece() {
+        fillNext();
+        player.shape = nextQueue.shift();
+        lastShape = player.shape;
+        placeAtSpawn();
         player.canHold = true;
         active = true;
         flash = null;
@@ -154,7 +175,7 @@ export function createGame(config) {
 
     function playerRotate(dir) {
         if (!active) return;
-        const result = tryRotate(player, arena, collide, dir);
+        const result = (rules.rotation === 'classic' ? tryRotateClassic : tryRotate)(player, arena, collide, dir);
         if (result.success) {
             lastWasRotation = true;
             lastKickIndex = result.kickIndex;
@@ -184,12 +205,15 @@ export function createGame(config) {
         if (dropped > 0) {
             modeState.addScore(dropped);
             playSound('softdrop');
+        } else if (rules.lock === 'gravity') {
+            // Holding down on a resting piece locks it at once
+            lockPiece();
         }
         return dropped;
     }
 
     function hardDrop() {
-        if (!active) return;
+        if (!active || !rules.hardDrop) return;
         let rows = 0;
         while (!playerDrop()) {
             rows++;
@@ -201,7 +225,7 @@ export function createGame(config) {
     }
 
     function holdPiece() {
-        if (!active || !player.canHold) return;
+        if (!active || !rules.hold || !player.canHold) return;
 
         if (player.held === null) {
             player.held = player.shape;
@@ -210,11 +234,7 @@ export function createGame(config) {
             const temp = player.shape;
             player.shape = player.held;
             player.held = temp;
-            player.matrix = SHAPES[player.shape].matrix;
-            player.rotation = 0;
-            const spawn = getSpawnPos(player.matrix);
-            player.pos.x = spawn.x;
-            player.pos.y = spawn.y;
+            placeAtSpawn();
             input.cutDas();
         }
         input.resetPieceInputs();
@@ -228,6 +248,7 @@ export function createGame(config) {
     }
 
     function resetLockTimer() {
+        if (rules.lock === 'gravity') return;
         if (isGrounded(arena, player)) {
             lockMoves++;
             if (lockMoves < MAX_LOCK_MOVES) {
@@ -244,7 +265,7 @@ export function createGame(config) {
 
         // Finesse: compare inputs with the fewest that reach this placement
         const used = input.takePieceInputs();
-        if (!used.softDrop) {
+        if (rules.finesse && !used.softDrop) {
             const min = minimumInputs(player.shape, player.matrix, player.pos.x);
             if (min !== null) {
                 finesseJudged++;
@@ -253,7 +274,9 @@ export function createGame(config) {
         }
 
         // Snapshot for T-spin detection
-        const tSpinType = detectTSpin(arena, player, lastWasRotation, lastKickIndex);
+        const tSpinType = rules.scoring === 'modern'
+            ? detectTSpin(arena, player, lastWasRotation, lastKickIndex)
+            : 'none';
 
         // Snapshot arena rows before merge (for particle colors)
         const arenaSnapshot = arena.map(row => [...row]);
@@ -263,11 +286,15 @@ export function createGame(config) {
         modeState.addPiece();
         const lockedArena = arena.map(row => [...row]);
 
-        particles.spawnPlacement({
-            shape: player.shape,
-            matrix: player.matrix.map(row => [...row]),
-            pos: { ...player.pos },
-        }, dropRows);
+        if (rules.effects) {
+            particles.spawnPlacement({
+                shape: player.shape,
+                matrix: player.matrix.map(row => [...row]),
+                pos: { ...player.pos },
+            }, dropRows);
+        }
+        // A held down key must not carry over to the next piece in Classic
+        if (rules.lock === 'gravity') input.cancelSoftDrop();
 
         if (lockedOut) {
             modeState.setGameOver();
@@ -280,10 +307,9 @@ export function createGame(config) {
         const { linesCleared, clearedRows } = clearLines(arena);
 
         // Calculate score
-        const scoreResult = calculateScore(
-            linesCleared, tSpinType, scoringState,
-            modeState.stats.level, arena
-        );
+        const scoreResult = rules.scoring === 'classic'
+            ? calculateClassicScore(linesCleared, modeState.stats.level)
+            : calculateScore(linesCleared, tSpinType, scoringState, modeState.stats.level, arena);
 
         // Apply score
         if (scoreResult.points > 0) {
@@ -315,17 +341,19 @@ export function createGame(config) {
         }
 
         // Spawn effects
-        if (linesCleared > 0) {
-            particles.spawnLineClear(clearedRows, scoreResult.action, arenaSnapshot);
-        }
-        if (tSpinType !== 'none' && linesCleared > 0) {
-            particles.spawnTSpin(player.pos);
-        }
-        if (scoreResult.b2b) {
-            particles.spawnB2B(clearedRows);
-        }
-        if (scoreResult.perfectClear) {
-            particles.spawnPerfectClear();
+        if (rules.effects) {
+            if (linesCleared > 0) {
+                particles.spawnLineClear(clearedRows, scoreResult.action, arenaSnapshot);
+            }
+            if (tSpinType !== 'none' && linesCleared > 0) {
+                particles.spawnTSpin(player.pos);
+            }
+            if (scoreResult.b2b) {
+                particles.spawnB2B(clearedRows);
+            }
+            if (scoreResult.perfectClear) {
+                particles.spawnPerfectClear();
+            }
         }
 
         // Play sounds
@@ -345,14 +373,14 @@ export function createGame(config) {
         }
 
         // Attack: the garbage this clear sends
-        const attack = calculateAttack(scoreResult);
+        const attack = rules.attack ? calculateAttack(scoreResult) : 0;
         if (attack > 0) {
             modeState.addAttack(attack);
             particles.spawnAttack(clearedRows, attack);
             playSound('attack', attack);
         }
         if (scoreResult.action || scoreResult.perfectClear) hud.onClear({ ...scoreResult, attack });
-        if (linesCleared > 0) bounce.kick(0, 60 + linesCleared * 45 + attack * 10);
+        if (rules.effects && linesCleared > 0) bounce.kick(0, 60 + linesCleared * 45 + attack * 10);
 
         updateDanger();
 
@@ -370,7 +398,7 @@ export function createGame(config) {
             active = false;
             freezeTimer = wait;
             flash = clearDelay > 0
-                ? { arena: lockedArena, rows: clearedRows, duration: clearDelay, elapsed: 0 }
+                ? { arena: lockedArena, rows: clearedRows, duration: clearDelay, elapsed: 0, big: linesCleared >= 4 }
                 : null;
         } else {
             spawnPiece();
@@ -378,6 +406,7 @@ export function createGame(config) {
     }
 
     function updateDanger() {
+        if (!rules.danger) return;
         const top = arena.findIndex(row => row.some(v => v !== 0));
         const danger = top !== -1 && top < BUFFER_ROWS - VISIBLE_ROWS + DANGER_ROWS;
         if (danger && !inDanger) dangerTimer = 0;
@@ -447,15 +476,17 @@ export function createGame(config) {
         if (active) {
             // Gravity
             dropCounter += deltaTime;
-            if (dropCounter > dropInterval) {
+            if (dropCounter >= dropInterval - 1) {
+                // Carry the remainder so gravity keeps its pace at any refresh rate
+                const carry = dropCounter - dropInterval;
                 playerDrop();
-                dropCounter = 0;
+                dropCounter = Math.min(Math.max(carry, 0), dropInterval);
             }
 
             // Lock delay
             if (isGrounded(arena, player)) {
                 lockTimer += deltaTime;
-                const lockDelay = settings.lockDelay || 500;
+                const lockDelay = rules.lock === 'gravity' ? dropInterval : (settings.lockDelay || 500);
                 if (lockTimer >= lockDelay) {
                     lockPiece();
                 }
@@ -476,11 +507,12 @@ export function createGame(config) {
         bounce.update(deltaTime);
 
         // Render
-        const ghostY = active ? getGhostY(arena, player) : undefined;
+        const ghostY = active && rules.ghost ? getGhostY(arena, player) : undefined;
         renderer.draw({
             arena: flash ? flash.arena : arena,
             player: active ? player : null,
             flash: flash ? { rows: flash.rows, progress: flash.elapsed / flash.duration } : null,
+            level: modeState.stats.level,
             nextQueue,
             held: player.held,
             holdLocked: !player.canHold,
@@ -512,9 +544,10 @@ export function createGame(config) {
             urgent: modeId === 'blitz' && remaining <= 10000,
             primaryLabel: modeState.getPrimaryStatLabel(),
             primaryValue: modeState.getPrimaryStatValue(),
+            tetrises: stats.tetrises,
             progress: modeId === 'sprint' ? stats.linesCleared / SPRINT_LINES
                 : modeId === 'blitz' ? remaining / BLITZ_MS
-                : (stats.linesCleared % 10) / 10,
+                : modeState.getLevelProgress(),
             finesseJudged,
             finesseFaults,
         });
@@ -531,7 +564,8 @@ export function createGame(config) {
         // Reset arena
         arena.forEach(row => row.fill(0));
         nextQueue.length = 0;
-        fillQueue(nextQueue);
+        lastShape = null;
+        fillNext();
 
         // Reset player
         player.held = null;
@@ -561,7 +595,8 @@ export function createGame(config) {
         input.resetCounts();
 
         dropInterval = modeState.getDropInterval();
-        renderer.resizeNextCanvas(settings.nextPreviewCount || 5);
+        renderer.resizeNextCanvas(previewCount());
+        soundEngine?.setPack?.(rules.soundPack);
 
         // Spawn first piece
         spawnPiece();
@@ -626,6 +661,7 @@ export function createGame(config) {
         particles.clear();
         bounce.reset();
         music?.setPaused(false);
+        soundEngine?.setPack?.(null);
         canvases.board.classList.remove('board-danger');
     }
 

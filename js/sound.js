@@ -3,6 +3,8 @@
  * Synthesizes sound effects using oscillators, noise, and envelopes.
  */
 
+import { pulseWave, midiToHz } from './chip.js';
+
 /**
  * Creates and initializes the sound engine.
  * @param {Object} settingsRef - Reference object with {masterVolume, sfxVolume, sfxMuted} properties.
@@ -12,6 +14,7 @@ export function createSoundEngine(settingsRef) {
     let ctx = null;
     let masterGain = null;
     let noiseBuffer = null;
+    let packOverride = null;    // a pack a mode forces while it runs (Classic plays 'nes')
 
     /**
      * Initializes the AudioContext on first play to handle autoplay policies.
@@ -129,16 +132,112 @@ export function createSoundEngine(settingsRef) {
         blip(from, 'sine', t, len, peak, to);
     }
 
+    // Pulse notes are written on the same loose scale as the other voices but a lone pulse
+    // reads much quieter than a sine at the same level, so they are lifted to match the packs.
+    const CHIP_LIFT = 2.4;
+
+    /**
+     * One 8-bit note: a pulse wave whose volume steps down in a few notches, like the
+     * envelope of an old sound chip. `bendTo` slides the pitch in steps, not smoothly.
+     */
+    function chip(midi, t, len, peakIn, duty = 0.5, bendTo = null) {
+        const peak = peakIn * CHIP_LIFT;
+        const osc = ctx.createOscillator();
+        osc.setPeriodicWave(pulseWave(ctx, duty));
+        const from = midiToHz(midi);
+        osc.frequency.setValueAtTime(from, t);
+        if (bendTo !== null) {
+            const steps = 6;
+            for (let i = 1; i <= steps; i++) {
+                osc.frequency.setValueAtTime(from + (midiToHz(bendTo) - from) * (i / steps), t + (len * i) / steps);
+            }
+        }
+        const gain = ctx.createGain();
+        gain.gain.setValueAtTime(peak, t);
+        gain.gain.setValueAtTime(peak * 0.65, t + len * 0.5);
+        gain.gain.setValueAtTime(peak * 0.35, t + len * 0.8);
+        gain.gain.setValueAtTime(0, t + len);
+        osc.connect(gain);
+        gain.connect(masterGain);
+        osc.start(t);
+        osc.stop(t + len + 0.01);
+        osc.onended = () => gain.disconnect();
+    }
+
+    /** Triangle voice for thuds and bass, sliding from one pitch to another. */
+    function chipTri(midi, t, len, peak, bendTo = midi) {
+        const { osc } = playTone(midiToHz(midi), 'triangle', t, len + 0.02, (g, time) => {
+            g.setValueAtTime(peak, time);
+            g.exponentialRampToValueAtTime(0.001, time + len);
+        });
+        osc.frequency.exponentialRampToValueAtTime(midiToHz(bendTo), t + len);
+    }
+
+    /** Noise burst with stepped fade, for crashes and swishes. */
+    function chipNoise(t, len, peak, type, from, to = from) {
+        playNoise(t, len + 0.01, (g, time) => {
+            g.setValueAtTime(peak, time);
+            g.setValueAtTime(peak * 0.55, time + len * 0.4);
+            g.setValueAtTime(peak * 0.25, time + len * 0.75);
+            g.setValueAtTime(0, time + len);
+        }, (f, time) => {
+            f.type = type;
+            f.frequency.setValueAtTime(from, time);
+            f.frequency.linearRampToValueAtTime(to, time + len);
+        });
+    }
+
+    /** Play a run of notes, one after another. */
+    function chipRun(midis, t, gap, len, peak, duty) {
+        midis.forEach((m, i) => chip(m, t + i * gap, len, peak, duty));
+    }
+
     const semitone = (base, n) => base * Math.pow(2, n / 12);
     const MAJOR = [0, 2, 4, 5, 7, 9, 11, 12, 14, 16, 17, 19, 21, 23, 24];
 
     /**
      * Sound packs. Each entry replaces the default sound for that event; events a pack
-     * leaves out use the default. Both packs are original synthesis:
+     * leaves out use the default. All packs are original synthesis:
      * arcade is short and clicky like classic web stackers (Jstris style), bubbly is
-     * round, poppy and chiming like Puyo Puyo Tetris.
+     * round, poppy and chiming like Puyo Puyo Tetris, and nes is the 8-bit sound of the
+     * original console game: pulse and triangle waves and noise, nothing smooth.
      */
     const PACKS = {
+        nes: {
+            move: t => chip(57, t, 0.03, 0.12, 0.25),
+            rotate: t => chip(72, t, 0.035, 0.13, 0.25, 76),
+            softdrop: t => chip(52, t, 0.02, 0.09, 0.5),
+            harddrop: t => { chipTri(50, t, 0.12, 0.7, 30); chipNoise(t, 0.06, 0.2, 'lowpass', 1800); },
+            lock: t => { chipTri(46, t, 0.09, 0.7, 36); chipNoise(t, 0.03, 0.12, 'lowpass', 1200); },
+            hold: t => chipRun([72, 79], t, 0.04, 0.04, 0.1, 0.25),
+            clear1: t => { chipNoise(t, 0.12, 0.1, 'bandpass', 3000, 700); chipRun([72, 76, 79], t, 0.05, 0.06, 0.12, 0.5); },
+            clear2: t => { chipNoise(t, 0.14, 0.1, 'bandpass', 3000, 700); chipRun([72, 76, 79, 84], t, 0.05, 0.06, 0.12, 0.5); },
+            clear3: t => { chipNoise(t, 0.16, 0.1, 'bandpass', 3000, 700); chipRun([72, 76, 79, 84, 88], t, 0.05, 0.06, 0.12, 0.5); },
+            clear4: t => {
+                chipNoise(t, 0.3, 0.14, 'bandpass', 4000, 500);
+                chipRun([60, 64, 67, 72, 76, 79, 84, 88, 91, 96], t, 0.045, 0.06, 0.12, 0.25);
+                chip(96, t + 0.47, 0.35, 0.12, 0.25);
+                chip(84, t + 0.47, 0.35, 0.1, 0.5);
+                chipTri(48, t + 0.47, 0.35, 0.35);
+            },
+            levelUp: t => chipRun([76, 79, 84], t, 0.07, 0.07, 0.12, 0.5),
+            gameOver: t => {
+                chipRun([69, 67, 65, 64, 62, 60], t, 0.12, 0.11, 0.13, 0.5);
+                chip(57, t + 0.72, 0.5, 0.13, 0.5, 45);
+                chipTri(45, t + 0.72, 0.5, 0.35, 33);
+            },
+            tspin: t => chip(60, t, 0.14, 0.12, 0.25, 84),
+            tspinClear: t => chipRun([67, 72, 76, 79, 84], t, 0.05, 0.07, 0.12, 0.25),
+            perfectClear: t => {
+                chipRun([72, 76, 79, 84, 79, 84, 88, 91, 96], t, 0.06, 0.08, 0.12, 0.25);
+                chip(96, t + 0.54, 0.4, 0.12, 0.25);
+            },
+            combo: (t, n) => chip(72 + Math.min(n || 1, 16), t, 0.05, 0.1, 0.5),
+            menuMove: t => chip(81, t, 0.02, 0.07, 0.5),
+            menuSelect: t => chipRun([76, 88], t, 0.05, 0.06, 0.1, 0.5),
+            countdownTick: t => chip(83, t, 0.03, 0.08, 0.5),
+            countdownGo: t => chipRun([76, 81, 88], t, 0.06, 0.07, 0.1, 0.5),
+        },
         arcade: {
             move: t => blip(1200, 'square', t, 0.012, 0.08),
             rotate: t => blip(900, 'square', t, 0.022, 0.08, 1300),
@@ -210,7 +309,7 @@ export function createSoundEngine(settingsRef) {
 
         const t = ctx.currentTime;
 
-        const pack = PACKS[settingsRef.soundPack];
+        const pack = PACKS[packOverride || settingsRef.soundPack];
         if (pack && pack[eventName]) {
             pack[eventName](t, comboCount);
             return;
@@ -600,8 +699,17 @@ export function createSoundEngine(settingsRef) {
         }
     }
 
+    /**
+     * Force a sound pack for the time being (null goes back to the soundPack setting).
+     * @param {string|null} name
+     */
+    function setPack(name) {
+        packOverride = name && PACKS[name] ? name : null;
+    }
+
     return {
         play,
+        setPack,
         dispose
     };
 }

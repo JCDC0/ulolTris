@@ -6,6 +6,10 @@
  * The statsDisplay setting picks the stats, like TETR.IO's display option:
  * off, time (pieces, lines, time), speed (PPS, APM, KPS), efficiency (APP, KPP,
  * finesse) or versus (APM, PPS, VS score).
+ *
+ * Classic mode (`og`) has no attack, finesse or combos. It shows level, lines, tetris
+ * rate and time (speed: PPS and KPS), names each clear and its points in the feed, and
+ * pads the score under the board to six digits.
  */
 
 import { getActionColor } from './scoring.js';
@@ -24,9 +28,10 @@ const fixed = (v, d = 2) => (Number.isFinite(v) ? v.toFixed(d) : (0).toFixed(d))
 
 /**
  * @param {Object} settings - Settings reference (statsDisplay, showActionText)
- * @param {string} modeId - 'sprint' | 'blitz' | 'classic'
+ * @param {string} modeId - 'sprint' | 'blitz' | 'classic' | 'og'
  */
 export function createHud(settings, modeId) {
+    const isOg = modeId === 'og';
     const els = {
         feed: document.getElementById('hud-feed'),
         stats: document.getElementById('hud-stats'),
@@ -70,6 +75,13 @@ export function createHud(settings, modeId) {
          */
         onClear(r) {
             if (settings.showActionText === false) return;
+            if (isOg) {
+                if (r.action) {
+                    flashSlot('clear', r.actionName, getActionColor(r.action));
+                    flashSlot('attack', `+${r.points.toLocaleString()}`, '#ffd24a');
+                }
+                return;
+            }
             if (r.action) {
                 const isSpin = r.action.startsWith('tspin');
                 const name = r.action === 'tetris' ? 'QUAD'
@@ -86,7 +98,8 @@ export function createHud(settings, modeId) {
         /**
          * Refresh numbers. Cheap to call every frame: the DOM only changes when text does.
          * @param {Object} s - { pieces, lines, level, score, keys, linesSent, elapsedMs,
-         *   clockMs, urgent, primaryLabel, primaryValue, progress, finesseJudged, finesseFaults }
+         *   clockMs, urgent, primaryLabel, primaryValue, progress, finesseJudged, finesseFaults,
+         *   tetrises }
          */
         update(s) {
             const mode = settings.statsDisplay || 'time';
@@ -101,31 +114,39 @@ export function createHud(settings, modeId) {
 
             const clock = formatClock(s.clockMs);
             const timeRow = row('TIME', clock.main, clock.sub, `stat-time${s.urgent ? ' urgent' : ''}`);
-            const levelRow = modeId === 'classic' ? row('LEVEL', s.level) : '';
+            const levelRow = modeId === 'classic' || isOg ? row('LEVEL', s.level) : '';
+            const tetrisRate = s.lines > 0 ? Math.round((s.tetrises * 4 / s.lines) * 100) : 0;
             let rows = '';
-            switch (mode) {
-                case 'off':
-                    rows = '';
-                    break;
-                case 'speed':
-                    rows = levelRow + row('PPS', fixed(pps)) + row('APM', fixed(apm, 1)) + row('KPS', fixed(kps)) + timeRow;
-                    break;
-                case 'efficiency':
-                    rows = levelRow + row('APP', fixed(app, 3)) + row('KPP', fixed(kpp)) + row('FINESSE', `${fixed(finessePct, 1)}%`) + timeRow;
-                    break;
-                case 'versus':
-                    rows = levelRow + row('APM', fixed(apm, 1)) + row('PPS', fixed(pps)) + row('VS', fixed(vs)) + timeRow;
-                    break;
-                default:
-                    rows = levelRow + row('PIECES', s.pieces, `, ${fixed(pps)}/S`) + row('LINES', s.lines) + timeRow;
+            if (isOg) {
+                if (mode === 'off') rows = '';
+                else if (mode === 'speed') rows = levelRow + row('PPS', fixed(pps)) + row('KPS', fixed(kps)) + timeRow;
+                else rows = levelRow + row('LINES', s.lines) + row('TETRIS RATE', `${tetrisRate}%`) + timeRow;
+            } else {
+                switch (mode) {
+                    case 'off':
+                        rows = '';
+                        break;
+                    case 'speed':
+                        rows = levelRow + row('PPS', fixed(pps)) + row('APM', fixed(apm, 1)) + row('KPS', fixed(kps)) + timeRow;
+                        break;
+                    case 'efficiency':
+                        rows = levelRow + row('APP', fixed(app, 3)) + row('KPP', fixed(kpp)) + row('FINESSE', `${fixed(finessePct, 1)}%`) + timeRow;
+                        break;
+                    case 'versus':
+                        rows = levelRow + row('APM', fixed(apm, 1)) + row('PPS', fixed(pps)) + row('VS', fixed(vs)) + timeRow;
+                        break;
+                    default:
+                        rows = levelRow + row('PIECES', s.pieces, `, ${fixed(pps)}/S`) + row('LINES', s.lines) + timeRow;
+                }
             }
             setHtml(els.stats, 'stats', rows);
 
+            const score = isOg ? String(s.primaryValue).padStart(6, '0') : Number(s.primaryValue).toLocaleString();
             setHtml(els.under, 'under',
-                `<div class="under-value">${Number(s.primaryValue).toLocaleString()}</div>` +
+                `<div class="under-value">${score}</div>` +
                 `<div class="under-label">${s.primaryLabel}</div>`);
 
-            setHtml(els.finesse, 'finesse', mode === 'off' ? '' :
+            setHtml(els.finesse, 'finesse', mode === 'off' || isOg ? '' :
                 `<div class="stat-label">FINESSE</div>` +
                 `<div class="stat-value">${s.finesseFaults}<span class="stat-sub">, ${fixed(finessePct)}%</span></div>` +
                 `<div class="stat-small">${s.finesseFaults} FAULT${s.finesseFaults === 1 ? '' : 'S'}</div>`);

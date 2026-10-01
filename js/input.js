@@ -31,8 +31,9 @@ const GAME_KEYS = new Set([
  * @param {Object} callbacks - Action callbacks:
  *   { onMove(dir, cells) -> cellsMoved, onSoftDrop(cells) -> cellsDropped,
  *     getGravityInterval() -> ms per cell, onHardDrop, onRotateCW, onRotateCCW,
- *     onHold, onPause }
+ *     onHold, onPause, getSoftDropInterval() -> ms per cell (optional) }
  *   `cells` may be Infinity, meaning "as far as possible".
+ *   getSoftDropInterval, when given, replaces the SDF setting (Classic mode uses it).
  */
 export function createInputHandler(settings, callbacks) {
     const state = {
@@ -190,13 +191,14 @@ export function createInputHandler(settings, callbacks) {
     function updateSoftDrop(now) {
         if (!state.downHeld) return;
 
-        if (settings.sdf >= SDF_INFINITE) {
+        const fixed = callbacks.getSoftDropInterval?.();
+        if (fixed === undefined && settings.sdf >= SDF_INFINITE) {
             callbacks.onSoftDrop?.(Infinity);
             return;
         }
 
         const gravity = callbacks.getGravityInterval?.() ?? 1000;
-        const interval = gravity / settings.sdf;
+        const interval = fixed ?? gravity / settings.sdf;
         state.softDropCharge += now - state.softDropFrom;
         state.softDropFrom = now;
 
@@ -255,6 +257,16 @@ export function createInputHandler(settings, callbacks) {
             state.pieceInputs = 0;
             state.pieceSoftDrop = false;
             return r;
+        },
+
+        /**
+         * Release soft drop even if the key is still down; it works again after the key is
+         * pressed anew. Classic mode does this on every lock so a held key cannot slam
+         * the next piece into the stack.
+         */
+        cancelSoftDrop() {
+            state.downHeld = false;
+            state.softDropCharge = 0;
         },
 
         /** Start counting a fresh piece (after a hold swap). */

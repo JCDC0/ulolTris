@@ -8,6 +8,7 @@
  */
 
 import { TRACKS } from './tracks.js';
+import { pulseWave } from './chip.js';
 
 const TICK_MS = 25;
 const LOOKAHEAD_S = 0.2;
@@ -69,6 +70,19 @@ function createVoices(ctx, noise) {
         src.start(t);
         src.stop(t + dur + 0.02);
         done(src);
+    }
+
+    /** A steady pulse wave with a hard start and a short release, like a sound chip channel. */
+    function pulseNote(t, freq, dur, vel, bus, duty) {
+        const { g, done } = voiceGain(bus.dry);
+        const len = env(g.gain, t, vel, 0.002, Math.max(0, dur - 0.025), 0.03);
+        const o = ctx.createOscillator();
+        o.setPeriodicWave(pulseWave(ctx, duty));
+        o.frequency.setValueAtTime(freq, t);
+        o.connect(g);
+        o.start(t);
+        o.stop(t + len);
+        done(o);
     }
 
     return {
@@ -213,6 +227,42 @@ function createVoices(ctx, noise) {
 
         crash(t, _f, _d, vel, bus) {
             noiseBurst(t, 1.2, vel, bus.dry, 'highpass', 4000);
+        },
+
+        // --- 8-bit voices (the chip track) ---
+
+        /** Lead: 50 percent pulse. */
+        chipLead(t, freq, dur, vel, bus) {
+            pulseNote(t, freq, dur, vel, bus, 0.5);
+        },
+
+        /** Second pulse channel: 25 percent duty, thinner, for harmony and stabs. */
+        chipHarm(t, freq, dur, vel, bus) {
+            pulseNote(t, freq, dur, vel, bus, 0.25);
+        },
+
+        /** Triangle bass. */
+        chipBass(t, freq, dur, vel, bus) {
+            const { g, done } = voiceGain(bus.dry);
+            const len = env(g.gain, t, vel, 0.002, Math.max(0, dur - 0.03), 0.03);
+            done(osc('triangle', freq, t, t + len, g));
+        },
+
+        /** Triangle drum: a quick pitch drop. */
+        chipKick(t, _f, _d, vel, bus) {
+            const { g, done } = voiceGain(bus.dry);
+            env(g.gain, t, vel, 0.001, 0.03, 0.08);
+            const o = osc('triangle', 150, t, t + 0.15, g);
+            o.frequency.exponentialRampToValueAtTime(40, t + 0.1);
+            done(o);
+        },
+
+        chipSnare(t, _f, _d, vel, bus) {
+            noiseBurst(t, 0.09, vel, bus.dry, 'highpass', 1500);
+        },
+
+        chipHat(t, _f, _d, vel, bus) {
+            noiseBurst(t, 0.03, vel, bus.dry, 'highpass', 8000);
         },
     };
 }

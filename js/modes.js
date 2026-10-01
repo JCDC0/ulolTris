@@ -1,15 +1,19 @@
 /**
- * modes.js - Game mode definitions for Sprint, Blitz, and Classic
+ * modes.js - Game mode definitions for Sprint, Blitz, Casual and Classic
  */
 
 import { createStopwatch, createCountdown } from './timer.js';
+import { classicGravityMs, classicLevel, classicLevelProgress, NES_FRAME_MS } from './classic.js';
 
 /**
  * Mode IDs
  */
 export const MODE_SPRINT = 'sprint';
 export const MODE_BLITZ = 'blitz';
+/** Casual. The ID predates the Classic mode below, which is `og`. */
 export const MODE_CLASSIC = 'classic';
+/** Classic: the original 8-bit rules (next piece only, no hold, no wall kicks, point scoring). */
+export const MODE_OG = 'og';
 
 const BLITZ_MS = 120000;
 
@@ -22,6 +26,8 @@ const BLITZ_MS = 120000;
 export const GAME_STYLES = {
     modern: { name: 'MODERN', lineClearDelay: 0,   bigHitDelay: 0,    entryDelay: 0 },
     battle: { name: 'BATTLE', lineClearDelay: 500, bigHitDelay: 1000, entryDelay: 117 },
+    // Classic mode always plays this one: a 20 frame clear animation, then ~12 frames of entry delay.
+    classic: { name: 'CLASSIC', lineClearDelay: Math.round(20 * NES_FRAME_MS), bigHitDelay: Math.round(20 * NES_FRAME_MS), entryDelay: Math.round(12 * NES_FRAME_MS) },
 };
 
 /** Attack at or above this many lines counts as a big hit. */
@@ -52,7 +58,44 @@ export const MODE_INFO = {
         track: 'calm',
         icon: '\u221E',
     },
+    [MODE_OG]: {
+        name: 'CLASSIC',
+        subtitle: 'OG RULES',
+        description: 'The original rules: next piece only, no hold, no wall kicks. Points for lines, nothing for T-spins.',
+        track: 'chip',
+        icon: '\u25A3',
+    },
 };
+
+/**
+ * Rules the engine reads, per mode. Modern modes share one set; Classic turns off
+ * everything the original did not have.
+ *  - look: 'modern' or 'classic' board drawing (block art, frame, no ghost or spawn marks)
+ *  - rotation: 'srs' (wall kicks) or 'classic' (no kicks, original spawn orientations)
+ *  - spawn: 'above' the field (modern) or 'inside' it on the first row
+ *  - lock: 'delay' (lockDelay setting, resets on moves) or 'gravity' (locks on the next
+ *    gravity tick, moves do not reset it, soft drop on the floor locks at once)
+ *  - scoring: 'modern' (T-spins, combos, B2B) or 'classic' (line points times level + 1)
+ *  - style: key of GAME_STYLES, or null to follow the gameStyle setting
+ *  - soundPack: forces a sound pack while the mode runs, or null for the player's choice
+ *  - previewCount: next pieces shown, or null to follow the nextPreviewCount setting
+ */
+const MODERN_RULES = Object.freeze({
+    look: 'modern', hold: true, ghost: true, hardDrop: true, rotation: 'srs', spawn: 'above', lock: 'delay',
+    randomizer: 'bag', scoring: 'modern', attack: true, effects: true, danger: true, finesse: true,
+    style: null, soundPack: null, previewCount: null,
+});
+
+const CLASSIC_RULES = Object.freeze({
+    look: 'classic', hold: false, ghost: false, hardDrop: false, rotation: 'classic', spawn: 'inside', lock: 'gravity',
+    randomizer: 'classic', scoring: 'classic', attack: false, effects: false, danger: false, finesse: false,
+    style: 'classic', soundPack: 'nes', previewCount: 1,
+});
+
+/** The rules for a mode ID. */
+export function getRules(modeId) {
+    return modeId === MODE_OG ? CLASSIC_RULES : MODERN_RULES;
+}
 
 /**
  * Calculate gravity drop interval for a given level.
@@ -66,14 +109,18 @@ export function getGravityInterval(level) {
 /**
  * Create a mode-specific game state tracker.
  *
- * @param {string} modeId - One of MODE_SPRINT, MODE_BLITZ, MODE_CLASSIC
+ * @param {string} modeId - One of MODE_SPRINT, MODE_BLITZ, MODE_CLASSIC, MODE_OG
+ * @param {Object} [options]
+ * @param {number} [options.startLevel] - Classic only: the level to begin on (0 to 19)
  * @returns {Object} Mode state with timer, win/loss checks, and stat tracking
  */
-export function createModeState(modeId) {
+export function createModeState(modeId, options = {}) {
+    // Classic counts levels from 0, like the original; the other modes start at 1.
+    const startLevel = modeId === MODE_OG ? Math.max(0, Math.floor(options.startLevel ?? 0)) : 1;
     const stats = {
         linesCleared: 0,
         score: 0,
-        level: 1,
+        level: startLevel,
         piecesPlaced: 0,
         tSpins: 0,
         tetrises: 0,
@@ -97,6 +144,7 @@ export function createModeState(modeId) {
             timer = createCountdown(BLITZ_MS);
             break;
         case MODE_CLASSIC:
+        case MODE_OG:
             timer = createStopwatch(); // Track play time
             break;
     }
@@ -125,7 +173,7 @@ export function createModeState(modeId) {
         reset() {
             stats.linesCleared = 0;
             stats.score = 0;
-            stats.level = 1;
+            stats.level = startLevel;
             stats.piecesPlaced = 0;
             stats.tSpins = 0;
             stats.tetrises = 0;
@@ -156,6 +204,8 @@ export function createModeState(modeId) {
             // Level up every 10 lines
             if (modeId === MODE_CLASSIC || modeId === MODE_BLITZ) {
                 stats.level = Math.floor(stats.linesCleared / 10) + 1;
+            } else if (modeId === MODE_OG) {
+                stats.level = classicLevel(stats.linesCleared, startLevel);
             }
 
             // Sprint: check if goal reached
@@ -224,7 +274,14 @@ export function createModeState(modeId) {
                 // Sprint uses fixed moderate gravity
                 return 1000;
             }
+            if (modeId === MODE_OG) return classicGravityMs(stats.level);
             return getGravityInterval(stats.level);
+        },
+
+        /** Fraction (0 to 1) of the way to the next level, for the progress meter */
+        getLevelProgress() {
+            if (modeId === MODE_OG) return classicLevelProgress(stats.linesCleared, startLevel);
+            return (stats.linesCleared % 10) / 10;
         },
 
         /** Get the formatted timer display */
@@ -239,6 +296,7 @@ export function createModeState(modeId) {
                 case MODE_SPRINT: return 'LINES LEFT';
                 case MODE_BLITZ:  return 'SCORE';
                 case MODE_CLASSIC: return 'SCORE';
+                case MODE_OG: return 'SCORE';
                 default: return 'SCORE';
             }
         },
@@ -249,6 +307,7 @@ export function createModeState(modeId) {
                 case MODE_SPRINT: return Math.max(0, goalLines - stats.linesCleared);
                 case MODE_BLITZ:  return stats.score;
                 case MODE_CLASSIC: return stats.score;
+                case MODE_OG: return stats.score;
                 default: return stats.score;
             }
         },
@@ -288,6 +347,8 @@ export function createModeState(modeId) {
             r.finalTimePrecise = timer && timer.formatPrecise ? timer.formatPrecise() : r.finalTime;
             const minutes = this.getElapsedMs() / 60000;
             r.apm = minutes > 0 ? stats.linesSent / minutes : 0;
+            // Share of cleared lines that came from 4-line clears (the classic "tetris rate")
+            r.tetrisRate = stats.linesCleared > 0 ? (stats.tetrises * 4 / stats.linesCleared) * 100 : 0;
             r.completed = completed;
             r.gameOver = gameOver;
             return r;

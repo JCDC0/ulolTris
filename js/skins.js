@@ -8,6 +8,8 @@
  * their art.
  */
 
+import { NES_BLOCK_KIND, NES_PALETTES, nesPalette, paintNesBlock } from './classic.js';
+
 export const SKINS = ['ulol', 'classic', 'glossy', 'flat', 'neon'];
 
 const SKIN_LABELS = {
@@ -127,6 +129,23 @@ const PAINTERS = {
 };
 
 const cache = new Map();
+
+/**
+ * A cached canvas with one block in the Classic mode's 8-bit art. The art depends on
+ * the piece, and the colors on the level (a new palette every level, repeating after 10).
+ */
+export function nesBlockSprite(shape, level, size) {
+    const key = `nes|${shape}|${((level % NES_PALETTES.length) + NES_PALETTES.length) % NES_PALETTES.length}|${size}`;
+    let sprite = cache.get(key);
+    if (!sprite) {
+        sprite = document.createElement('canvas');
+        sprite.width = size;
+        sprite.height = size;
+        paintNesBlock(sprite.getContext('2d'), 0, 0, size, NES_BLOCK_KIND[shape] || 'light', nesPalette(level));
+        cache.set(key, sprite);
+    }
+    return sprite;
+}
 
 /**
  * A cached canvas with one block painted in the given skin.
